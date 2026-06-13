@@ -117,7 +117,7 @@ def train(args):
                 for g in opt.param_groups:
                     g["lr"] = lr
                 scaler.unscale_(opt)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
                 scaler.step(opt)
                 scaler.update()
                 opt.zero_grad(set_to_none=True)
@@ -161,10 +161,11 @@ def main():
     ap.add_argument("--crop", type=int, default=3072)
     ap.add_argument("--base", type=int, default=160)
     ap.add_argument("--attn", type=lambda s: s.lower() != "false", default=True)
-    ap.add_argument("--lr", type=float, default=2e-4)
+    ap.add_argument("--lr", type=float, default=1.5e-4)
+    ap.add_argument("--grad-clip", type=float, default=0.5)
     ap.add_argument("--ema", type=float, default=0.999, help="EMA decay (0 disables)")
     ap.add_argument("--timesteps", type=int, default=1000)
-    ap.add_argument("--warmup", type=int, default=500)
+    ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--min-objects", type=int, default=50)
     ap.add_argument("--log-every", type=int, default=50)

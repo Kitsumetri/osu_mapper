@@ -49,7 +49,13 @@ class ResBlock1d(nn.Module):
 
 
 class AttnBlock1d(nn.Module):
-    """Multi-head self-attention over the time axis (long-range structure)."""
+    """Multi-head self-attention over the time axis (long-range structure).
+
+    Uses query/key RMS-normalisation ("QK-norm") which keeps attention logits
+    bounded and prevents the divergence seen with bf16 + plain dot-product
+    attention. The output projection is zero-initialised so the block starts as
+    an identity and eases in during training.
+    """
 
     def __init__(self, ch: int, heads: int = 4):
         super().__init__()
@@ -57,6 +63,11 @@ class AttnBlock1d(nn.Module):
         self.norm = nn.GroupNorm(math.gcd(8, ch), ch)
         self.qkv = nn.Conv1d(ch, ch * 3, 1)
         self.proj = nn.Conv1d(ch, ch, 1)
+        # learnable attention temperature (CLIP-style), since QK-norm makes raw
+        # logits cosine-similarities in [-1, 1].
+        self.logit_scale = nn.Parameter(torch.tensor(math.log(10.0)))
+        nn.init.zeros_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)
 
     def forward(self, x):
         b, c, t = x.shape
@@ -64,7 +75,12 @@ class AttnBlock1d(nn.Module):
         # (b, heads, t, c/heads)
         q, k, v = (z.reshape(b, self.heads, c // self.heads, t).transpose(-1, -2)
                    for z in (q, k, v))
-        out = F.scaled_dot_product_attention(q, k, v)
+        # QK-norm: unit-norm queries/keys keep logits in a stable range; the
+        # learnable temperature is folded into q (sdpa needs scale=1.0 float).
+        scale = self.logit_scale.clamp(max=math.log(100.0)).exp()
+        q = F.normalize(q, dim=-1) * scale
+        k = F.normalize(k, dim=-1)
+        out = F.scaled_dot_product_attention(q, k, v, scale=1.0)
         out = out.transpose(-1, -2).reshape(b, c, t)
         return x + self.proj(out)
 
