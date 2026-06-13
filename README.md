@@ -55,17 +55,25 @@ pip install -r requirements.txt
 ## Quickstart
 
 ```bash
-# 1. preprocess a subset of the library into aligned (mel, signal) shards
-python main.py preprocess --songs "C:/osu!/Songs" --out data/processed --limit 600
+# 1. preprocess into a deduped, manifest-indexed dataset (see STORAGE.md)
+python main.py preprocess --songs "C:/osu!/Songs" --out data/processed/std-v1 --limit 3000
 
-# 2. train the diffusion model
-python main.py train --data data/processed --epochs 240 --batch 8 --crop 2048 --base 96
+# 2. train the diffusion model (logs + checkpoints under runs/<id>/)
+python main.py train --data data/processed/std-v1 --tag std-v1-base160 \
+    --epochs 200 --batch 12 --crop 3072 --base 160
 
-# 3. generate a .osu from any audio file (DDIM, ~100 steps)
-python main.py generate --audio song.mp3 --ckpt checkpoints/model_last.pt --out generated.osu
+# 3. generate a .osu from any audio file (DDIM, ~100 steps, uses EMA weights)
+python main.py generate --audio song.mp3 --ckpt runs/<id>/ckpt/best.pt --out generated.osu
 ```
 
-Each stage is also runnable directly, e.g. `python -m src.train ...`.
+Each stage is also runnable directly, e.g. `python -m src.train ...`. Training
+features: bf16, EMA, cosine LR + warmup, gradient accumulation, self-attention
+U-Net. See `STORAGE.md` for the data/runs/artifacts layout.
+
+> **Why train from scratch (not a pretrained model)?** The diffusion target is a
+> bespoke 6-channel beatmap "signal" with no pretrained equivalent on HF/torch.
+> A pretrained *audio* encoder (e.g. for the mel conditioning) could help later,
+> but the denoiser itself must be trained for this representation.
 
 ## Project layout
 
