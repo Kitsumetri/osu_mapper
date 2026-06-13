@@ -1,4 +1,4 @@
-from src.parsing.beatmap import parse_beatmap, write_osu, TimingPoint
+from src.parsing.beatmap import TimingPoint, parse_beatmap, write_osu
 
 
 def test_write_then_reparse_preserves_objects(sample_osu, tmp_path):
@@ -17,8 +17,7 @@ def test_written_file_has_required_sections(sample_osu, tmp_path):
     out = tmp_path / "out.osu"
     write_osu(bm, bm.hit_objects, out)
     text = out.read_text(encoding="utf-8")
-    for section in ("[General]", "[Metadata]", "[Difficulty]",
-                    "[TimingPoints]", "[HitObjects]"):
+    for section in ("[General]", "[Metadata]", "[Difficulty]", "[TimingPoints]", "[HitObjects]"):
         assert section in text
     assert text.startswith("osu file format v")
 

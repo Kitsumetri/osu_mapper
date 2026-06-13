@@ -1,7 +1,8 @@
 """Train the conditional diffusion model on preprocessed osu! data.
 
-  python -m src.train --data data/processed --epochs 50 --batch 16 --crop 1024
+python -m src.train --data data/processed --epochs 50 --batch 16 --crop 1024
 """
+
 from __future__ import annotations
 
 import argparse
@@ -13,8 +14,8 @@ from torch.utils.data import DataLoader
 
 from .config import AUDIO, N_SIGNAL_CHANNELS
 from .data.dataset import OsuSignalDataset
-from .model.unet import UNet1d
 from .model.diffusion import GaussianDiffusion
+from .model.unet import UNet1d
 
 
 def train(args):
@@ -22,13 +23,20 @@ def train(args):
     print(f"device={device}")
     ds = OsuSignalDataset(args.data, crop_frames=args.crop)
     print(f"dataset: {len(ds)} difficulties")
-    dl = DataLoader(ds, batch_size=args.batch, shuffle=True,
-                    num_workers=args.workers, drop_last=True, pin_memory=True)
+    dl = DataLoader(
+        ds,
+        batch_size=args.batch,
+        shuffle=True,
+        num_workers=args.workers,
+        drop_last=True,
+        pin_memory=True,
+    )
 
-    model = UNet1d(sig_channels=N_SIGNAL_CHANNELS, cond_channels=AUDIO.n_mels,
-                   base=args.base).to(device)
+    model = UNet1d(sig_channels=N_SIGNAL_CHANNELS, cond_channels=AUDIO.n_mels, base=args.base).to(
+        device
+    )
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"model params: {n_params/1e6:.2f}M")
+    print(f"model params: {n_params / 1e6:.2f}M")
     diff = GaussianDiffusion(timesteps=args.timesteps, device=device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
     scaler = torch.amp.GradScaler("cuda", enabled=(device == "cuda"))
@@ -62,7 +70,7 @@ def train(args):
         dt = time.time() - t0
         print(f"epoch {epoch} done avg_loss {avg:.4f} ({dt:.1f}s)")
         if (epoch + 1) % args.save_every == 0 or epoch == args.epochs - 1:
-            ckpt = out / f"model_e{epoch+1}.pt"
+            ckpt = out / f"model_e{epoch + 1}.pt"
             torch.save({"model": model.state_dict(), "args": vars(args)}, ckpt)
             torch.save({"model": model.state_dict(), "args": vars(args)}, out / "model_last.pt")
             print(f"  saved {ckpt}")

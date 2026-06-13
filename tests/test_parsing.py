@@ -1,6 +1,5 @@
 from src.parsing.beatmap import (
-    parse_beatmap, write_osu, Beatmap, TimingPoint,
-    TYPE_CIRCLE, TYPE_SLIDER, TYPE_SPINNER, TYPE_NEW_COMBO,
+    parse_beatmap,
 )
 
 
@@ -30,7 +29,7 @@ def test_type_bitflags(sample_osu):
 def test_uninherited_bool_fix(sample_osu):
     """Regression: prototype used bool(str) which is always True."""
     bm = parse_beatmap(sample_osu)
-    assert bm.timing_points[0].uninherited is True   # "1"
+    assert bm.timing_points[0].uninherited is True  # "1"
     assert bm.timing_points[1].uninherited is False  # "0"
 
 
@@ -66,7 +65,8 @@ def test_audio_path(sample_osu):
 def test_malformed_lines_are_skipped(tmp_path):
     p = tmp_path / "bad.osu"
     p.write_text(
-        "osu file format v14\n[General]\nMode: 0\n[HitObjects]\n"
-        "garbage,line\n256,192,0,1,0\n", encoding="utf-8")
+        "osu file format v14\n[General]\nMode: 0\n[HitObjects]\ngarbage,line\n256,192,0,1,0\n",
+        encoding="utf-8",
+    )
     bm = parse_beatmap(p)
     assert len(bm.hit_objects) == 1  # only the valid line survives

@@ -1,7 +1,8 @@
 """Generate a playable .osu file from an audio file using a trained model.
 
-  python -m src.generate --audio song.mp3 --ckpt checkpoints/model_last.pt --out out.osu
+python -m src.generate --audio song.mp3 --ckpt checkpoints/model_last.pt --out out.osu
 """
+
 from __future__ import annotations
 
 import argparse
@@ -13,9 +14,9 @@ import torch
 from .config import AUDIO, N_SIGNAL_CHANNELS
 from .data.audio import audio_to_mel
 from .data.signal import decode_signal
-from .model.unet import UNet1d
 from .model.diffusion import GaussianDiffusion
-from .parsing.beatmap import Beatmap, write_osu, TimingPoint
+from .model.unet import UNet1d
+from .parsing.beatmap import Beatmap, TimingPoint, write_osu
 
 
 def generate(audio_path, ckpt_path, out_path, steps=200, window=2048, base=64):
@@ -25,10 +26,9 @@ def generate(audio_path, ckpt_path, out_path, steps=200, window=2048, base=64):
     model = UNet1d(N_SIGNAL_CHANNELS, AUDIO.n_mels, base=base).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
-    diff = GaussianDiffusion(timesteps=ckpt.get("args", {}).get("timesteps", 1000),
-                             device=device)
+    diff = GaussianDiffusion(timesteps=ckpt.get("args", {}).get("timesteps", 1000), device=device)
 
-    mel = audio_to_mel(audio_path)               # (n_mels, T)
+    mel = audio_to_mel(audio_path)  # (n_mels, T)
     T = mel.shape[1]
     # round up to multiple of 16 for clean U-Net striding
     pad = (-T) % 16

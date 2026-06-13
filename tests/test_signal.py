@@ -1,8 +1,8 @@
 import numpy as np
 
 from src.config import AUDIO, N_SIGNAL_CHANNELS
+from src.data.signal import decode_signal, encode_beatmap
 from src.parsing.beatmap import parse_beatmap
-from src.data.signal import encode_beatmap, decode_signal
 
 
 def _n_frames(bm):
@@ -38,12 +38,16 @@ def test_roundtrip_object_counts(sample_osu):
 
 def test_onset_timing_recall_on_real_shapes():
     """Synthetic dense map: every onset should be recovered within ~1 frame."""
-    from src.parsing.beatmap import Beatmap, HitObject, TYPE_CIRCLE
     import pathlib
+
+    from src.parsing.beatmap import TYPE_CIRCLE, Beatmap, HitObject
+
     bm = Beatmap(path=pathlib.Path("x.osu"))
     times = list(range(0, 4000, 200))
-    bm.hit_objects = [HitObject(x=100 + i, y=100, time=t, type=TYPE_CIRCLE,
-                                end_time=t) for i, t in enumerate(times)]
+    bm.hit_objects = [
+        HitObject(x=100 + i, y=100, time=t, type=TYPE_CIRCLE, end_time=t)
+        for i, t in enumerate(times)
+    ]
     n = int(AUDIO.time_to_frame(times[-1])) + 10
     sig = encode_beatmap(bm, n)
     dec = decode_signal(sig)

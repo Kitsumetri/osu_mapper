@@ -2,7 +2,9 @@
 
 Tests are hermetic — they never touch the real osu! Songs library or a GPU.
 """
+
 import textwrap
+
 import pytest
 
 # a tiny but valid osu!standard map: one circle, one slider, one spinner

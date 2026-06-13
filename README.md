@@ -37,8 +37,17 @@ circle/slider/spinner counts on round-trip).
 
 ## Install
 
+With [uv](https://docs.astral.sh/uv/) (recommended) — the CUDA torch index is
+already wired up in `pyproject.toml`:
+
 ```bash
-# CUDA build of torch (pick the index-url for your CUDA version)
+uv sync --extra dev      # creates .venv and installs everything (incl. cu124 torch)
+uv run pytest            # run anything inside the env with `uv run ...`
+```
+
+Or with pip:
+
+```bash
 pip install torch --index-url https://download.pytorch.org/whl/cu124
 pip install -r requirements.txt
 ```
@@ -78,14 +87,17 @@ tests/                   hermetic pytest suite (no dataset/GPU needed)
 main.py                  CLI dispatcher
 ```
 
-## Testing
+## Development
 
 ```bash
-pytest
+pytest                 # 33 hermetic tests, ~5 s
+ruff check .           # lint
+ruff format .          # format
 ```
 
-The suite is hermetic — it builds a tiny synthetic `.osu` in a temp dir and
-never touches the real Songs library or a GPU (26 tests, ~3 s).
+The test suite is hermetic — it builds tiny synthetic `.osu`/`.npz` fixtures in
+a temp dir and never touches the real Songs library or a GPU. Lint/format rules
+live in `pyproject.toml` (`E,F,I,UP,B,SIM`, 100-col).
 
 ## Notes & gotchas (learned while building)
 

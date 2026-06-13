@@ -1,4 +1,5 @@
 """Gaussian DDPM helper: schedule, q_sample (forward noising), p_sample loop."""
+
 from __future__ import annotations
 
 import torch
@@ -6,8 +7,13 @@ import torch.nn.functional as F
 
 
 class GaussianDiffusion:
-    def __init__(self, timesteps: int = 1000, beta_start: float = 1e-4,
-                 beta_end: float = 0.02, device: str = "cuda"):
+    def __init__(
+        self,
+        timesteps: int = 1000,
+        beta_start: float = 1e-4,
+        beta_end: float = 0.02,
+        device: str = "cuda",
+    ):
         self.timesteps = timesteps
         self.device = device
         betas = torch.linspace(beta_start, beta_end, timesteps, device=device)
@@ -69,7 +75,7 @@ class GaussianDiffusion:
                 break
             acp_prev = self.alphas_cumprod[seq[k - 1]]
             sigma = eta * torch.sqrt((1 - acp_prev) / (1 - acp_t) * (1 - acp_t / acp_prev))
-            dir_xt = torch.sqrt(1 - acp_prev - sigma ** 2) * eps
+            dir_xt = torch.sqrt(1 - acp_prev - sigma**2) * eps
             x = torch.sqrt(acp_prev) * x0 + dir_xt
             if eta > 0:
                 x = x + sigma * torch.randn_like(x)

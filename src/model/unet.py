@@ -7,9 +7,11 @@ The mel condition is concatenated channel-wise with the noisy signal. Timestep
 information is injected into every residual block via a FiLM-style shift from a
 sinusoidal embedding.
 """
+
 from __future__ import annotations
 
 import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -65,14 +67,18 @@ class Up(nn.Module):
 
 
 class UNet1d(nn.Module):
-    def __init__(self, sig_channels: int, cond_channels: int,
-                 base: int = 64, mults=(1, 2, 4, 8), t_dim: int = 256):
+    def __init__(
+        self,
+        sig_channels: int,
+        cond_channels: int,
+        base: int = 64,
+        mults=(1, 2, 4, 8),
+        t_dim: int = 256,
+    ):
         super().__init__()
         self.sig_channels = sig_channels
         self.t_dim = t_dim
-        self.time_mlp = nn.Sequential(
-            nn.Linear(t_dim, t_dim), nn.SiLU(), nn.Linear(t_dim, t_dim)
-        )
+        self.time_mlp = nn.Sequential(nn.Linear(t_dim, t_dim), nn.SiLU(), nn.Linear(t_dim, t_dim))
         in_ch = sig_channels + cond_channels
         self.in_conv = nn.Conv1d(in_ch, base, 3, padding=1)
 

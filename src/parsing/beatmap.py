@@ -12,18 +12,18 @@ Compared to the original prototype this module:
 Only the fields needed for the ML pipeline are kept; everything else is parsed
 loosely so malformed community maps don't crash the crawler.
 """
+
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
-import bisect
 
 # --- hit object type bitflags -------------------------------------------------
-TYPE_CIRCLE = 1 << 0      # 1
-TYPE_SLIDER = 1 << 1      # 2
-TYPE_NEW_COMBO = 1 << 2   # 4
-TYPE_SPINNER = 1 << 3     # 8
+TYPE_CIRCLE = 1 << 0  # 1
+TYPE_SLIDER = 1 << 1  # 2
+TYPE_NEW_COMBO = 1 << 2  # 4
+TYPE_SPINNER = 1 << 3  # 8
 TYPE_MANIA_HOLD = 1 << 7  # 128
 
 PLAYFIELD_W = 512
@@ -33,7 +33,7 @@ PLAYFIELD_H = 384
 @dataclass
 class TimingPoint:
     time: float
-    beat_length: float       # ms/beat (uninherited) or -100/SV (inherited)
+    beat_length: float  # ms/beat (uninherited) or -100/SV (inherited)
     meter: int
     uninherited: bool
 
@@ -50,15 +50,15 @@ class TimingPoint:
 class HitObject:
     x: int
     y: int
-    time: int                       # start time, ms
-    type: int                       # raw bitfield
+    time: int  # start time, ms
+    type: int  # raw bitfield
     hit_sound: int = 0
     # slider-specific
-    curve_type: Optional[str] = None
-    curve_points: List[Tuple[int, int]] = field(default_factory=list)
+    curve_type: str | None = None
+    curve_points: list[tuple[int, int]] = field(default_factory=list)
     slides: int = 1
-    length: float = 0.0             # pixel length
-    end_time: int = 0               # computed for sliders/spinners
+    length: float = 0.0  # pixel length
+    end_time: int = 0  # computed for sliders/spinners
 
     @property
     def is_circle(self) -> bool:
@@ -85,14 +85,14 @@ class Beatmap:
     title: str = ""
     artist: str = ""
     creator: str = ""
-    version: str = ""               # difficulty name
+    version: str = ""  # difficulty name
     slider_multiplier: float = 1.4
     circle_size: float = 5.0
     overall_difficulty: float = 5.0
     approach_rate: float = 5.0
     hp: float = 5.0
-    timing_points: List[TimingPoint] = field(default_factory=list)
-    hit_objects: List[HitObject] = field(default_factory=list)
+    timing_points: list[TimingPoint] = field(default_factory=list)
+    hit_objects: list[HitObject] = field(default_factory=list)
 
     @property
     def audio_path(self) -> Path:
@@ -120,10 +120,8 @@ class Beatmap:
         for tp in self.timing_points:
             if tp.time > time:
                 break
-            if not tp.uninherited:
-                sv = tp.sv
-            else:
-                sv = 1.0  # uninherited resets SV
+            # inherited points set SV; uninherited points reset it to 1.0
+            sv = tp.sv if not tp.uninherited else 1.0
         return sv
 
     def slider_duration(self, obj: HitObject) -> float:
@@ -219,12 +217,13 @@ def parse_beatmap(path: str | Path) -> Beatmap:
     return bm
 
 
-def _parse_hit_object(line: str) -> Optional[HitObject]:
+def _parse_hit_object(line: str) -> HitObject | None:
     parts = line.split(",")
     if len(parts) < 4:
         return None
     try:
-        x, y, time, type_ = int(float(parts[0])), int(float(parts[1])), int(float(parts[2])), int(parts[3])
+        x, y = int(float(parts[0])), int(float(parts[1]))
+        time, type_ = int(float(parts[2])), int(parts[3])
     except ValueError:
         return None
     hit_sound = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
@@ -238,10 +237,8 @@ def _parse_hit_object(line: str) -> Optional[HitObject]:
             for p in pieces[1:]:
                 if ":" in p:
                     cx, cy = p.split(":")[:2]
-                    try:
+                    with contextlib.suppress(ValueError):
                         obj.curve_points.append((int(float(cx)), int(float(cy))))
-                    except ValueError:
-                        pass
         try:
             obj.slides = max(1, int(parts[6]))
             obj.length = float(parts[7])
@@ -255,33 +252,56 @@ def _parse_hit_object(line: str) -> Optional[HitObject]:
     return obj
 
 
-def write_osu(bm: Beatmap, hit_objects: List[HitObject], out_path: str | Path,
-              timing_points: Optional[List[TimingPoint]] = None) -> Path:
+def write_osu(
+    bm: Beatmap,
+    hit_objects: list[HitObject],
+    out_path: str | Path,
+    timing_points: list[TimingPoint] | None = None,
+) -> Path:
     """Write a minimal but valid .osu file from generated hit objects."""
     out_path = Path(out_path)
     tps = timing_points if timing_points is not None else bm.timing_points
     if not tps:
         tps = [TimingPoint(0, 500.0, 4, True)]
 
-    lines = ["osu file format v14", "", "[General]",
-             f"AudioFilename: {bm.audio_filename}",
-             "AudioLeadIn: 0", "PreviewTime: -1", "Countdown: 0",
-             "SampleSet: Normal", "StackLeniency: 0.7", "Mode: 0",
-             "LetterboxInBreaks: 0", "WidescreenStoryboard: 0", "",
-             "[Metadata]",
-             f"Title:{bm.title or 'Generated'}",
-             f"TitleUnicode:{bm.title or 'Generated'}",
-             f"Artist:{bm.artist or 'Unknown'}",
-             f"ArtistUnicode:{bm.artist or 'Unknown'}",
-             f"Creator:osu_mapper",
-             f"Version:{bm.version or 'AI'}",
-             "Source:", "Tags:ai generated", "BeatmapID:0", "BeatmapSetID:-1", "",
-             "[Difficulty]",
-             f"HPDrainRate:{bm.hp}", f"CircleSize:{bm.circle_size}",
-             f"OverallDifficulty:{bm.overall_difficulty}",
-             f"ApproachRate:{bm.approach_rate}",
-             f"SliderMultiplier:{bm.slider_multiplier}", "SliderTickRate:1", "",
-             "[Events]", "", "[TimingPoints]"]
+    lines = [
+        "osu file format v14",
+        "",
+        "[General]",
+        f"AudioFilename: {bm.audio_filename}",
+        "AudioLeadIn: 0",
+        "PreviewTime: -1",
+        "Countdown: 0",
+        "SampleSet: Normal",
+        "StackLeniency: 0.7",
+        "Mode: 0",
+        "LetterboxInBreaks: 0",
+        "WidescreenStoryboard: 0",
+        "",
+        "[Metadata]",
+        f"Title:{bm.title or 'Generated'}",
+        f"TitleUnicode:{bm.title or 'Generated'}",
+        f"Artist:{bm.artist or 'Unknown'}",
+        f"ArtistUnicode:{bm.artist or 'Unknown'}",
+        "Creator:osu_mapper",
+        f"Version:{bm.version or 'AI'}",
+        "Source:",
+        "Tags:ai generated",
+        "BeatmapID:0",
+        "BeatmapSetID:-1",
+        "",
+        "[Difficulty]",
+        f"HPDrainRate:{bm.hp}",
+        f"CircleSize:{bm.circle_size}",
+        f"OverallDifficulty:{bm.overall_difficulty}",
+        f"ApproachRate:{bm.approach_rate}",
+        f"SliderMultiplier:{bm.slider_multiplier}",
+        "SliderTickRate:1",
+        "",
+        "[Events]",
+        "",
+        "[TimingPoints]",
+    ]
     for tp in tps:
         uninh = 1 if tp.uninherited else 0
         lines.append(f"{int(tp.time)},{tp.beat_length},{tp.meter},1,0,50,{uninh},0")
@@ -292,8 +312,10 @@ def write_osu(bm: Beatmap, hit_objects: List[HitObject], out_path: str | Path,
         elif o.is_slider and o.curve_points:
             pts = "|".join(f"{cx}:{cy}" for cx, cy in o.curve_points)
             ctype = o.curve_type or "L"
-            lines.append(f"{o.x},{o.y},{o.time},{o.type},{o.hit_sound},"
-                         f"{ctype}|{pts},{o.slides},{o.length},0:0|0:0,0:0:0:0:")
+            lines.append(
+                f"{o.x},{o.y},{o.time},{o.type},{o.hit_sound},"
+                f"{ctype}|{pts},{o.slides},{o.length},0:0|0:0,0:0:0:0:"
+            )
         else:
             lines.append(f"{o.x},{o.y},{o.time},{o.type},{o.hit_sound},0:0:0:0:")
     out_path.write_text("\n".join(lines), encoding="utf-8")

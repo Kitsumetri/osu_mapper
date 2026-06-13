@@ -1,16 +1,16 @@
 """Model/diffusion tests. Tiny + CPU-only so they don't touch the GPU."""
+
 import torch
 
-from src.model.unet import UNet1d, timestep_embedding
 from src.model.diffusion import GaussianDiffusion
+from src.model.unet import UNet1d, timestep_embedding
 
 DEV = "cpu"
 C_SIG, C_COND, T, B = 6, 64, 64, 2
 
 
 def _model():
-    return UNet1d(sig_channels=C_SIG, cond_channels=C_COND, base=16,
-                  mults=(1, 2), t_dim=32)
+    return UNet1d(sig_channels=C_SIG, cond_channels=C_COND, base=16, mults=(1, 2), t_dim=32)
 
 
 def test_timestep_embedding_shape():

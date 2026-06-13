@@ -3,16 +3,15 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import colorlog
 
 ROOT_DIR: Path = Path(os.path.dirname(os.path.abspath(__file__))).parent.parent
 
 
-def setup_logger(level: Optional[int] = logging.NOTSET,
-                 stdout_log: Optional[bool] = True,
-                 file_log: Optional[bool] = True) -> None:
+def setup_logger(
+    level: int | None = logging.NOTSET, stdout_log: bool | None = True, file_log: bool | None = True
+) -> None:
     if not (stdout_log or file_log):
         exit(">>> stdout and file logs are False")
 
@@ -29,14 +28,14 @@ def setup_logger(level: Optional[int] = logging.NOTSET,
 
     if stdout_log:
         color_formatter = colorlog.ColoredFormatter(
-            '%(log_color)s>>> %(module)s:%(lineno)d - %(levelname)s - %(message)s',
+            "%(log_color)s>>> %(module)s:%(lineno)d - %(levelname)s - %(message)s",
             log_colors={
-                'DEBUG': 'cyan',
-                'INFO': 'green',
-                'WARNING': 'yellow',
-                'ERROR': 'red',
-                'CRITICAL': 'bold_red',
-            }
+                "DEBUG": "cyan",
+                "INFO": "green",
+                "WARNING": "yellow",
+                "ERROR": "red",
+                "CRITICAL": "bold_red",
+            },
         )
         stream_handler = logging.StreamHandler(stream=sys.stdout)
         stream_handler.setFormatter(color_formatter)
@@ -44,8 +43,8 @@ def setup_logger(level: Optional[int] = logging.NOTSET,
 
     logging.basicConfig(
         level=level,
-        format='>>> %(module)s:%(lineno)d - %(levelname)s - %(message)s',
-        handlers=handlers
+        format=">>> %(module)s:%(lineno)d - %(levelname)s - %(message)s",
+        handlers=handlers,
     )
 
     if file_log:

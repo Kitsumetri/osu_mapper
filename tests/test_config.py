@@ -1,4 +1,4 @@
-from src.config import AUDIO, SIGNAL_CHANNELS, N_SIGNAL_CHANNELS
+from src.config import AUDIO, N_SIGNAL_CHANNELS, SIGNAL_CHANNELS
 
 
 def test_frame_time_roundtrip():
@@ -13,5 +13,5 @@ def test_frame_rate_consistency():
 
 
 def test_channel_count_matches():
-    assert N_SIGNAL_CHANNELS == len(SIGNAL_CHANNELS)
+    assert len(SIGNAL_CHANNELS) == N_SIGNAL_CHANNELS
     assert SIGNAL_CHANNELS[0] == "onset"

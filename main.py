@@ -7,13 +7,15 @@ one entrypoint. Each stage also has a module entrypoint (``python -m src.*``).
   python main.py train      --data data/processed --epochs 240 --batch 8
   python main.py generate   --audio song.mp3 --ckpt checkpoints/model_last.pt --out out.osu
 """
+
 import argparse
 import sys
 
 
 def main():
-    ap = argparse.ArgumentParser(prog="osu_mapper", description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        prog="osu_mapper", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("preprocess", add_help=False)
     sub.add_parser("train", add_help=False)
