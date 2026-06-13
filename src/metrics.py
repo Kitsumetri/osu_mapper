@@ -118,19 +118,12 @@ def compute_metrics_for_osu(path: str | Path) -> dict:
     return compute_metrics(parse_beatmap(path))
 
 
-# density (objects/sec) -> bucket name; must match corpus_stats.DENSITY_BINS
-_DENSITY_BINS = [(0, 2, "Easy"), (2, 3, "Normal"), (3, 4.5, "Hard"),
-                 (4.5, 6, "Insane"), (6, 99, "Extra")]
-
-
-def score_against_reference(m: dict, ref_stats: dict) -> tuple[str, list]:
-    """Compare a map's metrics to the reference bucket of matching density.
+def score_against_reference(m: dict, ref_stats: dict, bucket: str) -> tuple[str, list]:
+    """Compare a map's metrics to a named reference bucket (e.g. an SR band).
 
     Returns (bucket_name, rows) where each row is
     (metric, value, ref_mean, ref_std, z_score, in_p10_p90).
     """
-    density = m.get("density_per_s", 0.0)
-    bucket = next((nm for lo, hi, nm in _DENSITY_BINS if lo <= density < hi), "Extra")
     ref = ref_stats.get("buckets", {}).get(bucket, {})
     rows = []
     for k, v in m.items():
@@ -164,9 +157,13 @@ def main():
         for k in m:
             print(f"{k:24} {str(m[k]):>12} {str(r.get(k, '')):>12}")
     elif args.ref_stats:
+        from .difficulty import sr_bucket, star_rating
         ref_stats = json.loads(Path(args.ref_stats).read_text(encoding="utf-8"))
-        bucket, rows = score_against_reference(m, ref_stats)
-        print(f"{Path(args.osu).name}  (density bucket: {bucket})\n")
+        sr = star_rating(args.osu)
+        bucket = sr_bucket(sr) if sr is not None else "Hard"
+        sr_str = f"{sr:.2f}*" if sr is not None else "n/a"
+        bucket, rows = score_against_reference(m, ref_stats, bucket)
+        print(f"{Path(args.osu).name}  (star rating {sr_str} -> {bucket} bucket)\n")
         print(f"{'metric':24}{'value':>10}{'real_mean':>11}{'real_std':>10}{'z':>7}  range")
         for k, v, mu, sd, z, ok in rows:
             flag = "ok" if ok else "OUT"

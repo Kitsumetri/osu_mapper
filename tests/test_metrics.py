@@ -48,8 +48,8 @@ def test_score_against_reference():
         "stream_ratio": {"mean": 0.15, "std": 0.1, "p10": 0.0, "p90": 0.3},
         "jump_ratio": {"mean": 0.25, "std": 0.1, "p10": 0.1, "p90": 0.4},
     }}}
-    bucket, rows = score_against_reference(m, ref)
-    assert bucket == "Hard"                       # density 3.5 -> Hard bin
+    bucket, rows = score_against_reference(m, ref, "Hard")
+    assert bucket == "Hard"
     by_key = {r[0]: r for r in rows}
     # stream_ratio 0.5 is way above the Hard mean 0.15 -> high z, out of p10-p90
     assert by_key["stream_ratio"][4] > 3 and by_key["stream_ratio"][5] is False

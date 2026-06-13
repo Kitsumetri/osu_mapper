@@ -12,6 +12,7 @@ dependencies = [
     "h5py>=3.16",
     "tqdm>=4.66",
     "pyyaml>=6.0",
+    "rosu-pp-py>=1.0",
 ]
 
 [project.optional-dependencies]
