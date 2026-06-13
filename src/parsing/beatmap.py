@@ -365,7 +365,7 @@ def write_osu(
     ]
     for tp in tps:
         uninh = 1 if tp.uninherited else 0
-        lines.append(f"{int(tp.time)},{tp.beat_length},{tp.meter},1,0,50,{uninh},0")
+        lines.append(f"{int(tp.time)},{tp.beat_length},{tp.meter},1,0,50,{uninh},{tp.effects}")
     lines += ["", "[HitObjects]"]
     for o in hit_objects:
         if o.is_spinner:

@@ -78,6 +78,31 @@ def test_slider_does_not_overlap_next_onset():
         assert a.end_time <= b.time
 
 
+def test_kiai_and_hitsound_roundtrip():
+    """v3 channels: kiai span and clap hitsound survive encode->decode."""
+    import pathlib
+
+    from src.data.signal import decode_kiai
+    from src.parsing.beatmap import TYPE_CIRCLE, Beatmap, HitObject, TimingPoint
+    bm = Beatmap(path=pathlib.Path("x.osu"),
+                 timing_points=[TimingPoint(0, 400.0, 4, True, effects=0),
+                                TimingPoint(2000, 400.0, 4, True, effects=1),   # kiai on
+                                TimingPoint(6000, 400.0, 4, True, effects=0)])  # kiai off
+    bm.hit_objects = [HitObject(x=100, y=100, time=t, type=TYPE_CIRCLE,
+                                hit_sound=(8 if t % 800 == 0 else 0), end_time=t)
+                      for t in range(0, 8000, 200)]
+    n = int(AUDIO.time_to_frame(8000)) + 10
+    sig = encode_beatmap(bm, n)
+    assert sig.shape[0] == N_SIGNAL_CHANNELS == 10
+    spans = decode_kiai(sig, min_ms=1000.0)
+    assert len(spans) == 1
+    assert abs(spans[0][0] - 2000) < 60 and abs(spans[0][1] - 6000) < 60
+    dec = decode_signal(sig)
+    orig_clap = sum(1 for o in bm.hit_objects if o.hit_sound & 8)
+    dec_clap = sum(1 for o in dec if o.hit_sound & 8)
+    assert abs(orig_clap - dec_clap) <= 1
+
+
 def test_curved_slider_becomes_bezier():
     """A slider whose cursor path curves should decode to a multi-point Bezier."""
     n = 60

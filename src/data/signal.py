@@ -66,6 +66,10 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
     newcombo = np.zeros(n_frames, dtype=np.float32)
     slider = -np.ones(n_frames, dtype=np.float32)
     spinner = -np.ones(n_frames, dtype=np.float32)
+    kiai = -np.ones(n_frames, dtype=np.float32)
+    whistle = np.zeros(n_frames, dtype=np.float32)
+    finish = np.zeros(n_frames, dtype=np.float32)
+    clap = np.zeros(n_frames, dtype=np.float32)
 
     # cursor key-frames (time_frame, x, y) for interpolation
     keys_t: list[float] = []
@@ -79,6 +83,13 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
         _gaussian_bump(onset, f_start)
         if obj.is_new_combo:
             _gaussian_bump(newcombo, f_start)
+        # hitsound accent bumps (whistle=2, finish=4, clap=8)
+        if obj.hit_sound & 2:
+            _gaussian_bump(whistle, f_start)
+        if obj.hit_sound & 4:
+            _gaussian_bump(finish, f_start)
+        if obj.hit_sound & 8:
+            _gaussian_bump(clap, f_start)
 
         keys_t.append(f_start)
         keys_x.append(_norm_x(obj.x))
@@ -118,12 +129,24 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
         cur_x = np.zeros(n_frames)
         cur_y = np.zeros(n_frames)
 
+    # kiai box channel from the map's kiai spans
+    for start_ms, end_ms in bm.kiai_spans():
+        a = int(round(cfg.time_to_frame(start_ms)))
+        b = int(round(cfg.time_to_frame(end_ms)))
+        a, b = max(0, a), min(n_frames - 1, b)
+        if b >= a:
+            kiai[a:b + 1] = 1.0
+
     sig[0] = onset * 2 - 1
     sig[1] = slider
     sig[2] = spinner
     sig[3] = newcombo * 2 - 1
     sig[4] = cur_x
     sig[5] = cur_y
+    sig[6] = kiai
+    sig[7] = whistle * 2 - 1
+    sig[8] = finish * 2 - 1
+    sig[9] = clap * 2 - 1
     return sig
 
 
@@ -210,7 +233,17 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
     newcombo = sig[3]
     cur_x = sig[4]
     cur_y = sig[5]
+    has_accents = sig.shape[0] >= 10
+    whistle = sig[7] if has_accents else None
+    finish = sig[8] if has_accents else None
+    clap = sig[9] if has_accents else None
     n = sig.shape[1]
+
+    def _hit_sound(p: int) -> int:
+        if not has_accents:
+            return 0
+        return ((2 if whistle[p] > 0 else 0) | (4 if finish[p] > 0 else 0)
+                | (8 if clap[p] > 0 else 0))
 
     objects: list[HitObject] = []
 
@@ -260,18 +293,20 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
         while j < n and slider[j] > 0.0:
             j += 1
         end_frame = max(p + 1, min(j - 1, next_onset - 1))
+        hs = _hit_sound(p)
         if win.size and win.max() > 0.0 and (end_frame - p) >= min_slider_frames:
             # follow the cursor path during the hold -> a real curved slider
             ctype, pts, length = _slider_path((x, y), cur_x, cur_y, p, end_frame)
             typ = TYPE_SLIDER | (TYPE_NEW_COMBO if is_nc else 0)
-            obj = HitObject(x=x, y=y, time=time, type=typ,
+            obj = HitObject(x=x, y=y, time=time, type=typ, hit_sound=hs,
                             curve_type=ctype, curve_points=pts,
                             slides=1, length=length,
                             end_time=int(round(cfg.frame_to_time(end_frame))))
             objects.append(obj)
         else:
             typ = TYPE_CIRCLE | (TYPE_NEW_COMBO if is_nc else 0)
-            objects.append(HitObject(x=x, y=y, time=time, type=typ, end_time=time))
+            objects.append(HitObject(x=x, y=y, time=time, type=typ, hit_sound=hs,
+                                     end_time=time))
 
     # add spinners as objects
     for a, b in spinner_spans:
@@ -281,3 +316,46 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
 
     objects.sort(key=lambda o: o.time)
     return objects
+
+
+def decode_kiai(sig: np.ndarray, cfg: AudioConfig = AUDIO, threshold: float = 0.0,
+                min_ms: float = 1500.0, merge_ms: float = 1000.0,
+                max_spans: int = 3) -> list[tuple[int, int]]:
+    """Decode the kiai channel into 1-3 clean (start_ms, end_ms) spans.
+
+    Kiai is structured (a few long blocks), so we threshold the channel, drop
+    short runs, merge near runs, and keep the strongest ``max_spans``.
+    """
+    if sig.shape[0] <= 6:
+        return []
+    kiai = sig[6]
+    n = len(kiai)
+    mask = kiai > threshold
+    runs = []
+    i = 0
+    while i < n:
+        if mask[i]:
+            j = i
+            while j < n and mask[j]:
+                j += 1
+            runs.append([i, j - 1])
+            i = j
+        else:
+            i += 1
+    if not runs:
+        return []
+    # merge runs separated by a small gap
+    merge_frames = cfg.time_to_frame(merge_ms)
+    merged = [runs[0]]
+    for a, b in runs[1:]:
+        if a - merged[-1][1] <= merge_frames:
+            merged[-1][1] = b
+        else:
+            merged.append([a, b])
+    # keep runs of at least min_ms, then the strongest max_spans by mean activation
+    min_frames = cfg.time_to_frame(min_ms)
+    kept = [(a, b) for a, b in merged if (b - a) >= min_frames]
+    kept.sort(key=lambda ab: float(kiai[ab[0]:ab[1] + 1].mean()), reverse=True)
+    kept = sorted(kept[:max_spans])
+    return [(int(round(cfg.frame_to_time(a))), int(round(cfg.frame_to_time(b))))
+            for a, b in kept]
