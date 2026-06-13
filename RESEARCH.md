@@ -18,12 +18,13 @@ What of the plan below is already in the codebase vs still proposed:
 | Store kiai / timing / difficulty / creator metadata — §7.1 | **done** (manifest) |
 | Difficulty defaults (AR8/OD7/HP5/CS4) — §6 | **done** (`generate.py`) |
 | Rhythm snapping (bounded 1/4-grid beat-snap) — §3.A / §4 | **done v1** (`postprocess.py`; on-grid 0.70→0.82) |
+| **Difficulty conditioning** (SR context vector + classifier-free guidance) — §3.C / §9.1 | **done (code, v3)**; needs trained v3 model |
+| **Kiai signal channel** (ch 6) + decode to 1–3 spans — §7.2 / §9.2 | **done (code, v3)** |
+| **Hitsound accent channels** (ch 7–9, whistle/finish/clap) — §7.4 / §9.3 | **done (code, v3)** |
+| Star-rating bucketing of the corpus (rosu-pp) — §8 | **done** (`difficulty.py`, 31k maps) |
 | Per-section / triplet snapping, flow/DS coupling — §3.A | *next* |
-| DS / flow-aware position coupling — §3.A | proposed |
-| Difficulty / style / mapper conditioning — §3.C / §5 | proposed |
-| Kiai signal channel — §7.2 | proposed |
-| Multi-section timing on output, downbeat tracking — §6 / §7.3 | proposed |
-| Hitsound accent channel — §7.4 | proposed |
+| Style / mapper conditioning — §5 | proposed |
+| Multi-section BPM timing on output, downbeat tracking — §6 / §7.3 | proposed |
 
 ## 1. osu!standard pattern vocabulary
 

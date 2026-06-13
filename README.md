@@ -23,7 +23,7 @@ audio.mp3 ──► log-mel (64×T) ──┐
 ### Signal representation (`src/data/signal.py`)
 
 At ~86 frames/sec (sr 22050, hop 256 → 11.6 ms/frame) each beatmap becomes a
-`(6, T)` array in `[-1, 1]`:
+`(10, T)` array in `[-1, 1]` (v3):
 
 | ch | name         | encoding |
 |----|--------------|----------|
@@ -33,6 +33,12 @@ At ~86 frames/sec (sr 22050, hop 256 → 11.6 ms/frame) each beatmap becomes a
 | 3  | new_combo    | Gaussian bump at new-combo objects |
 | 4  | cursor_x     | object x normalised to [-1,1], interpolated |
 | 5  | cursor_y     | object y normalised to [-1,1], interpolated |
+| 6  | kiai_hold    | +1 during kiai (chorus) sections, else -1 |
+| 7–9 | whistle/finish/clap | Gaussian bump at objects with that hitsound |
+
+Difficulty is supplied as an **input context vector** `[SR, AR, OD, HP, CS,
+density]` (conditioning, not a channel) — see [`TECH_REPORT.md`](TECH_REPORT.md) §
+conditioning.
 
 Encode/decode is near-lossless on real maps (100% onset timing recall, exact
 circle/slider/spinner counts on round-trip).
@@ -68,8 +74,10 @@ python main.py preprocess --songs "C:/osu!/Songs" --out data/processed/std-v1 --
 python main.py train --data data/processed/std-v1 --tag std-v1-base160 \
     --epochs 120 --batch 12 --crop 3072 --base 160
 
-# 3. generate a .osu from any audio file (DDIM, ~100 steps, uses EMA weights)
-python main.py generate --audio song.mp3 --ckpt runs/<id>/ckpt/best.pt --out generated.osu
+# 3. generate a .osu at a target star rating (DDIM + classifier-free guidance,
+#    EMA weights, kiai + hitsounds decoded, beat-snapped)
+python main.py generate --audio song.mp3 --ckpt runs/<id>/ckpt/best.pt \
+    --out generated.osu --sr 4.5 --guidance 2.0
 ```
 
 Each stage is also runnable directly, e.g. `python -m src.train ...`. Training
