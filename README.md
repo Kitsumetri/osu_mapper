@@ -8,9 +8,11 @@ from raw audio, trained on a local osu! Songs library.
 Inspired by [osu-dreamer](https://github.com/jaswon/osu-dreamer): instead of
 predicting a discrete token list, a beatmap is represented as a **frame-aligned
 multi-channel signal** at the audio spectrogram's frame rate, and a **1D
-conditional DDPM U-Net** denoises that signal conditioned on the mel
-spectrogram. The generated signal is decoded back into discrete hit objects and
-written to a valid `.osu` file.
+conditional DDPM U-Net** (with self-attention at the coarse levels for
+long-range structure) denoises that signal conditioned on the mel spectrogram.
+The generated signal is decoded back into discrete hit objects — including
+curved Bezier sliders read from the cursor path — and written to a valid `.osu`
+file.
 
 ```
 audio.mp3 ──► log-mel (64×T) ──┐
@@ -60,7 +62,7 @@ python main.py preprocess --songs "C:/osu!/Songs" --out data/processed/std-v1 --
 
 # 2. train the diffusion model (logs + checkpoints under runs/<id>/)
 python main.py train --data data/processed/std-v1 --tag std-v1-base160 \
-    --epochs 200 --batch 12 --crop 3072 --base 160
+    --epochs 120 --batch 12 --crop 3072 --base 160
 
 # 3. generate a .osu from any audio file (DDIM, ~100 steps, uses EMA weights)
 python main.py generate --audio song.mp3 --ckpt runs/<id>/ckpt/best.pt --out generated.osu
@@ -80,25 +82,28 @@ U-Net. See `STORAGE.md` for the data/runs/artifacts layout.
 ```
 src/
   config.py              audio/signal config + frame<->time helpers
-  parsing/beatmap.py     robust .osu parser + writer (bitflags, sliders, spinners)
+  metrics.py             pattern/quality metrics (density, stream/jump, on-grid, ...)
+  parsing/beatmap.py     robust .osu parser + writer (bitflags, sliders, spinners, kiai)
   data/
     audio.py             log-mel spectrogram extraction
-    signal.py            beatmap <-> signal encode/decode (+ peak-pick decoder)
-    preprocess.py        library crawler -> .npz shards
-    dataset.py           random-crop torch Dataset
+    signal.py            beatmap <-> signal encode/decode (+ Bezier-slider decoder)
+    timing.py            BPM + beat-offset estimation (librosa)
+    preprocess.py        library crawler -> deduped mels + items + manifest.json
+    dataset.py           manifest-indexed, mel-deduped torch Dataset
   model/
-    unet.py              1D conditional U-Net (FiLM time embedding)
+    unet.py              1D conditional U-Net (FiLM time emb + QK-norm attention)
     diffusion.py         Gaussian DDPM schedule, DDPM + DDIM sampling
-  train.py               training loop (AMP, checkpointing)
-  generate.py            audio -> .osu inference
+  train.py               training loop (bf16, EMA, cosine LR, runs/ logging)
+  generate.py            audio -> .osu inference (DDIM, EMA, estimated timing)
+  package_map.py         build a playable osu! Songs folder from a generated map
 tests/                   hermetic pytest suite (no dataset/GPU needed)
-main.py                  CLI dispatcher
+main.py                  CLI dispatcher (preprocess | train | generate)
 ```
 
 ## Development
 
 ```bash
-pytest                 # 33 hermetic tests, ~5 s
+pytest                 # 45 hermetic tests, ~6 s
 ruff check .           # lint
 ruff format .          # format
 ```
@@ -114,34 +119,53 @@ live in `pyproject.toml` (`E,F,I,UP,B,SIM`, 100-col).
   `diffusion.py` (correct over a step subsequence).
 - **Frame grid, not milliseconds.** Everything is aligned on the audio frame
   grid to avoid timing drift between audio and hit objects.
+- **Slider duration comes from length, not your end-time.** osu! derives a
+  slider's duration from `pixel_length / slider_velocity`, so `write_osu` clamps
+  each slider's length to fit the gap before the next object (otherwise ~19% of
+  generated objects overlapped in time).
+- **bf16 + attention can diverge.** Plain dot-product attention blew up the
+  scaled run at epoch 21; fixed with **QK-normalisation + a learnable temperature
+  + zero-init output projection**.
 - The original prototype's `uninherited = bool(str)` bug made every timing point
   "uninherited"; fixed and covered by a regression test.
+- An unanchored `data/` gitignore rule once hid the whole `src/data/` package —
+  artifact ignores are now anchored to the repo root (`/data/`, `/runs/`, ...).
 
 ## Roadmap / TODO
 
-- [x] Robust `.osu` parser + writer (type bitflags, slider timing, spinners)
+Done:
+
+- [x] Robust `.osu` parser + writer (type bitflags, slider timing, spinners, kiai)
 - [x] Beatmap ↔ signal encode/decode (near-lossless round-trip)
-- [x] Audio feature pipeline + `.npz` shard preprocessing
+- [x] Deduped, manifest-indexed preprocessing (mel-per-audio + per-difficulty
+      signal + metadata for difficulty/style/kiai conditioning)
 - [x] Conditional diffusion U-Net + DDPM/DDIM sampling
-- [x] End-to-end `audio → .osu` generation
-- [x] Hermetic pytest suite
-- [x] **Timing extraction (v1)**: `data/timing.py` estimates BPM + offset with
-      `librosa.beat.beat_track` (osu-tuned prior + octave fold) and `generate.py`
-      writes a real `[TimingPoints]` instead of the 120 BPM placeholder.
-- [ ] **Timing accuracy**: v1 gets the tempo *family* right ~84% of the time but
-      is exact (±2 BPM) only ~28%, with ~50 ms median offset error — not enough
-      for clean rhythm snapping. Options: higher-resolution onset env + a tighter
-      tempo prior, downbeat tracking (madmom `DBNDownBeatTracker`), or learn BPM
-      jointly with the diffusion model. Add a small labelled eval set.
-- [ ] **Scale data**: preprocess the full library (31k+ difficulties); dedupe
-      shared audio across difficulties to cut storage.
-- [ ] **Difficulty/length conditioning**: condition on star rating / CS / AR so
-      generation is controllable.
-- [ ] **Slider shapes**: model curve control points (currently linear 2-point
-      sliders on decode).
-- [ ] **Rhythm snapping**: quantise generated onsets to the estimated beat grid.
-- [ ] **Eval metrics**: onset F1 vs ground truth, density/spacing histograms.
-- [ ] EMA weights + cosine LR schedule for higher-quality samples.
+- [x] End-to-end `audio → .osu` generation + playable-folder packaging
+- [x] Hermetic pytest suite (45 tests) + ruff + uv
+- [x] Timing estimation v1 (`data/timing.py`: BPM + offset via librosa)
+- [x] Curved Bezier sliders (encode slider shape into the cursor signal, decode
+      a multi-point Bezier from the cursor path)
+- [x] Eval metrics (`src/metrics.py`: density, stream/jump, spacing, on-grid)
+- [x] Scaled, stable training: 97M-param attention U-Net, bf16, EMA, cosine LR,
+      `runs/` logging; QK-norm fixes attention divergence
+
+Next (roughly in priority order):
+
+- [ ] **Rhythm snapping**: quantise generated onsets to the estimated beat grid
+      (`metrics` shows ~0.70 on-¼-grid vs ~0.99 for real maps). Mind triplet
+      sections (1/3, 1/6) — ~10%+ of maps.
+- [ ] **Difficulty conditioning**: condition on AR/OD/HP/CS + density so one
+      model targets a chosen difficulty (manifest already stores these).
+- [ ] **Style / mapper conditioning**: condition on `Creator` or a derived style
+      class (farm-aim / stream / tech / alt) — see `RESEARCH.md §5`.
+- [ ] **Kiai channel**: 7th signal channel `kiai_hold` to ramp density in
+      choruses (`RESEARCH.md §7`).
+- [ ] **Variable-BPM / multi-section timing** on output (26% of maps); downbeat
+      tracking for better timing accuracy (`RESEARCH.md §6`).
+- [ ] **Scale data** to the full library (31k+ difficulties).
+- [ ] **Hitsounds** (whistle/finish/clap accent channel) — lowest priority.
+
+See `RESEARCH.md` for the detailed plan behind each item.
 
 ## Prior art / credits
 

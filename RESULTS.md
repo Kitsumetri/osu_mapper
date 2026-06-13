@@ -1,49 +1,63 @@
 # Results
 
-First full training run + end-to-end generation on the local osu! library.
+Status of training runs and generated-map quality. Metrics use `src/metrics.py`.
 
-## Training
+## v1 baseline (complete)
 
-- **Data**: 601 osu!standard difficulties (preprocessed to aligned mel/signal
-  `.npz` shards from the local Songs library).
-- **Model**: 1D conditional U-Net, base 96 (~14M params), DDPM (1000 steps).
-- **Run**: 240 epochs, batch 8, crop 2048 frames (~24 s), AMP, RTX 4070 Ti.
-  ~12 s/epoch (~48 min total).
+First full run — establishes that the pipeline works end-to-end.
+
+- **Data**: 601 osu!standard difficulties.
+- **Model**: 1D conditional U-Net, base 96 (~14M params), no attention, DDPM.
+- **Run**: 240 epochs, batch 8, crop 2048, AMP fp16, RTX 4070 Ti (~48 min).
 - **Loss** (ε-prediction MSE): 0.35 → **0.011**.
 
-## Generation
+Generation (DDIM 100 steps, ~0.5 s) on a held-out song vs the real Expert diff:
 
-Sampling with **DDIM (100 steps, ~0.5 s)** on a held-out song, decoded to hit
-objects, timing estimated from audio:
+| metric | generated (v1) | real Expert |
+|--------|---------------:|------------:|
+| objects | 1726 | 962 |
+| density / s | 6.9 | 4.0 |
+| circle / slider / spinner ratio | .56 / .44 / .00 | .66 / .34 / .00 |
+| bezier-slider ratio | 0.00 | 0.18 |
+| stream ratio | 0.50 | 0.16 |
+| on-¼-grid ratio | 0.70 | 0.997 |
+| est. timing | 198.8 BPM | 192 BPM |
 
-| metric | value |
-|--------|-------|
-| objects | 1726 over 250 s (**6.9 / s**, Insane-level) |
-| circles / sliders / spinners | 961 / 764 / 1 |
-| new-combos | 621 (~1 per 2.8 objects) |
-| cursor coverage | full playfield (0–512 × 0–384) |
-| inter-onset interval | median 82 ms (p10 70, p90 313) |
-| estimated timing | 198.8 BPM @ 139 ms (true song: 192 BPM) |
-| onsets on ¼-beat grid | 34% |
+Valid, playable `.osu` that re-parses cleanly. Reads the rhythm, but feels loose
+(low on-grid), is too dense/stream-heavy, and had only straight sliders.
 
-The output is a **valid, playable-format `.osu`** that re-parses cleanly.
+## v2 scaled (in progress)
+
+Rebuilt on the bug-fixes + bigger model + more data + new features:
+
+- **Data**: 3004 difficulties / 888 audios (deduped, manifest-indexed).
+- **Model**: base 160, **97.4M params**, self-attention (QK-norm) at coarse
+  levels, bf16, EMA, cosine LR + warmup.
+- **Run**: 120 epochs, batch 12, crop 3072, ~32 s/epoch.
+- **Features since v1**: DDIM (correct sampler), slider time-overlap fix, curved
+  Bezier sliders, realistic difficulty defaults, estimated timing.
+
+> Numbers to be filled in when the run completes (loss curve in
+> `runs/<id>/metrics.csv`, generated-vs-real metrics via `src/metrics.py`).
 
 ## Honest assessment
 
-What works: the pipeline is fully functional audio → `.osu`; the model learned
-realistic object **density** and a sensible **circle/slider/spinner mix** and
-uses the whole playfield.
+Works: fully functional audio → `.osu`; realistic density and circle/slider/
+spinner mix; full-playfield cursor use; valid output; now with curved sliders.
 
-What needs work (see README roadmap):
-- **Rhythm**: onsets don't snap to a beat grid (34%), so the map feels loose —
-  needs rhythm-aware training and/or post-hoc quantisation.
-- **Timing accuracy**: the BPM estimate (~28% exact) skews the grid further.
-- **Slider shapes**: decoded as linear 2-point sliders only.
-- **Scale**: trained on 601 of 31k+ available difficulties.
+Open gaps (see `README.md` roadmap + `RESEARCH.md`):
+
+- **Rhythm**: onsets aren't beat-snapped (~0.70 on-grid vs ~0.99 real).
+- **Timing accuracy**: BPM estimate exact only ~28%, which also skews the grid.
+- **Controllability**: no difficulty/style conditioning yet (one fixed tier).
+- **Scale**: 3004 of 31k+ available difficulties.
 
 ## Reproduce
 
 ```bash
-python main.py train    --data data/processed --epochs 240 --batch 8 --crop 2048 --base 96
-python main.py generate --audio song.mp3 --ckpt checkpoints/model_e240.pt --out out.osu --steps 100
+python main.py preprocess --songs "C:/osu!/Songs" --out data/processed/std-v1 --limit 3000
+python main.py train    --data data/processed/std-v1 --tag std-v1-base160 \
+    --epochs 120 --batch 12 --crop 3072 --base 160
+python main.py generate --audio song.mp3 --ckpt runs/<id>/ckpt/best.pt --out out.osu --steps 100
+python -m src.metrics   --osu out.osu --ref some_real_map.osu     # compare
 ```
