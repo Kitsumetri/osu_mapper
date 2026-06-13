@@ -41,6 +41,22 @@ def test_jump_detection():
     assert m["mean_turn_angle_deg"] > 150
 
 
+def test_score_against_reference():
+    from src.metrics import score_against_reference
+    m = {"density_per_s": 3.5, "stream_ratio": 0.5, "jump_ratio": 0.2}
+    ref = {"buckets": {"Hard": {
+        "stream_ratio": {"mean": 0.15, "std": 0.1, "p10": 0.0, "p90": 0.3},
+        "jump_ratio": {"mean": 0.25, "std": 0.1, "p10": 0.1, "p90": 0.4},
+    }}}
+    bucket, rows = score_against_reference(m, ref)
+    assert bucket == "Hard"                       # density 3.5 -> Hard bin
+    by_key = {r[0]: r for r in rows}
+    # stream_ratio 0.5 is way above the Hard mean 0.15 -> high z, out of p10-p90
+    assert by_key["stream_ratio"][4] > 3 and by_key["stream_ratio"][5] is False
+    # jump_ratio 0.2 sits inside p10-p90
+    assert by_key["jump_ratio"][5] is True
+
+
 def test_straight_flow_low_turn():
     from src.parsing.beatmap import TimingPoint
     bm = Beatmap(path=Path("x.osu"), timing_points=[TimingPoint(0, 400.0, 4, True)])

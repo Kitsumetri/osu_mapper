@@ -10,6 +10,7 @@ are descriptive statistics tied to the pattern vocabulary in RESEARCH.md.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 from pathlib import Path
 
@@ -117,6 +118,32 @@ def compute_metrics_for_osu(path: str | Path) -> dict:
     return compute_metrics(parse_beatmap(path))
 
 
+# density (objects/sec) -> bucket name; must match corpus_stats.DENSITY_BINS
+_DENSITY_BINS = [(0, 2, "Easy"), (2, 3, "Normal"), (3, 4.5, "Hard"),
+                 (4.5, 6, "Insane"), (6, 99, "Extra")]
+
+
+def score_against_reference(m: dict, ref_stats: dict) -> tuple[str, list]:
+    """Compare a map's metrics to the reference bucket of matching density.
+
+    Returns (bucket_name, rows) where each row is
+    (metric, value, ref_mean, ref_std, z_score, in_p10_p90).
+    """
+    density = m.get("density_per_s", 0.0)
+    bucket = next((nm for lo, hi, nm in _DENSITY_BINS if lo <= density < hi), "Extra")
+    ref = ref_stats.get("buckets", {}).get(bucket, {})
+    rows = []
+    for k, v in m.items():
+        s = ref.get(k)
+        if not s or not isinstance(v, (int, float)):
+            continue
+        std = s["std"] or 1e-9
+        z = (v - s["mean"]) / std
+        in_range = s["p10"] <= v <= s["p90"]
+        rows.append((k, v, s["mean"], s["std"], round(z, 2), in_range))
+    return bucket, rows
+
+
 def _print(title, m):
     print(f"== {title} ==")
     for k, v in m.items():
@@ -127,6 +154,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--osu", required=True)
     ap.add_argument("--ref", default=None, help="optional reference map to compare")
+    ap.add_argument("--ref-stats", default=None,
+                    help="reference_stats.json from corpus_stats, for z-scoring")
     args = ap.parse_args()
     m = compute_metrics_for_osu(args.osu)
     if args.ref:
@@ -134,6 +163,14 @@ def main():
         print(f"{'metric':24} {'generated':>12} {'reference':>12}")
         for k in m:
             print(f"{k:24} {str(m[k]):>12} {str(r.get(k, '')):>12}")
+    elif args.ref_stats:
+        ref_stats = json.loads(Path(args.ref_stats).read_text(encoding="utf-8"))
+        bucket, rows = score_against_reference(m, ref_stats)
+        print(f"{Path(args.osu).name}  (density bucket: {bucket})\n")
+        print(f"{'metric':24}{'value':>10}{'real_mean':>11}{'real_std':>10}{'z':>7}  range")
+        for k, v, mu, sd, z, ok in rows:
+            flag = "ok" if ok else "OUT"
+            print(f"{k:24}{v:>10}{mu:>10}{sd:>9}{z:>7}  {flag}")
     else:
         _print(Path(args.osu).name, m)
 
