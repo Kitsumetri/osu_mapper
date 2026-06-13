@@ -297,6 +297,98 @@ Extra 759. Raw per-bucket mean/std/p10/p90 for every metric is in
 - **`bezier_slider_ratio` ~0.14–0.18** across all buckets — a concrete target
   for the new curved-slider decoder.
 
+## 9. Proposed conditioning & extended outputs (design)
+
+Three asks, one unifying observation: **difficulty is an *input* the model should
+be told; kiai and hitsounds are *outputs* the model should generate.** So (A) adds
+a context vector to the denoiser, while (B) and (C) add channels to the generated
+signal — and a single re-preprocess + retrain delivers all three.
+
+### 9.1 Difficulty conditioning — generate to a target star rating
+
+**Idea.** Tell the denoiser the difficulty of the map it should produce, as a
+small **context vector** `c = [SR, AR, OD, HP, CS, log(density)]`. SR is the exact
+rosu-pp value (Section: `difficulty.py`), computed once in preprocessing and
+stored in the manifest.
+
+**Model.** Embed `c` with an MLP and **add it to the timestep embedding** so every
+residual block is modulated by *(diffusion step + difficulty)* — the same FiLM
+path the timestep already uses:
+
+$$ \mathbf{e} = \mathrm{MLP}_t(\gamma(t)) + \mathrm{MLP}_c(\mathbf{c}). $$
+
+**Make it actually bite — classifier-free guidance (CFG).** During training,
+drop `c` to a learned *null* embedding with probability ~0.15. At inference,
+sample with
+
+$$ \hat\epsilon = \epsilon_\theta(\mathbf{x}_t,\mathbf{m},\varnothing) + w\,\big(\epsilon_\theta(\mathbf{x}_t,\mathbf{m},\mathbf{c}) - \epsilon_\theta(\mathbf{x}_t,\mathbf{m},\varnothing)\big),\quad w\approx 2\text{–}4, $$
+
+which pushes the sample toward the requested difficulty. Without CFG a weak scalar
+condition is often ignored.
+
+**Inference.** User passes a target SR (and optional AR/OD/HP/CS); the output
+`[Difficulty]` is set to match (not the current hardcoded AR8/OD7). Because rosu
+gives a cheap SR read-out, we can **verify**: compute the generated map's SR and,
+if off, nudge `w` or resample — a closed feedback loop. Feasibility is supported
+by §8: every metric varies smoothly/monotonically with SR, so the mapping is
+learnable. "Difficulty names" are just SR bands, so this subsumes them.
+
+### 9.2 Kiai zones (1–3 blocks)
+
+**Idea.** Add a 7th signal channel **`kiai_hold`** (+1 during kiai, else −1),
+generated jointly with the map. It is naturally **music-aware**: kiai ≈ the
+chorus/drop, and the denoiser is already conditioned on the mel, so it can learn
+"energy peak → kiai."
+
+**Decode (sparse → clean blocks).** The raw channel is noisy, but kiai is highly
+structured (1–3 long spans). Post-process: threshold → contiguous runs → enforce a
+minimum length (a few seconds / whole measures) → merge near runs → keep the top-K
+(K≤3) by mean activation → snap edges to downbeats → write the timing-point
+`effects` kiai bit.
+
+**Controllable / alternative.** The user can override or lock kiai spans. A cheap
+alternative is a tiny **mel → kiai segmentation** CNN (binary mask over time)
+whose output both sets kiai *and* feeds back as conditioning so the map ramps
+density inside kiai.
+
+### 9.3 Hitsounds (rhythmic accents)
+
+**Idea.** osu! hitsounds (`whistle=2, finish=4, clap=8`) mark musical accents
+(claps on snares, finishes on cymbals). Add **three impulse channels**
+(`whistle`, `finish`, `clap`) shaped like the onset channel (+1 at objects that
+carry that addition). Generated jointly; **decode** by reading the three channels
+at each onset frame and OR-ing the `hitSound` bitfield. Alignment is free: the
+same mel conditioning that drives onsets also exposes the percussion.
+
+**Lower priority bits.** Sample set (Normal/Soft/Drum) is a per-section choice —
+default it, or pick per region with a small classifier. **No-retrain interim**:
+detect percussive onsets (snare/cymbal bands via the spectrogram) and assign
+clap/finish to the nearest object.
+
+### 9.4 Unified plan
+
+- **Channels 6 → 10**: `onset, slider_hold, spinner_hold, new_combo, cursor_x,
+  cursor_y, kiai_hold, whistle, finish, clap`.
+- **One preprocess** that also stores SR (manifest) and encodes kiai + accent
+  channels; **one retrain** with the difficulty context vector + CFG.
+- **Decode** gains post-processing for the new sparse channels (kiai blocks,
+  accent bits) — no model change beyond the extra channels.
+- **Risks / notes**: sparse channels need careful thresholding (false
+  positives); more channels slightly enlarge the model; tag the dataset +
+  representation with a version (`std-v2-10ch`) so older checkpoints stay
+  interpretable; SR conditioning is a *correlation* the model learns, not a
+  guarantee — hence the rosu verification loop.
+
+### 9.5 Suggested order
+
+1. **Re-preprocess** with the curve-aware encoder **+ SR in manifest + kiai +
+   accent channels** (one pass).
+2. **Retrain** with difficulty conditioning (`c`) + CFG. This alone gives:
+   curved sliders (from §3.B), difficulty control (9.1), kiai (9.2), hitsounds
+   (9.3).
+3. Add decode post-processing for kiai/accents; set output difficulty params
+   from the request; wire the rosu SR verification loop.
+
 ## References
 - [Mapping techniques (Basics)](https://osu.ppy.sh/wiki/en/Mapping_Techniques/Basics)
 - [Technical maps](https://osu.ppy.sh/wiki/en/Beatmap/Technical_maps)
