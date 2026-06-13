@@ -26,6 +26,28 @@ Generation (DDIM 100 steps, ~0.5 s) on a held-out song vs the real Expert diff:
 Valid, playable `.osu` that re-parses cleanly. Reads the rhythm, but feels loose
 (low on-grid), is too dense/stream-heavy, and had only straight sliders.
 
+## v3 draft (complete) — conditioning works
+
+Proof-of-concept for the v3 representation (10 channels: + kiai + whistle/finish/
+clap) and **difficulty conditioning** (SR context vector + classifier-free
+guidance).
+
+- **Data**: 1504 difficulties (10-channel signals + star rating in manifest).
+- **Model**: base 128 + attention + conditioning (ctx_dim 6, CFG drop 0.15).
+- **Run**: 60 epochs, ~8 s/epoch (~8 min); loss → **0.0097**, no divergence.
+
+Same song generated at two target star ratings (guidance 2.5):
+
+| target SR | density/s | stream | jump | objects | real trend |
+|-----------|----------:|-------:|-----:|--------:|------------|
+| **3.0**   | 3.34 | 0.13 | 0.04 | 834  | Hard ≈ 2.7 / 0.08 |
+| **6.0**   | 6.40 | 0.45 | 0.10 | 1600 | Expert ≈ 4.4 / 0.21 |
+
+**Conditioning clearly steers difficulty** in the right direction (density and
+streams scale with SR, matching the reference trends — absolute density runs a
+bit high, expected to tighten with the full dataset). Kiai (3 spans) and
+hitsounds both generate. This validated launching the heavy v3 run.
+
 ## v2 scaled (complete)
 
 Rebuilt on the bug-fixes + bigger model + more data + new features:
