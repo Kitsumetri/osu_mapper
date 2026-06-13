@@ -94,9 +94,60 @@ Implement **B-interim** (decode slider body from the existing cursor signal) and
 play-test complaints. Then move to flow/DS-conditioned training (A) and
 control-point slider channels (B) for the real fix.
 
+## 5. Player/community vocabulary & mapper signature styles
+
+The wiki uses formal terms; players name patterns differently, and *who* mapped
+something is itself a strong style signal. For a generator that "feels" like
+real osu!, these named styles are effectively the **labels we'd condition on**.
+
+### Named patterns (community usage)
+- **1-2 (one-two) jumps** — alternating back-and-forth two-object jumps; the
+  archetypal aim-farm pattern. So tied to **Sotarks** that "Sotarks syndrome"
+  describes hearing a song only for its 1-2 potential.
+  ([farm map](https://osu.miraheze.org/wiki/Farm_map))
+- **Geometry jumps** — **squares, triangles, pentagons, stars** (polygon vertex
+  order; "star order" cross-traverses the polygon). Note: many players *read*
+  these as a sequence of single jumps, not as the shape.
+  ([star patterns](https://osu.ppy.sh/community/forums/topics/292689))
+- **Streams & friends** — **burst** (2–4 notes), **triple/quad**, full
+  **stream** (¼ runs), **cutstream** (stream broken by spacing/NC), **kickstream**,
+  **zig-zag / variable-spaced** streams.
+- **Stacks / double stacks / overlaps**, **anti-jumps / anti-flow** (spacing
+  that fights the natural motion for emphasis), **blankets** (a circle hugged by
+  a slider curve), **divebomb / tornado / flower / honeycomb** combos.
+- **Burst vs alt maps** — *alt*: flow-aim, slow spaced streams (~120–160 BPM)
+  with followpoints, fast small jumps & sliders. *burst*: faster taps, less
+  spaced (~160–230 BPM). ([forum](https://osu.ppy.sh/community/forums/topics/1763755))
+
+### Mapper signatures (style = conditioning label)
+- **Sotarks** — aim/jump-centric farm, 1-2 patterns, spaced bursts, blankets.
+- **Tech mappers (e.g. ProfessionalBox, Yugu)** — dense **cutstreams**,
+  abnormal stream shapes, rapid **SV** (slider-velocity) changes, irregular
+  slider geometry; canonical tech maps cited by the wiki include *ProfessionalBox
+  [Primordial Nucleosynthesis]* and *Yugu — MARENOL [Extra]*.
+  ([technical maps](https://osu.ppy.sh/wiki/en/Beatmap/Technical_maps))
+
+### How this informs training
+- **Mapper-/style-conditioning**: the `.osu` `Creator` field gives a free label.
+  Condition the diffusion on a **mapper embedding** (or a coarse style class:
+  *farm/aim, stream, tech, alt*) so generation can target "Sotarks-like 1-2s" or
+  "ProfessionalBox-like tech". Cluster maps by pattern statistics (spacing
+  variance, stream %, SV variance) to derive style classes where Creator is too
+  sparse.
+- **Pattern-aware metrics** to *measure* style: count 1-2s (alternating angle
+  ~180°), detect polygon jumps (constant spacing + turning angle), stream ratio
+  (¼-spaced runs), SV-change rate. These double as eval metrics and as targets
+  for a pattern-conditioning token.
+- **Curriculum**: start by conditioning on the easy axes (density, star rating,
+  burst-vs-alt), then add mapper embeddings once data is scaled — signature
+  styles need many examples per mapper to learn.
+
 ## References
 - [Mapping techniques (Basics)](https://osu.ppy.sh/wiki/en/Mapping_Techniques/Basics)
 - [Technical maps](https://osu.ppy.sh/wiki/en/Beatmap/Technical_maps)
 - [Making good sliders](https://osu.ppy.sh/wiki/en/Beatmapping/Mapping_techniques/Making_good_sliders)
 - [.osu file format](https://osu.ppy.sh/wiki/en/Client/File_formats/osu_(file_format))
 - [slider library — what is a beatmap](https://llllllllll.github.io/slider/what-is-a-beatmap.html)
+- [Farm map (1-2 jumps, Sotarks)](https://osu.miraheze.org/wiki/Farm_map)
+- [Star patterns (forum)](https://osu.ppy.sh/community/forums/topics/292689)
+- [Burst vs alt maps (forum)](https://osu.ppy.sh/community/forums/topics/1763755)
