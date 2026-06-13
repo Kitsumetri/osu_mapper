@@ -47,6 +47,12 @@ def generate(audio_path, ckpt_path, out_path, steps=200, window=2048, base=64):
     bm.audio_filename = Path(audio_path).name
     bm.title = Path(audio_path).stem
     bm.version = "AI Generated"
+    # difficulty defaults from dataset means (std maps): AR~8, OD~7, HP~4.7, CS~3.8.
+    # The model has no difficulty conditioning yet, so these are fixed for now.
+    bm.approach_rate = 8.0
+    bm.overall_difficulty = 7.0
+    bm.hp = 5.0
+    bm.circle_size = 4.0
 
     # estimate BPM + offset from the audio (best-effort; see data/timing.py)
     tp = estimate_timing_point(y)

@@ -142,6 +142,46 @@ real osu!, these named styles are effectively the **labels we'd condition on**.
   burst-vs-alt), then add mapper embeddings once data is scaled — signature
   styles need many examples per mapper to learn.
 
+## 6. Timing complexity, difficulty params & game modes (measured on the library)
+
+Measured on a random 1500-`.osu` sample of the local library:
+
+- **Game mode**: ~100% osu!std (1 taiko in the sample). Other modes
+  (mania/taiko/catch) have *different* `.osu` semantics — e.g. mania uses `x` as
+  a column index, not a playfield coordinate — so they must never be mixed into
+  std training. `preprocess.py` already filters `mode == 0`; keep it.
+- **Difficulty params (std)**: AR mean 8.05 (p10–p90 5.0–9.6), OD 7.17
+  (4.0–9.2), HP 4.66 (3.0–6.0), CS 3.84 (3.0–4.5). Applied as fixed defaults in
+  `generate.py` for now (model has no difficulty conditioning).
+- **Variable BPM**: **26%** of std maps have >1 distinct BPM. Our single
+  `[TimingPoints]` output and single-BPM estimate **desync on ~¼ of songs**.
+- **Beat divisor**: 1/4 79%, 1/8 7%, 1/6 5%, 1/2 3%, 1/3 2%, 1/16 2%. So
+  **>10% of maps need triplet/sextuplet snapping** — snapping only to 1/4 is
+  wrong for those.
+
+### Implications (short-term vs long-term)
+
+**(1) Variable BPM / sub-beat flow** — *hard, long-term.* The frame-grid signal
+representation already handles variable tempo for *placement* (everything is
+absolute-ms → frame), so the model isn't blocked. What breaks is (a) writing a
+single timing point and (b) rhythm-snapping. Long-term: detect multiple tempo
+sections (downbeat tracker / tempo over time) and emit multiple uninherited
+timing points; snap onsets per-section to the section's grid using the map's
+beat divisor. Interim: keep one estimated BPM and accept desync on ~26% of
+songs, documented.
+
+**(2) Difficulty / per-song multi-difficulty** — *medium, long-term.* One song
+has many difficulties (Normal→Extra) with different AR/OD/HP/CS *and* density.
+The model currently collapses these into one unconditioned output. Plan:
+(a) preprocess each difficulty with its params as **conditioning inputs**, then
+(b) at inference accept a target difficulty (star rating + AR/OD/HP/CS) and
+generate to match. If full conditioning proves too costly, fall back to training
+separate models per difficulty bucket, or hardcode a single target tier (what we
+do now: ~AR8/OD7 Insane-ish). Dataset means above are the sane hardcode.
+
+**(3) Non-std game modes** — *handled.* Filtered out; flagged here so nobody
+later assumes `x,y` are playfield coords for mania/taiko/catch.
+
 ## References
 - [Mapping techniques (Basics)](https://osu.ppy.sh/wiki/en/Mapping_Techniques/Basics)
 - [Technical maps](https://osu.ppy.sh/wiki/en/Beatmap/Technical_maps)
