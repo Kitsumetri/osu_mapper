@@ -252,6 +252,32 @@ def _parse_hit_object(line: str) -> HitObject | None:
     return obj
 
 
+def _clamp_slider_lengths(hit_objects: list[HitObject], tps: list[TimingPoint],
+                          slider_multiplier: float, gap_frac: float = 0.9) -> list[HitObject]:
+    """Shorten any slider whose derived duration would overlap the next object.
+
+    osu! slider duration = length / (SliderMultiplier*100*SV) * beat_length, so
+    we invert that: max_length = max_duration * velocity / beat_length, where
+    max_duration is a fraction of the gap to the next object.
+    """
+    helper = Beatmap(path=Path("."), slider_multiplier=slider_multiplier, timing_points=tps)
+    objs = sorted(hit_objects, key=lambda o: o.time)
+    for i, o in enumerate(objs):
+        if not o.is_slider or o.length <= 0:
+            continue
+        nxt = objs[i + 1].time if i + 1 < len(objs) else o.time + 100_000
+        gap = max(1.0, nxt - o.time)
+        beat = helper._uninherited_at(o.time).beat_length
+        sv = helper._sv_at(o.time)
+        velocity = slider_multiplier * 100.0 * sv
+        if beat <= 0 or velocity <= 0:
+            continue
+        max_length = (gap * gap_frac) / beat * velocity / max(1, o.slides)
+        if o.length > max_length:
+            o.length = max(10.0, max_length)
+    return objs
+
+
 def write_osu(
     bm: Beatmap,
     hit_objects: list[HitObject],
@@ -263,6 +289,12 @@ def write_osu(
     tps = timing_points if timing_points is not None else bm.timing_points
     if not tps:
         tps = [TimingPoint(0, 500.0, 4, True)]
+
+    # osu! derives a slider's *duration* from its pixel length / slider velocity,
+    # so a long length can make a slider end after the next object starts. Clamp
+    # each slider's length to fit the gap before the next object (objects must
+    # not overlap in time). Uses the timing + slider multiplier being written.
+    hit_objects = _clamp_slider_lengths(hit_objects, tps, bm.slider_multiplier)
 
     lines = [
         "osu file format v14",

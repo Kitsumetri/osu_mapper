@@ -64,6 +64,35 @@ def test_decode_threshold_filters_noise():
     assert len(dec) == 0
 
 
+def test_slider_does_not_overlap_next_onset():
+    """A slider whose hold bleeds past the next onset must be clamped."""
+    n = 80
+    sig = np.full((N_SIGNAL_CHANNELS, n), -1.0, dtype=np.float32)
+    sig[4:6] = 0.0
+    for f in (10, 30):
+        sig[0, f] = 1.0
+    sig[1, 10:51] = 1.0  # slider hold overlaps the onset at frame 30
+    dec = decode_signal(sig, onset_threshold=0.3, min_gap_frames=2)
+    dec.sort(key=lambda o: o.time)
+    for a, b in zip(dec, dec[1:]):
+        assert a.end_time <= b.time
+
+
+def test_no_time_overlap_after_write_reparse(sample_osu, tmp_path):
+    """The written .osu must have no time-overlapping objects after osu! derives
+    slider durations from length (the real overlap source)."""
+    from src.parsing.beatmap import TimingPoint, write_osu
+
+    bm = parse_beatmap(sample_osu)
+    sig = encode_beatmap(bm, _n_frames(bm))
+    dec = decode_signal(sig, min_spinner_frames=5)
+    out = tmp_path / "o.osu"
+    write_osu(bm, dec, out, timing_points=[TimingPoint(0, 300.0, 4, True)])
+    objs = sorted(parse_beatmap(out).hit_objects, key=lambda o: o.time)
+    for a, b in zip(objs, objs[1:]):
+        assert a.end_time <= b.time
+
+
 def test_cursor_channels_track_positions(sample_osu):
     bm = parse_beatmap(sample_osu)
     sig = encode_beatmap(bm, _n_frames(bm))
