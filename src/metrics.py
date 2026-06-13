@@ -56,6 +56,31 @@ def compute_metrics(bm: Beatmap) -> dict:
 
     m = len(gaps_ms)
 
+    # turning angle at each interior object: angle between (b-a) and (c-b).
+    # ~0 deg = straight flow, ~180 deg = full reversal (back-and-forth / 1-2).
+    turn_angles, reversals = [], 0
+    for a, b, c in zip(objs, objs[1:], objs[2:]):
+        v1 = (b.x - a.x, b.y - a.y)
+        v2 = (c.x - b.x, c.y - b.y)
+        n1 = math.hypot(*v1)
+        n2 = math.hypot(*v2)
+        if n1 < 1 or n2 < 1:
+            continue
+        cosang = max(-1.0, min(1.0, (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2)))
+        turn = math.degrees(math.acos(cosang))  # 0=straight, 180=reverse
+        turn_angles.append(turn)
+        if turn >= 150.0:
+            reversals += 1
+
+    # slider-velocity changes: inherited timing points with a distinct SV.
+    sv_changes = 0
+    last_sv = 1.0
+    for tp in bm.timing_points:
+        sv = tp.sv if not tp.uninherited else 1.0
+        if abs(sv - last_sv) > 1e-3:
+            sv_changes += 1
+        last_sv = sv
+
     def _mean(x):
         return sum(x) / len(x) if x else 0.0
 
@@ -82,6 +107,9 @@ def compute_metrics(bm: Beatmap) -> dict:
         "stream_ratio": round(streams / m, 3) if m else 0.0,
         "jump_ratio": round(jumps / m, 3) if m else 0.0,
         "on_quarter_grid_ratio": round(ongrid / m, 3) if m else 0.0,
+        "mean_turn_angle_deg": round(_mean(turn_angles), 1),
+        "reversal_ratio": round(reversals / len(turn_angles), 3) if turn_angles else 0.0,
+        "sv_changes_per_min": round(sv_changes / (duration_s / 60), 2) if duration_s else 0.0,
     }
 
 

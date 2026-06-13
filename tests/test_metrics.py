@@ -36,6 +36,22 @@ def test_jump_detection():
     m = compute_metrics(bm)
     assert m["jump_ratio"] > 0.8
     assert m["mean_spacing_px"] > JUMP_FLOOR
+    # back-and-forth (0,400,0,400,0) is a 1-2 pattern -> near-180 reversals
+    assert m["reversal_ratio"] > 0.8
+    assert m["mean_turn_angle_deg"] > 150
+
+
+def test_straight_flow_low_turn():
+    from src.parsing.beatmap import TimingPoint
+    bm = Beatmap(path=Path("x.osu"), timing_points=[TimingPoint(0, 400.0, 4, True)])
+    # monotonic line -> ~0 deg turns, no reversals
+    bm.hit_objects = [
+        HitObject(x=i * 40, y=100, time=i * 100, type=TYPE_CIRCLE, end_time=i * 100)
+        for i in range(6)
+    ]
+    m = compute_metrics(bm)
+    assert m["mean_turn_angle_deg"] < 10
+    assert m["reversal_ratio"] == 0.0
 
 
 JUMP_FLOOR = 200.0
