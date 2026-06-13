@@ -390,6 +390,49 @@ clap/finish to the nearest object.
 3. Add decode post-processing for kiai/accents; set output difficulty params
    from the request; wire the rosu SR verification loop.
 
+## 10. v4 candidate features (design / next)
+
+v3 (10 channels + difficulty conditioning + CFG) is training. Candidate next
+steps, with the constraint that **anything changing the signal channels or the
+context-vector dimension requires a re-preprocess + retrain** (so batch them).
+
+### 10.1 Style / mapper conditioning (next big lever)
+The manifest already stores `creator`. Extend the context vector with a **style
+signal** so generation can target "Sotarks-like 1-2 farm" vs "tech":
+- *Cheap*: a coarse **style class** (farm-aim / stream / tech / alt) derived by
+  clustering maps on pattern stats (stream %, jump %, SV variance, reversal
+  ratio — all already in `metrics.py`); feed as a one-hot appended to `c`.
+- *Richer*: a learned **mapper embedding** keyed by `creator` (top-N creators by
+  map count, rest → "other"). Needs many maps per creator → full-library data.
+- Same CFG machinery; just a wider `ctx_dim`. Verify with the existing
+  pattern-stat metrics (does "tech" raise SV/cutstream stats?).
+
+### 10.2 SR/density calibration (cheap, post-v3-eval)
+The draft showed a systematic SR offset; `--match-sr` corrects it at inference.
+After the heavy run, **measure the offset curve** (target vs achieved over the SR
+sweep with `evaluate.py`) and bake a correction into `target_context` so a single
+pass hits the target. Also revisit the `density = 0.8*sr` heuristic against §8.
+
+### 10.3 Multi-section BPM timing (decode-only, no retrain)
+26% of maps change BPM. Replace the single estimated timing point with a
+**tempo-over-time** track (librosa `tempo(aggregate=None)` / a downbeat tracker)
+→ emit several uninherited timing points, and snap onsets per section. Improves
+the variable-BPM desync; purely output-side, so no retrain.
+
+### 10.4 Proper slider control-point channels (representation, batch with 10.1)
+Current curved sliders ride on the shared cursor channel (noisy → the curve
+threshold is a blunt instrument). Add **dedicated K-anchor offset channels** at
+the slider head so shape is a first-class, denoised target.
+
+### 10.5 Spinner/stream realism polish
+- Spinners are decoded at fixed centre (256,192); model the spinner end position.
+- Stream shaping: the model's streams are spacing-uniform; flow/DS coupling
+  (§3.A) would make them curve/zig-zag like real streams.
+
+**Suggested v4 batch**: re-preprocess once with (10.1 style class in manifest +
+10.4 slider-shape channels), retrain with the wider context, and add 10.2/10.3
+as inference-side wins that need no retrain.
+
 ## References
 - [Mapping techniques (Basics)](https://osu.ppy.sh/wiki/en/Mapping_Techniques/Basics)
 - [Technical maps](https://osu.ppy.sh/wiki/en/Beatmap/Technical_maps)
