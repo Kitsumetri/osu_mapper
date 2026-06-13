@@ -250,52 +250,52 @@ A `.osu` carries timing/effect/sound metadata we don't yet model. Storing it now
 
 ## 8. Reference pattern distributions (evaluation targets)
 
-Computed with `src/corpus_stats.py` over a **12,000-map** random sample of the
-local std library (`src/metrics.py` per map), bucketed by object density. These
-are the "what real maps look like" targets — score a generated map against the
-matching bucket with `python -m src.metrics --osu gen.osu --ref-stats
-artifacts/reference_stats.json` (z-score + in-p10–p90 flag). Cells are
-`mean +/- std`.
+Computed with `src/corpus_stats.py` over the **entire local library — 31,362
+std maps** — bucketed by **star rating** (rosu-pp, `difficulty.py`). Mappers'
+difficulty *names* are arbitrary, so SR is the principled axis. Score a generated
+map against its SR bucket with `python -m src.metrics --osu gen.osu --ref-stats
+artifacts/reference_stats.json` (it computes the map's SR, picks the bucket, and
+reports z-score + in-p10–p90 flag). Cells are `mean +/- std`.
 
-| metric | Easy (n=2238) | Normal (n=2385) | Hard (n=4760) | Insane (n=1858) | Extra (n=759) |
-|---|---|---|---|---|---|
-| `density_per_s` | 1.459 +/- 0.344 | 2.533 +/- 0.292 | 3.736 +/- 0.421 | 5.074 +/- 0.415 | 7.616 +/- 6.842 |
-| `circle_ratio` | 0.376 +/- 0.114 | 0.447 +/- 0.118 | 0.562 +/- 0.124 | 0.644 +/- 0.123 | 0.752 +/- 0.134 |
-| `slider_ratio` | 0.615 +/- 0.113 | 0.548 +/- 0.118 | 0.435 +/- 0.124 | 0.354 +/- 0.123 | 0.243 +/- 0.126 |
-| `bezier_slider_ratio` | 0.18 +/- 0.198 | 0.14 +/- 0.161 | 0.149 +/- 0.152 | 0.172 +/- 0.158 | 0.165 +/- 0.189 |
-| `new_combo_ratio` | 0.261 +/- 0.065 | 0.237 +/- 0.061 | 0.255 +/- 0.095 | 0.256 +/- 0.081 | 0.226 +/- 0.099 |
-| `mean_spacing_px` | 139.5 +/- 23.6 | 129.4 +/- 25.2 | 149.0 +/- 36.5 | 146.3 +/- 45.1 | 116.0 +/- 50.9 |
-| `std_spacing_px` | 64.3 +/- 12.3 | 69.5 +/- 14.1 | 83.2 +/- 15.6 | 91.5 +/- 17.3 | 87.2 +/- 26.6 |
-| `stream_ratio` | 0.012 +/- 0.053 | 0.072 +/- 0.092 | 0.141 +/- 0.111 | 0.268 +/- 0.154 | 0.5 +/- 0.227 |
-| `jump_ratio` | 0.172 +/- 0.111 | 0.156 +/- 0.118 | 0.281 +/- 0.167 | 0.304 +/- 0.173 | 0.217 +/- 0.176 |
-| `on_quarter_grid_ratio` | 0.931 +/- 0.207 | 0.936 +/- 0.186 | 0.916 +/- 0.213 | 0.907 +/- 0.225 | 0.861 +/- 0.276 |
-| `mean_turn_angle_deg` | 79.8 +/- 11.6 | 85.4 +/- 16.9 | 103.6 +/- 18.3 | 98.2 +/- 20.0 | 76.1 +/- 27.3 |
-| `reversal_ratio` | 0.066 +/- 0.057 | 0.093 +/- 0.084 | 0.2 +/- 0.103 | 0.204 +/- 0.097 | 0.148 +/- 0.116 |
-| `sv_changes_per_min` | 1.99 +/- 10.8 | 6.88 +/- 11.0 | 15.5 +/- 29.3 | 22.2 +/- 31.0 | 24.8 +/- 44.6 |
+| metric | Easy (n=1861) | Normal (n=4387) | Hard (n=5732) | Insane (n=7640) | Expert (n=7181) | Expert+ (n=4561) |
+|---|---|---|---|---|---|---|
+| `star_rating` | 1.794 +/- 0.158 | 2.336 +/- 0.183 | 3.445 +/- 0.337 | 4.728 +/- 0.354 | 5.848 +/- 0.334 | 8.181 +/- 7.95 |
+| `density_per_s` | 1.125 +/- 0.252 | 1.72 +/- 0.352 | 2.66 +/- 0.498 | 3.608 +/- 0.675 | 4.424 +/- 0.897 | 5.764 +/- 3.317 |
+| `circle_ratio` | 0.347 +/- 0.104 | 0.393 +/- 0.104 | 0.443 +/- 0.12 | 0.56 +/- 0.13 | 0.612 +/- 0.123 | 0.669 +/- 0.146 |
+| `slider_ratio` | 0.64 +/- 0.104 | 0.599 +/- 0.104 | 0.553 +/- 0.12 | 0.438 +/- 0.13 | 0.386 +/- 0.123 | 0.326 +/- 0.143 |
+| `bezier_slider_ratio` | 0.202 +/- 0.213 | 0.152 +/- 0.177 | 0.14 +/- 0.172 | 0.145 +/- 0.163 | 0.167 +/- 0.159 | 0.192 +/- 0.17 |
+| `new_combo_ratio` | 0.288 +/- 0.064 | 0.237 +/- 0.058 | 0.236 +/- 0.057 | 0.254 +/- 0.106 | 0.257 +/- 0.077 | 0.257 +/- 0.095 |
+| `mean_spacing_px` | 145.9 +/- 24.4 | 130.5 +/- 20.3 | 123.3 +/- 20.2 | 140.0 +/- 31.5 | 152.0 +/- 39.1 | 154.6 +/- 54.9 |
+| `std_spacing_px` | 62.9 +/- 11.8 | 62.5 +/- 10.8 | 67.7 +/- 11.3 | 79.2 +/- 13.6 | 88.7 +/- 14.5 | 97.0 +/- 20.8 |
+| `stream_ratio` | 0.003 +/- 0.022 | 0.009 +/- 0.038 | 0.081 +/- 0.097 | 0.15 +/- 0.13 | 0.212 +/- 0.16 | 0.308 +/- 0.22 |
+| `jump_ratio` | 0.195 +/- 0.12 | 0.133 +/- 0.09 | 0.129 +/- 0.08 | 0.239 +/- 0.138 | 0.322 +/- 0.161 | 0.343 +/- 0.196 |
+| `on_quarter_grid_ratio` | 0.944 +/- 0.187 | 0.943 +/- 0.187 | 0.938 +/- 0.187 | 0.926 +/- 0.195 | 0.917 +/- 0.213 | 0.851 +/- 0.277 |
+| `mean_turn_angle_deg` | 81.8 +/- 11.1 | 75.1 +/- 10.4 | 82.8 +/- 13.8 | 101.8 +/- 18.5 | 103.5 +/- 19.9 | 96.8 +/- 24.3 |
+| `reversal_ratio` | 0.074 +/- 0.054 | 0.046 +/- 0.042 | 0.077 +/- 0.068 | 0.188 +/- 0.094 | 0.218 +/- 0.092 | 0.214 +/- 0.111 |
+| `sv_changes_per_min` | 0.867 +/- 4.294 | 1.946 +/- 9.202 | 6.704 +/- 18.88 | 14.118 +/- 30.668 | 19.579 +/- 23.369 | 24.651 +/- 39.639 |
 
-(Bucket split of the 12k sample: Easy 2238, Normal 2385, Hard 4760, Insane 1858,
-Extra 759. Raw per-bucket mean/std/p10/p90 for every metric is in
-`artifacts/reference_stats.json`.)
+(Bucket split: Easy 1861, Normal 4387, Hard 5732, Insane 7640, Expert 7181,
+Expert+ 4561 = 31,362. Raw per-bucket mean/std/p10/p90 for every metric is in
+`artifacts/reference_stats.json`. The Expert+ `star_rating` std is inflated by a
+few extreme-SR outliers / non-ranked joke maps.)
 
 ### What this tells us (targets for the generator)
 
-- **Density defines difficulty** — these buckets *are* density bins, but the
-  other metrics shift monotonically with them, confirming density is a good
-  conditioning axis.
-- **Circle↔slider trade-off**: harder maps are more circle-heavy
-  (Easy 0.38 → Extra 0.75 circles); slider ratio falls inversely. A generator
-  with no difficulty conditioning will sit at one fixed point — another argument
-  for difficulty conditioning.
-- **Streams scale hard with difficulty** (0.01 → 0.50); **jumps peak at
-  Insane** (~0.30) then dip for Extra (which is stream-dominated).
-- **On-¼-grid ~0.86–0.94** everywhere — real maps are tight but *not* perfectly
-  on-grid (sub-beat detail, triplets, 1/8). Our bounded beat-snap target should
-  be ~0.9, not 1.0.
-- **`sv_changes_per_min` rises steeply** (2 → 25) — SV variety is a real marker
-  of harder/tech maps, and our single-timing-point output (0) is the largest
-  systematic gap.
-- **`bezier_slider_ratio` ~0.14–0.18** across all buckets — a concrete target
-  for the new curved-slider decoder.
+- **Everything scales monotonically with star rating** — density, circle ratio,
+  streams, jumps, spacing spread, turn angle, SV changes. This is strong evidence
+  that **SR is a good single conditioning axis** (§9.1): the model can interpolate
+  difficulty along it.
+- **Circle↔slider trade-off**: harder = more circles (Easy 0.35 → Expert+ 0.67),
+  sliders inversely.
+- **Streams scale hard** (Easy 0.003 → Expert+ 0.31); **jumps dip mid (Hard
+  0.13) then climb** to 0.34 at Expert+ — Hard maps lean on sliders/rhythm, top
+  diffs on aim.
+- **On-¼-grid ~0.85–0.94** everywhere — real maps are tight but not perfect
+  (triplets, 1/8, sub-beat). Our bounded beat-snap target is ~0.9, not 1.0.
+- **`sv_changes_per_min` 0.9 → 25** — SV variety strongly marks difficulty, and
+  our single-timing-point output (0) is the biggest systematic gap.
+- **`bezier_slider_ratio` ~0.14–0.20** across buckets — a concrete target for the
+  curved-slider work.
 
 ## 9. Proposed conditioning & extended outputs (design)
 
