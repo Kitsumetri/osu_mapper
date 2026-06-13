@@ -1,4 +1,28 @@
+# envs
 .venv
-__pycache__
-data
+venv/
 .idea
+.vscode
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# data & artifacts (large / generated)
+data/
+checkpoints/
+checkpoints_*/
+logs/
+*.npz
+*.pt
+*.ckpt
+
+# generated maps / audio
+generated*.osu
+*.osz
+
+# os
+Thumbs.db
+.DS_Store
