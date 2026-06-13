@@ -9,8 +9,15 @@ DEV = "cpu"
 C_SIG, C_COND, T, B = 6, 64, 64, 2
 
 
-def _model():
-    return UNet1d(sig_channels=C_SIG, cond_channels=C_COND, base=16, mults=(1, 2), t_dim=32)
+def _model(attn=False):
+    return UNet1d(sig_channels=C_SIG, cond_channels=C_COND, base=16, mults=(1, 2),
+                  t_dim=32, attn=attn)
+
+
+def test_unet_forward_with_attention():
+    m = _model(attn=True)
+    out = m(torch.randn(B, C_SIG, T), torch.randn(B, C_COND, T), torch.randint(0, 1000, (B,)))
+    assert out.shape == (B, C_SIG, T)
 
 
 def test_timestep_embedding_shape():

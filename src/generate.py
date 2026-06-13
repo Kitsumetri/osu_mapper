@@ -20,14 +20,17 @@ from .model.unet import UNet1d
 from .parsing.beatmap import Beatmap, write_osu
 
 
-def generate(audio_path, ckpt_path, out_path, steps=200, window=2048, base=64):
+def generate(audio_path, ckpt_path, out_path, steps=200, window=2048, base=64, use_ema=True):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     ckpt = torch.load(ckpt_path, map_location=device)
-    base = ckpt.get("args", {}).get("base", base)
-    model = UNet1d(N_SIGNAL_CHANNELS, AUDIO.n_mels, base=base).to(device)
-    model.load_state_dict(ckpt["model"])
+    cargs = ckpt.get("args", {})
+    base = cargs.get("base", base)
+    attn = cargs.get("attn", False)  # old checkpoints had no attention
+    model = UNet1d(N_SIGNAL_CHANNELS, AUDIO.n_mels, base=base, attn=attn).to(device)
+    weights = ckpt["ema"] if (use_ema and ckpt.get("ema")) else ckpt["model"]
+    model.load_state_dict(weights)
     model.eval()
-    diff = GaussianDiffusion(timesteps=ckpt.get("args", {}).get("timesteps", 1000), device=device)
+    diff = GaussianDiffusion(timesteps=cargs.get("timesteps", 1000), device=device)
 
     y = load_audio(audio_path)          # decode once, reuse for mel + timing
     mel = log_mel(y)                    # (n_mels, T)

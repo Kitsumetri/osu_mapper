@@ -48,6 +48,27 @@ class ResBlock1d(nn.Module):
         return h + self.skip(x)
 
 
+class AttnBlock1d(nn.Module):
+    """Multi-head self-attention over the time axis (long-range structure)."""
+
+    def __init__(self, ch: int, heads: int = 4):
+        super().__init__()
+        self.heads = heads
+        self.norm = nn.GroupNorm(math.gcd(8, ch), ch)
+        self.qkv = nn.Conv1d(ch, ch * 3, 1)
+        self.proj = nn.Conv1d(ch, ch, 1)
+
+    def forward(self, x):
+        b, c, t = x.shape
+        q, k, v = self.qkv(self.norm(x)).chunk(3, dim=1)
+        # (b, heads, t, c/heads)
+        q, k, v = (z.reshape(b, self.heads, c // self.heads, t).transpose(-1, -2)
+                   for z in (q, k, v))
+        out = F.scaled_dot_product_attention(q, k, v)
+        out = out.transpose(-1, -2).reshape(b, c, t)
+        return x + self.proj(out)
+
+
 class Down(nn.Module):
     def __init__(self, ch):
         super().__init__()
@@ -74,6 +95,7 @@ class UNet1d(nn.Module):
         base: int = 64,
         mults=(1, 2, 4, 8),
         t_dim: int = 256,
+        attn: bool = True,
     ):
         super().__init__()
         self.sig_channels = sig_channels
@@ -85,15 +107,19 @@ class UNet1d(nn.Module):
         chs = [base * m for m in mults]
         self.downs = nn.ModuleList()
         self.down_samps = nn.ModuleList()
+        self.down_attn = nn.ModuleList()
         prev = base
         skip_chs = [base]
-        for ch in chs:
+        for i, ch in enumerate(chs):
             self.downs.append(ResBlock1d(prev, ch, t_dim))
+            # attention only at the two deepest (coarsest) levels to bound cost
+            self.down_attn.append(AttnBlock1d(ch) if attn and i >= len(chs) - 2 else nn.Identity())
             skip_chs.append(ch)
             self.down_samps.append(Down(ch))
             prev = ch
 
         self.mid1 = ResBlock1d(prev, prev, t_dim)
+        self.mid_attn = AttnBlock1d(prev) if attn else nn.Identity()
         self.mid2 = ResBlock1d(prev, prev, t_dim)
 
         self.up_samps = nn.ModuleList()
@@ -111,11 +137,13 @@ class UNet1d(nn.Module):
         t_emb = self.time_mlp(timestep_embedding(t, self.t_dim))
         h = self.in_conv(torch.cat([x_t, cond], dim=1))
         skips = [h]
-        for block, ds in zip(self.downs, self.down_samps):
+        for block, attn, ds in zip(self.downs, self.down_attn, self.down_samps):
             h = block(h, t_emb)
+            h = attn(h)
             skips.append(h)
             h = ds(h)
         h = self.mid1(h, t_emb)
+        h = self.mid_attn(h)
         h = self.mid2(h, t_emb)
         for us, block in zip(self.up_samps, self.ups):
             h = us(h)
