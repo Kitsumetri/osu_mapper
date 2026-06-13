@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-import numpy as np
-import librosa
 
-from ..config import AudioConfig, AUDIO
+import librosa
+import numpy as np
+
+from ..config import AUDIO, AudioConfig
 
 
 def load_audio(path: str | Path, cfg: AudioConfig = AUDIO) -> np.ndarray:

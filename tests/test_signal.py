@@ -78,6 +78,25 @@ def test_slider_does_not_overlap_next_onset():
         assert a.end_time <= b.time
 
 
+def test_curved_slider_becomes_bezier():
+    """A slider whose cursor path curves should decode to a multi-point Bezier."""
+    n = 60
+    sig = np.full((N_SIGNAL_CHANNELS, n), -1.0, dtype=np.float32)
+    sig[0, 5] = 1.0          # one onset
+    sig[1, 5:40] = 1.0       # long slider hold
+    # cursor traces a curve (quarter circle-ish) during the hold
+    fr = np.arange(n)
+    ang = np.clip((fr - 5) / 35.0, 0, 1) * (np.pi / 2)
+    sig[4] = np.cos(ang) * 0.5   # x
+    sig[5] = np.sin(ang) * 0.5   # y
+    dec = decode_signal(sig, onset_threshold=0.3, min_spinner_frames=100)
+    sliders = [o for o in dec if o.is_slider]
+    assert sliders, "expected a slider"
+    s = sliders[0]
+    assert s.curve_type == "B"
+    assert len(s.curve_points) >= 2
+
+
 def test_no_time_overlap_after_write_reparse(sample_osu, tmp_path):
     """The written .osu must have no time-overlapping objects after osu! derives
     slider durations from length (the real overlap source)."""

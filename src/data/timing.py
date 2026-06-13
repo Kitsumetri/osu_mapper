@@ -18,7 +18,6 @@ import numpy as np
 from ..config import AUDIO, AudioConfig
 from ..parsing.beatmap import TimingPoint
 
-
 # osu! songs cluster in a fairly high BPM band, and librosa's default 120 BPM
 # prior tends to lock onto half-tempo. Bias both the prior and the octave fold
 # toward this range.

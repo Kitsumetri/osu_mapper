@@ -13,13 +13,18 @@ Encoding choices (kept simple + decodable):
 """
 from __future__ import annotations
 
-from typing import List
 import numpy as np
 
-from ..config import AudioConfig, N_SIGNAL_CHANNELS, AUDIO
+from ..config import AUDIO, N_SIGNAL_CHANNELS, AudioConfig
 from ..parsing.beatmap import (
-    Beatmap, HitObject, TYPE_CIRCLE, TYPE_SLIDER, TYPE_SPINNER, TYPE_NEW_COMBO,
-    PLAYFIELD_W, PLAYFIELD_H,
+    PLAYFIELD_H,
+    PLAYFIELD_W,
+    TYPE_CIRCLE,
+    TYPE_NEW_COMBO,
+    TYPE_SLIDER,
+    TYPE_SPINNER,
+    Beatmap,
+    HitObject,
 )
 
 ONSET_SIGMA_FRAMES = 1.2   # width of onset/new-combo bumps
@@ -63,9 +68,9 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
     spinner = -np.ones(n_frames, dtype=np.float32)
 
     # cursor key-frames (time_frame, x, y) for interpolation
-    keys_t: List[float] = []
-    keys_x: List[float] = []
-    keys_y: List[float] = []
+    keys_t: list[float] = []
+    keys_x: list[float] = []
+    keys_y: list[float] = []
 
     for obj in bm.hit_objects:
         f_start = cfg.time_to_frame(obj.time)
@@ -84,12 +89,16 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
             a, b = int(round(f_start)), int(round(f_end))
             if b >= a:
                 slider[a:b + 1] = 1.0
-            # add an end key-frame at the last control point position
+            # trace the slider's control points into the cursor channel over the
+            # hold so the signal carries the *shape* (waves/arcs), not just the
+            # endpoints. Control points are distributed evenly across the hold.
             if obj.curve_points:
-                ex, ey = obj.curve_points[-1]
-                keys_t.append(f_end)
-                keys_x.append(_norm_x(ex))
-                keys_y.append(_norm_y(ey))
+                cps = obj.curve_points
+                for idx, (cx, cy) in enumerate(cps, start=1):
+                    ft = f_start + (f_end - f_start) * idx / len(cps)
+                    keys_t.append(ft)
+                    keys_x.append(_norm_x(cx))
+                    keys_y.append(_norm_y(cy))
         elif obj.is_spinner:
             f_end = min(n_frames - 1, cfg.time_to_frame(obj.end_time))
             a, b = int(round(f_start)), int(round(f_end))
@@ -119,14 +128,56 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
 
 
 # --- decoding -----------------------------------------------------------------
-def _pick_peaks(channel: np.ndarray, threshold: float, min_gap: int) -> List[int]:
+def _slider_path(start, cur_x, cur_y, p, end_frame, max_anchors: int = 6):
+    """Build a slider curve that follows the cursor signal during the hold.
+
+    Samples cursor positions between frame ``p`` and ``end_frame`` and returns
+    ``(curve_type, control_points, length)``. A nearly-straight or very short
+    path falls back to a 2-point linear slider; otherwise a Bezier through the
+    sampled points gives waves / arcs / multi-direction shapes.
+    """
+    span = end_frame - p
+    sx, sy = start
+    end_x = int(np.clip(_denorm_x(float(cur_x[end_frame])), 0, PLAYFIELD_W))
+    end_y = int(np.clip(_denorm_y(float(cur_y[end_frame])), 0, PLAYFIELD_H))
+
+    if span <= 2:
+        length = float(np.hypot(end_x - sx, end_y - sy)) or 10.0
+        return "L", [(end_x, end_y)], length
+
+    n_anchor = int(np.clip(span // 3, 1, max_anchors))
+    frames = np.linspace(p + 1, end_frame, n_anchor).round().astype(int)
+    pts: list[tuple[int, int]] = []
+    prev = (sx, sy)
+    length = 0.0
+    for f in frames:
+        px = int(np.clip(_denorm_x(float(cur_x[f])), 0, PLAYFIELD_W))
+        py = int(np.clip(_denorm_y(float(cur_y[f])), 0, PLAYFIELD_H))
+        if (px, py) == prev:
+            continue
+        length += float(np.hypot(px - prev[0], py - prev[1]))
+        pts.append((px, py))
+        prev = (px, py)
+    if not pts:
+        return "L", [(end_x, end_y)], float(np.hypot(end_x - sx, end_y - sy)) or 10.0
+
+    # straight-line distance vs path length: if the path barely curves, keep it linear
+    straight = float(np.hypot(prev[0] - sx, prev[1] - sy))
+    ctype = "B" if (length > straight * 1.05 and len(pts) >= 2) else "L"
+    if ctype == "L":
+        pts = [pts[-1]]
+        length = straight or 10.0
+    return ctype, pts, max(10.0, length)
+
+
+def _pick_peaks(channel: np.ndarray, threshold: float, min_gap: int) -> list[int]:
     """Local-maxima peak picker on a [-1,1] channel.
 
     Boundary frames are handled: an onset on the first or last frame (e.g. an
     object at time 0) is a valid peak. Out-of-range neighbours are treated as
     -inf so the endpoints can win.
     """
-    peaks: List[int] = []
+    peaks: list[int] = []
     n = len(channel)
     last = -10**9
     for i in range(n):
@@ -135,10 +186,9 @@ def _pick_peaks(channel: np.ndarray, threshold: float, min_gap: int) -> List[int
             continue
         left = channel[i - 1] if i > 0 else -np.inf
         right = channel[i + 1] if i < n - 1 else -np.inf
-        if v >= left and v >= right:
-            if i - last >= min_gap:
-                peaks.append(i)
-                last = i
+        if v >= left and v >= right and i - last >= min_gap:
+            peaks.append(i)
+            last = i
     return peaks
 
 
@@ -146,7 +196,7 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
                   onset_threshold: float = 0.3,
                   min_gap_frames: int = 2,
                   min_spinner_frames: int = 26,
-                  spinner_min_mean: float = 0.3) -> List[HitObject]:
+                  spinner_min_mean: float = 0.3) -> list[HitObject]:
     """Decode a generated signal back into discrete hit objects.
 
     Strategy: peak-pick the onset channel for object times; read cursor
@@ -161,7 +211,7 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
     cur_y = sig[5]
     n = sig.shape[1]
 
-    objects: List[HitObject] = []
+    objects: list[HitObject] = []
 
     # spinners first: contiguous runs where spinner_hold > 0. Real spinners are
     # long (>~300 ms) and strongly positive, so require a minimum length and a
@@ -211,14 +261,11 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
             end_frame = max(p + 1, j - 1)
             end_frame = min(end_frame, next_onset - 1)
             end_frame = max(end_frame, p + 1)
-            end_x = _denorm_x(float(cur_x[end_frame]))
-            end_y = _denorm_y(float(cur_y[end_frame]))
-            end_x = int(np.clip(end_x, 0, PLAYFIELD_W))
-            end_y = int(np.clip(end_y, 0, PLAYFIELD_H))
-            length = float(np.hypot(end_x - x, end_y - y)) or 10.0
+            # follow the cursor path during the hold -> a real curved slider
+            ctype, pts, length = _slider_path((x, y), cur_x, cur_y, p, end_frame)
             typ = TYPE_SLIDER | (TYPE_NEW_COMBO if is_nc else 0)
             obj = HitObject(x=x, y=y, time=time, type=typ,
-                            curve_type="L", curve_points=[(end_x, end_y)],
+                            curve_type=ctype, curve_points=pts,
                             slides=1, length=length,
                             end_time=int(round(cfg.frame_to_time(end_frame))))
             objects.append(obj)

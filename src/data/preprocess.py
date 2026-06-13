@@ -86,7 +86,7 @@ def process_library(songs_dir: Path, out_dir: Path, limit: int | None = None,
                     continue
                 T = mel.shape[1]
                 cap = int(AUDIO.time_to_frame(max_seconds * 1000))
-                if T > cap:
+                if cap < T:
                     mel, T = mel[:, :cap], cap
                 np.save(mel_npy, mel.astype(np.float16))
                 mel_T[aid] = T
