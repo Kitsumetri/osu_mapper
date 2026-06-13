@@ -37,6 +37,10 @@ At ~86 frames/sec (sr 22050, hop 256 → 11.6 ms/frame) each beatmap becomes a
 Encode/decode is near-lossless on real maps (100% onset timing recall, exact
 circle/slider/spinner counts on round-trip).
 
+For the full mathematical model — the diffusion process, training objective,
+DDIM sampling, the U-Net + QK-norm attention, and the decode math — see
+[`TECH_REPORT.md`](TECH_REPORT.md).
+
 ## Install
 
 With [uv](https://docs.astral.sh/uv/) (recommended) — the CUDA torch index is
