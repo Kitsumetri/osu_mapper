@@ -62,6 +62,24 @@ def test_audio_path(sample_osu):
     assert bm.audio_path.parent == sample_osu.parent
 
 
+def test_kiai_and_bpm(tmp_path):
+    p = tmp_path / "kiai.osu"
+    p.write_text(
+        "osu file format v14\n[General]\nMode: 0\n[TimingPoints]\n"
+        "0,400,4,2,0,50,1,0\n"          # 150 BPM, no kiai
+        "2000,-100,4,2,0,50,0,1\n"      # inherited, kiai ON
+        "4000,-100,4,2,0,50,0,0\n"      # kiai OFF
+        "[HitObjects]\n256,192,0,1,0\n256,192,5000,1,0\n",
+        encoding="utf-8",
+    )
+    bm = parse_beatmap(p)
+    assert bm.bpm == 150.0
+    assert bm.timing_points[1].kiai is True
+    assert bm.timing_points[2].kiai is False
+    spans = bm.kiai_spans()
+    assert spans == [(2000.0, 4000.0)]
+
+
 def test_malformed_lines_are_skipped(tmp_path):
     p = tmp_path / "bad.osu"
     p.write_text(

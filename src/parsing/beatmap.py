@@ -36,6 +36,11 @@ class TimingPoint:
     beat_length: float  # ms/beat (uninherited) or -100/SV (inherited)
     meter: int
     uninherited: bool
+    effects: int = 0  # bit 0 = kiai time, bit 3 = omit first barline
+
+    @property
+    def kiai(self) -> bool:
+        return bool(self.effects & 1)
 
     @property
     def sv(self) -> float:
@@ -97,6 +102,29 @@ class Beatmap:
     @property
     def audio_path(self) -> Path:
         return self.path.parent / self.audio_filename
+
+    @property
+    def bpm(self) -> float:
+        """BPM of the first uninherited timing point (0 if none)."""
+        for tp in self.timing_points:
+            if tp.uninherited and tp.beat_length > 0:
+                return round(60000.0 / tp.beat_length, 3)
+        return 0.0
+
+    def kiai_spans(self) -> list[tuple[float, float]]:
+        """(start_ms, end_ms) ranges where kiai is active, from timing effects."""
+        spans: list[tuple[float, float]] = []
+        end = self.hit_objects[-1].end_time if self.hit_objects else 0
+        active_start = None
+        for tp in self.timing_points:
+            if tp.kiai and active_start is None:
+                active_start = tp.time
+            elif not tp.kiai and active_start is not None:
+                spans.append((active_start, tp.time))
+                active_start = None
+        if active_start is not None:
+            spans.append((active_start, float(end)))
+        return spans
 
     # --- slider timing helpers ------------------------------------------------
     def _uninherited_at(self, time: float) -> TimingPoint:
@@ -194,7 +222,8 @@ def parse_beatmap(path: str | Path) -> Beatmap:
                 meter = int(parts[2]) if len(parts) > 2 else 4
                 # field 6 is "uninherited" (1/0); older maps may omit it
                 uninherited = (parts[6].strip() == "1") if len(parts) > 6 else (beat_length > 0)
-                bm.timing_points.append(TimingPoint(time, beat_length, meter, uninherited))
+                effects = int(parts[7]) if len(parts) > 7 and parts[7].strip().isdigit() else 0
+                bm.timing_points.append(TimingPoint(time, beat_length, meter, uninherited, effects))
             except (ValueError, IndexError):
                 continue
 

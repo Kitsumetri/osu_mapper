@@ -12,10 +12,13 @@ __pycache__/
 
 # data & artifacts (large / generated)
 data/
+runs/
+artifacts/
 checkpoints/
 checkpoints_*/
 logs/
 *.npz
+*.npy
 *.pt
 *.ckpt
 

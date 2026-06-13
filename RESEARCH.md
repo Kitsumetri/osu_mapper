@@ -182,6 +182,43 @@ do now: ~AR8/OD7 Insane-ish). Dataset means above are the sane hardcode.
 **(3) Non-std game modes** — *handled.* Filtered out; flagged here so nobody
 later assumes `x,y` are playfield coords for mania/taiko/catch.
 
+## 7. Kiai, timing sections & hitsounds (control/effect data we currently drop)
+
+A `.osu` carries timing/effect/sound metadata we don't yet model. Storing it now
+(in preprocessing) is cheap and unlocks future features without re-crawling.
+
+### Timing points & BPM sections (`[TimingPoints]`)
+`time,beatLength,meter,sampleSet,sampleIndex,volume,uninherited,effects`.
+- **Uninherited** points (red) set BPM (`beatLength` ms/beat) and can change
+  mid-song → **multiple BPM sections** (26% of our maps). meter = time signature.
+- **Inherited** points (green) set **slider velocity** (`beatLength = -100/SV%`)
+  and **hitsound volume/sample set** per region — tech maps abuse SV heavily.
+- **`effects` bitfield**: bit 0 = **kiai time** (the "chorus"/hype section,
+  visual flair + emphasis), bit 3 = omit first barline. Kiai marks the musically
+  intense sections mappers map most densely.
+
+### Hitsounds (per hit object + sample-set regions)
+- Hit object `hitSound` bitfield: bit0 normal, **bit1 (2) whistle**, **bit2 (4)
+  finish**, **bit3 (8) clap**; plus a `hitSample` (`normal:addition:index:vol:file`).
+- Sliders also have per-edge sounds (`edgeSounds`/`edgeSets`). Sample set
+  (Normal/Soft/Drum) comes from the active inherited timing point.
+- These encode *rhythmic accent* — claps/finishes usually land on strong beats,
+  so they're a strong supervision signal for "where the emphasis is".
+
+### How to adapt (incremental, none block current work)
+1. **Extract & store now** (this session): per map, save kiai spans, all timing
+   points (BPM sections + SV), and difficulty/creator metadata in the preprocess
+   manifest. No model change; future-proofs conditioning.
+2. **Kiai channel** (small experiment): add a 7th signal channel `kiai_hold`
+   (+1 during kiai) so the model learns to ramp density/spacing in choruses;
+   condition or just predict it and use it to modulate decode density.
+3. **Multi-section timing on output** (medium): emit several uninherited points
+   from a downbeat/tempo-over-time tracker instead of one; add inherited points
+   for SV variety (tech feel).
+4. **Hitsounds** (later): predict a coarse accent channel (clap/finish/normal)
+   and map it to `hitSound` bits; or copy hitsounds from a reference via the
+   sample-set regions. Lowest priority — cosmetic-ish but adds polish.
+
 ## References
 - [Mapping techniques (Basics)](https://osu.ppy.sh/wiki/en/Mapping_Techniques/Basics)
 - [Technical maps](https://osu.ppy.sh/wiki/en/Beatmap/Technical_maps)
