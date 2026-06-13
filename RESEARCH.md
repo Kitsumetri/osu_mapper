@@ -17,7 +17,8 @@ What of the plan below is already in the codebase vs still proposed:
 | Scale + capacity: 3004 maps, 97M attention U-Net, EMA, cosine LR — §3.D | **done** |
 | Store kiai / timing / difficulty / creator metadata — §7.1 | **done** (manifest) |
 | Difficulty defaults (AR8/OD7/HP5/CS4) — §6 | **done** (`generate.py`) |
-| **Rhythm snapping** to beat grid — §3.A / §4 | *next* |
+| Rhythm snapping (bounded 1/4-grid beat-snap) — §3.A / §4 | **done v1** (`postprocess.py`; on-grid 0.70→0.82) |
+| Per-section / triplet snapping, flow/DS coupling — §3.A | *next* |
 | DS / flow-aware position coupling — §3.A | proposed |
 | Difficulty / style / mapper conditioning — §3.C / §5 | proposed |
 | Kiai signal channel — §7.2 | proposed |

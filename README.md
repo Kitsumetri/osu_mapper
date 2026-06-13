@@ -149,11 +149,14 @@ Done:
 - [x] Scaled, stable training: 97M-param attention U-Net, bf16, EMA, cosine LR,
       `runs/` logging; QK-norm fixes attention divergence
 
+Done (cont.):
+
+- [x] Rhythm snapping v1 (`postprocess.py`: bounded 1/4-grid beat-snap;
+      on-¼-grid 0.70 → 0.82 on the sample). Triplet/per-section snapping still
+      open.
+
 Next (roughly in priority order):
 
-- [ ] **Rhythm snapping**: quantise generated onsets to the estimated beat grid
-      (`metrics` shows ~0.70 on-¼-grid vs ~0.99 for real maps). Mind triplet
-      sections (1/3, 1/6) — ~10%+ of maps.
 - [ ] **Difficulty conditioning**: condition on AR/OD/HP/CS + density so one
       model targets a chosen difficulty (manifest already stores these).
 - [ ] **Style / mapper conditioning**: condition on `Creator` or a derived style
