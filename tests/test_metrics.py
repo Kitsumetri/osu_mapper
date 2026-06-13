@@ -41,6 +41,23 @@ def test_jump_detection():
     assert m["mean_turn_angle_deg"] > 150
 
 
+def test_kiai_and_hitsound_metrics():
+    from src.parsing.beatmap import TimingPoint
+    bm = Beatmap(path=Path("x.osu"),
+                 timing_points=[TimingPoint(0, 400.0, 4, True),
+                                TimingPoint(2000, -100.0, 4, False, effects=1),
+                                TimingPoint(4000, -100.0, 4, False, effects=0)])
+    bm.hit_objects = [
+        HitObject(x=100, y=100, time=t, type=TYPE_CIRCLE,
+                  hit_sound=(8 if t % 1000 == 0 else 0), end_time=t)
+        for t in range(0, 6000, 500)
+    ]
+    m = compute_metrics(bm)
+    assert m["kiai_ratio"] > 0          # 2000-4000ms of ~6000ms span
+    assert 0 < m["clap_ratio"] <= 1
+    assert m["hitsound_ratio"] >= m["clap_ratio"]
+
+
 def test_score_against_reference():
     from src.metrics import score_against_reference
     m = {"density_per_s": 3.5, "stream_ratio": 0.5, "jump_ratio": 0.2}

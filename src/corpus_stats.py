@@ -26,7 +26,8 @@ KEYS = ["star_rating", "density_per_s", "circle_ratio", "slider_ratio",
         "spinner_ratio", "bezier_slider_ratio", "new_combo_ratio",
         "mean_spacing_px", "std_spacing_px", "stream_ratio", "jump_ratio",
         "on_quarter_grid_ratio", "mean_turn_angle_deg", "reversal_ratio",
-        "sv_changes_per_min"]
+        "sv_changes_per_min", "kiai_ratio", "hitsound_ratio", "clap_ratio",
+        "whistle_ratio", "finish_ratio"]
 
 
 def _summary(values: list[float]) -> dict:

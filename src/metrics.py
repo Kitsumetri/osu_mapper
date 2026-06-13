@@ -111,6 +111,13 @@ def compute_metrics(bm: Beatmap) -> dict:
         "mean_turn_angle_deg": round(_mean(turn_angles), 1),
         "reversal_ratio": round(reversals / len(turn_angles), 3) if turn_angles else 0.0,
         "sv_changes_per_min": round(sv_changes / (duration_s / 60), 2) if duration_s else 0.0,
+        # v3 outputs: kiai coverage and hitsound usage
+        "kiai_ratio": round(
+            sum(e - s for s, e in bm.kiai_spans()) / 1000 / duration_s, 3) if duration_s else 0.0,
+        "hitsound_ratio": round(sum(o.hit_sound > 0 for o in objs) / n, 3),
+        "clap_ratio": round(sum(o.hit_sound & 8 > 0 for o in objs) / n, 3),
+        "whistle_ratio": round(sum(o.hit_sound & 2 > 0 for o in objs) / n, 3),
+        "finish_ratio": round(sum(o.hit_sound & 4 > 0 for o in objs) / n, 3),
     }
 
 
