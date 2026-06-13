@@ -117,15 +117,21 @@ live in `pyproject.toml` (`E,F,I,UP,B,SIM`, 100-col).
 - [x] Conditional diffusion U-Net + DDPM/DDIM sampling
 - [x] End-to-end `audio → .osu` generation
 - [x] Hermetic pytest suite
+- [x] **Timing extraction (v1)**: `data/timing.py` estimates BPM + offset with
+      `librosa.beat.beat_track` (osu-tuned prior + octave fold) and `generate.py`
+      writes a real `[TimingPoints]` instead of the 120 BPM placeholder.
+- [ ] **Timing accuracy**: v1 gets the tempo *family* right ~84% of the time but
+      is exact (±2 BPM) only ~28%, with ~50 ms median offset error — not enough
+      for clean rhythm snapping. Options: higher-resolution onset env + a tighter
+      tempo prior, downbeat tracking (madmom `DBNDownBeatTracker`), or learn BPM
+      jointly with the diffusion model. Add a small labelled eval set.
 - [ ] **Scale data**: preprocess the full library (31k+ difficulties); dedupe
       shared audio across difficulties to cut storage.
 - [ ] **Difficulty/length conditioning**: condition on star rating / CS / AR so
       generation is controllable.
-- [ ] **Timing extraction**: estimate BPM + offset from audio so generated maps
-      get real `[TimingPoints]` instead of a placeholder.
 - [ ] **Slider shapes**: model curve control points (currently linear 2-point
       sliders on decode).
-- [ ] **Rhythm snapping**: quantise generated onsets to beat subdivisions.
+- [ ] **Rhythm snapping**: quantise generated onsets to the estimated beat grid.
 - [ ] **Eval metrics**: onset F1 vs ground truth, density/spacing histograms.
 - [ ] EMA weights + cosine LR schedule for higher-quality samples.
 

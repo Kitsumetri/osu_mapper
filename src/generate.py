@@ -12,11 +12,12 @@ import numpy as np
 import torch
 
 from .config import AUDIO, N_SIGNAL_CHANNELS
-from .data.audio import audio_to_mel
+from .data.audio import load_audio, log_mel
 from .data.signal import decode_signal
+from .data.timing import estimate_timing_point
 from .model.diffusion import GaussianDiffusion
 from .model.unet import UNet1d
-from .parsing.beatmap import Beatmap, TimingPoint, write_osu
+from .parsing.beatmap import Beatmap, write_osu
 
 
 def generate(audio_path, ckpt_path, out_path, steps=200, window=2048, base=64):
@@ -28,7 +29,8 @@ def generate(audio_path, ckpt_path, out_path, steps=200, window=2048, base=64):
     model.eval()
     diff = GaussianDiffusion(timesteps=ckpt.get("args", {}).get("timesteps", 1000), device=device)
 
-    mel = audio_to_mel(audio_path)  # (n_mels, T)
+    y = load_audio(audio_path)          # decode once, reuse for mel + timing
+    mel = log_mel(y)                    # (n_mels, T)
     T = mel.shape[1]
     # round up to multiple of 16 for clean U-Net striding
     pad = (-T) % 16
@@ -45,8 +47,12 @@ def generate(audio_path, ckpt_path, out_path, steps=200, window=2048, base=64):
     bm.audio_filename = Path(audio_path).name
     bm.title = Path(audio_path).stem
     bm.version = "AI Generated"
-    tps = [TimingPoint(0, 500.0, 4, True)]
-    write_osu(bm, objects, out_path, timing_points=tps)
+
+    # estimate BPM + offset from the audio (best-effort; see data/timing.py)
+    tp = estimate_timing_point(y)
+    bpm = 60000.0 / tp.beat_length
+    print(f"estimated timing: {bpm:.1f} BPM, offset {tp.time} ms")
+    write_osu(bm, objects, out_path, timing_points=[tp])
     print(f"wrote {out_path}")
     return out_path
 
