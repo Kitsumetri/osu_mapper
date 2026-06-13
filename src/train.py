@@ -164,10 +164,12 @@ def main():
     ap.add_argument("--batch", type=int, default=12)
     ap.add_argument("--accum", type=int, default=1, help="gradient accumulation steps")
     ap.add_argument("--crop", type=int, default=3072)
-    ap.add_argument("--base", type=int, default=160)
+    # base 128 is the proven-stable size; base 160 + bf16 diverged twice (v2 @e21,
+    # v3 @e12) even with QK-norm. Keep LR/clip conservative.
+    ap.add_argument("--base", type=int, default=128)
     ap.add_argument("--attn", type=lambda s: s.lower() != "false", default=True)
-    ap.add_argument("--lr", type=float, default=1.5e-4)
-    ap.add_argument("--grad-clip", type=float, default=0.5)
+    ap.add_argument("--lr", type=float, default=1.2e-4)
+    ap.add_argument("--grad-clip", type=float, default=0.3)
     ap.add_argument("--cfg-drop", type=float, default=0.15,
                     help="prob. of dropping difficulty context (classifier-free guidance)")
     ap.add_argument("--ema", type=float, default=0.999, help="EMA decay (0 disables)")

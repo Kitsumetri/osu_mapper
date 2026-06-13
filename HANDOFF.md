@@ -114,7 +114,13 @@ python -m src.corpus_stats --songs "C:/osu!/Songs"   # rebuild reference_stats.j
 
 - **DDIM, not strided ancestral DDPM** — strided ancestral under-denoises to mush.
 - **bf16 + attention diverges** without QK-norm + learned temperature + zero-init
-  output proj. The v2 base-160 run blew up at epoch 21 before this fix.
+  output proj. Even *with* QK-norm, **base 160 + bf16 diverged twice** (v2 @ e21,
+  v3 @ e12) — a sudden loss spike (0.012 → 0.5 → ~1.0, stuck). **base 128 is the
+  proven-stable size** (the v3 draft ran 60 epochs clean); it's now the default,
+  with LR 1.2e-4 / grad-clip 0.3. If scaling to 160+, lower LR further (≤8e-5).
+  Watch the loss curve; `best.pt` survives a late divergence (it's the pre-spike
+  epoch). Divergence monitor must match `avg_loss 0.[3-9]` (stdout uses spaces,
+  not `loss: 0.9`).
 - **Slider duration comes from pixel length / SV**, not your stored end-time —
   `write_osu` clamps slider length to avoid time overlap (~19% overlapped before).
 - **Frame grid, not ms** — keeps audio↔map aligned.
