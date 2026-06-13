@@ -18,7 +18,7 @@ from .data.timing import estimate_timing_point
 from .model.diffusion import GaussianDiffusion
 from .model.unet import UNet1d
 from .parsing.beatmap import Beatmap, write_osu
-from .postprocess import snap_to_grid
+from .postprocess import snap_to_grid, trim_isolated_ends
 
 
 def generate(audio_path, ckpt_path, out_path, steps=200, window=2048, base=64,
@@ -46,7 +46,8 @@ def generate(audio_path, ckpt_path, out_path, steps=200, window=2048, base=64,
     sig = sig[0, :, :T].float().cpu().numpy()
 
     objects = decode_signal(sig)
-    print(f"generated {len(objects)} hit objects")
+    trimmed = trim_isolated_ends(objects)
+    print(f"generated {len(objects)} hit objects ({trimmed} dangling end notes trimmed)")
 
     bm = Beatmap(path=Path(out_path))
     bm.audio_filename = Path(audio_path).name

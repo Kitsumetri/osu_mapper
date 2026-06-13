@@ -196,7 +196,8 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
                   onset_threshold: float = 0.3,
                   min_gap_frames: int = 2,
                   min_spinner_frames: int = 26,
-                  spinner_min_mean: float = 0.3) -> list[HitObject]:
+                  spinner_min_mean: float = 0.3,
+                  min_slider_frames: int = 4) -> list[HitObject]:
     """Decode a generated signal back into discrete hit objects.
 
     Strategy: peak-pick the onset channel for object times; read cursor
@@ -251,16 +252,15 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
                 next_onset = min(next_onset, a)
                 break
 
-        # slider if slider_hold is active just after the onset
+        # slider if slider_hold is active just after the onset, AND the hold is
+        # long enough — a 1-2 frame "slider" is an unplayable ultra-fast slider,
+        # so emit a circle instead.
         win = slider[p:min(n, p + 4)]
-        if win.size and win.max() > 0.0:
-            # find slider end, clamped to before the next onset
-            j = p
-            while j < n and slider[j] > 0.0:
-                j += 1
-            end_frame = max(p + 1, j - 1)
-            end_frame = min(end_frame, next_onset - 1)
-            end_frame = max(end_frame, p + 1)
+        j = p
+        while j < n and slider[j] > 0.0:
+            j += 1
+        end_frame = max(p + 1, min(j - 1, next_onset - 1))
+        if win.size and win.max() > 0.0 and (end_frame - p) >= min_slider_frames:
             # follow the cursor path during the hold -> a real curved slider
             ctype, pts, length = _slider_path((x, y), cur_x, cur_y, p, end_frame)
             typ = TYPE_SLIDER | (TYPE_NEW_COMBO if is_nc else 0)

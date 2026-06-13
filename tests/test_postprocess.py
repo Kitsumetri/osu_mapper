@@ -32,6 +32,20 @@ def test_triplet_aware():
     assert abs(objs[0].time - 133) <= 1
 
 
+def test_trim_trailing_isolated_note():
+    from src.postprocess import trim_isolated_ends
+    objs = _circles([0, 200, 400, 600]) + _circles([20000])  # lone note 19s later
+    removed = trim_isolated_ends(objs, max_gap_ms=3000)
+    assert removed == 1
+    assert max(o.time for o in objs) == 600
+
+
+def test_trim_keeps_dense_tail():
+    from src.postprocess import trim_isolated_ends
+    objs = _circles([0, 200, 400, 600, 800])  # all close together
+    assert trim_isolated_ends(objs, max_gap_ms=3000) == 0
+
+
 def test_preserves_slider_duration():
     from src.parsing.beatmap import TYPE_SLIDER
     tp = TimingPoint(0, 400.0, 4, True)

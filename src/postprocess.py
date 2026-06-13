@@ -12,6 +12,27 @@ from __future__ import annotations
 from .parsing.beatmap import HitObject, TimingPoint
 
 
+def trim_isolated_ends(objects: list[HitObject], max_gap_ms: float = 3000.0) -> int:
+    """Drop leading/trailing objects separated from the body by a huge silent gap.
+
+    Fixes the "one lone note seconds after the song ends" artefact: if the last
+    object starts more than ``max_gap_ms`` after the previous one finishes, it is
+    almost certainly not musical. Returns the number of objects removed.
+    """
+    if len(objects) < 3:
+        return 0
+    objs = sorted(objects, key=lambda o: o.time)
+    removed = 0
+    while len(objs) >= 2 and objs[-1].time - objs[-2].end_time > max_gap_ms:
+        objs.pop()
+        removed += 1
+    while len(objs) >= 2 and objs[1].time - objs[0].end_time > max_gap_ms:
+        objs.pop(0)
+        removed += 1
+    objects[:] = objs
+    return removed
+
+
 def snap_to_grid(objects: list[HitObject], tp: TimingPoint,
                  divisors: tuple[int, ...] = (4,),
                  max_snap_ms: float | None = None) -> int:
