@@ -109,11 +109,12 @@ def test_curved_slider_becomes_bezier():
     sig = np.full((N_SIGNAL_CHANNELS, n), -1.0, dtype=np.float32)
     sig[0, 5] = 1.0          # one onset
     sig[1, 5:40] = 1.0       # long slider hold
-    # cursor traces a curve (quarter circle-ish) during the hold
+    # cursor traces a strong half-circle curve during the hold (arc/chord ~1.57,
+    # well above the straight-vs-curve threshold)
     fr = np.arange(n)
-    ang = np.clip((fr - 5) / 35.0, 0, 1) * (np.pi / 2)
-    sig[4] = np.cos(ang) * 0.5   # x
-    sig[5] = np.sin(ang) * 0.5   # y
+    ang = np.clip((fr - 5) / 35.0, 0, 1) * np.pi
+    sig[4] = np.cos(ang) * 0.5   # x: +0.5 -> -0.5
+    sig[5] = np.sin(ang) * 0.5   # y: 0 -> peak -> 0
     dec = decode_signal(sig, onset_threshold=0.3, min_spinner_frames=100)
     sliders = [o for o in dec if o.is_slider]
     assert sliders, "expected a slider"

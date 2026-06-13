@@ -184,9 +184,11 @@ def _slider_path(start, cur_x, cur_y, p, end_frame, max_anchors: int = 6):
     if not pts:
         return "L", [(end_x, end_y)], float(np.hypot(end_x - sx, end_y - sy)) or 10.0
 
-    # straight-line distance vs path length: if the path barely curves, keep it linear
+    # straight-line distance vs path length: only call it a curve if the path is
+    # meaningfully longer than a straight line (a low threshold turns model noise
+    # into spurious wiggly Beziers).
     straight = float(np.hypot(prev[0] - sx, prev[1] - sy))
-    ctype = "B" if (length > straight * 1.05 and len(pts) >= 2) else "L"
+    ctype = "B" if (length > straight * 1.10 and len(pts) >= 2) else "L"
     if ctype == "L":
         pts = [pts[-1]]
         length = straight or 10.0
