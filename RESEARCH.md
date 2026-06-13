@@ -2,8 +2,27 @@
 
 Notes driven by play-test feedback: the maps are *somewhat* playable and follow
 the rhythm, but (a) patterns look like random clusters rather than real osu!
-patterns, and (b) sliders are only straight 2-point lines. This doc summarises
-the relevant mapping concepts and how each maps to a concrete model change.
+patterns, and (b) early output had only straight 2-point sliders. This doc
+summarises the relevant mapping concepts and how each maps to a concrete model
+change.
+
+## 0. Implementation status
+
+What of the plan below is already in the codebase vs still proposed:
+
+| Item | Status |
+|------|--------|
+| Curved Bezier sliders (encode shape into cursor signal, decode body) — §3.B interim | **done** (`signal.py`) |
+| Eval metrics (density, stream/jump, spacing, on-grid) — §3/§5 | **done** (`metrics.py`) |
+| Scale + capacity: 3004 maps, 97M attention U-Net, EMA, cosine LR — §3.D | **done** |
+| Store kiai / timing / difficulty / creator metadata — §7.1 | **done** (manifest) |
+| Difficulty defaults (AR8/OD7/HP5/CS4) — §6 | **done** (`generate.py`) |
+| **Rhythm snapping** to beat grid — §3.A / §4 | *next* |
+| DS / flow-aware position coupling — §3.A | proposed |
+| Difficulty / style / mapper conditioning — §3.C / §5 | proposed |
+| Kiai signal channel — §7.2 | proposed |
+| Multi-section timing on output, downbeat tracking — §6 / §7.3 | proposed |
+| Hitsound accent channel — §7.4 | proposed |
 
 ## 1. osu!standard pattern vocabulary
 
@@ -39,15 +58,19 @@ Source: [osu! file format](https://osu.ppy.sh/wiki/en/Client/File_formats/osu_(f
 Curve types in the `.osu` hit-object: `B` bezier, `C` catmull, `L` linear,
 `P` perfect circle. Encoding: `curveType|x1:y1|x2:y2|...,slides,length`.
 
-- **Linear (L)** — 2 points, straight (what we generate now).
+- **Linear (L)** — 2 points, straight.
 - **Perfect circle (P)** — exactly 3 points, arc → semicircles.
 - **Bezier (B)** — N control points; degree = N−1. *Most real sliders.*
   Repeated/coincident anchors create sharp "red-anchor" corners → waves,
   S-curves, blankets, and slider-art are all bezier with many points.
 - **Catmull (C)** — legacy, passes through points; rare in modern maps.
 
-Our decoder reconstructs only the start + end frame → a straight `L|end`. We
-throw away the *body shape* entirely because the signal has no channel for it.
+**Status (implemented):** the encoder now traces a slider's control points into
+the `cursor_x/y` channel across the hold, and the decoder samples that path and
+emits a multi-point **Bezier** (`_slider_path` in `signal.py`), falling back to
+linear for short/straight sliders. Real-map round-trip Bezier ratio went 5% →
+27%. Remaining work is the *exact* control-point representation (§3.B proper) and
+`P`/red-anchor shapes.
 
 ## 3. Concrete model/representation changes
 
@@ -67,32 +90,34 @@ Ordered by effort-to-impact.
   post-processing this removes the "loose" feel.
 
 ### B. Real slider shapes (fixes single-line sliders) — medium
-- Add slider-body channels to the signal: e.g. encode the slider path as a few
-  **relative control-point offsets** (a fixed K anchors, K≈3–4) plus a curve-type
-  flag, sampled at the slider-head frame. Decode → `B|p1|p2|...`.
-- Simpler interim win **without retraining**: in the decoder, sample the
-  `cursor_x/y` signal *along the slider's held frames* and emit those as bezier
-  control points (`B|...`). The cursor channel already moves during the hold, so
-  the body shape is partially there — we currently discard it. This alone yields
-  curved/multi-direction sliders.
+- **[done — interim]** The decoder samples `cursor_x/y` along the slider's held
+  frames and emits them as Bezier control points; the encoder now writes the
+  slider's control points into the cursor channel so the shape is learnable.
+- **[proposed — proper]** Add dedicated slider-body channels: encode the path as
+  a few **relative control-point offsets** (fixed K≈3–4 anchors) + a curve-type
+  flag at the slider-head frame, so shape is a first-class target rather than
+  riding on the shared cursor channel.
 
 ### C. Conditioning for controllable style — medium/large
 - Condition the diffusion on **difficulty** (star rating / CS / AR / OD) and a
   coarse **pattern/density token** so the user can ask for "stream-heavy Insane"
-  vs "jump map". Star rating + object density are computable from the data.
+  vs "jump map". Star rating + object density are computable from the data. The
+  manifest already stores AR/OD/HP/CS/bpm/creator, so the data side is ready.
 
 ### D. Scale & capacity — ongoing
-- Train on far more than 601 difficulties (31k+ available); dedupe shared audio
-  to cut storage. More data + bigger U-Net should sharpen pattern structure.
-- EMA weights + cosine LR for cleaner samples.
+- **[done]** Now training on 3004 difficulties (deduped) with a 97M-param
+  attention U-Net, EMA, and cosine LR. Further scaling to the full 31k+ library
+  is future work.
 
 ## 4. Suggested next step (smallest change, biggest felt improvement)
 
-Implement **B-interim** (decode slider body from the existing cursor signal) and
-**A-postprocess** (beat-snap onsets + per-section DS normalisation). Both are
-*decoder/post-processing only* — no retraining — and directly target the two
-play-test complaints. Then move to flow/DS-conditioned training (A) and
-control-point slider channels (B) for the real fix.
+**B-interim** (curved sliders from the cursor signal) is **done**. The remaining
+no-retrain win is **A-postprocess**: beat-snap generated onsets to the estimated
+grid (and per-section DS normalisation), which directly attacks the measured
+rhythm gap (`metrics.py`: ~0.70 on-¼-grid vs ~0.99 for real maps). Watch out for
+triplet sections (1/3, 1/6 divisors — ~10%+ of maps). After that, move to
+flow/DS-conditioned training (§3.A) and proper control-point slider channels
+(§3.B) for the deeper fixes.
 
 ## 5. Player/community vocabulary & mapper signature styles
 
@@ -134,9 +159,10 @@ real osu!, these named styles are effectively the **labels we'd condition on**.
   "ProfessionalBox-like tech". Cluster maps by pattern statistics (spacing
   variance, stream %, SV variance) to derive style classes where Creator is too
   sparse.
-- **Pattern-aware metrics** to *measure* style: count 1-2s (alternating angle
-  ~180°), detect polygon jumps (constant spacing + turning angle), stream ratio
-  (¼-spaced runs), SV-change rate. These double as eval metrics and as targets
+- **Pattern-aware metrics** to *measure* style. `src/metrics.py` already computes
+  density, stream/jump ratios, spacing stats, and on-¼-grid ratio. Still to add:
+  count 1-2s (alternating angle ~180°), polygon-jump detection (constant spacing +
+  turning angle), and SV-change rate. These double as eval metrics and as targets
   for a pattern-conditioning token.
 - **Curriculum**: start by conditioning on the easy axes (density, star rating,
   burst-vs-alt), then add mapper embeddings once data is scaled — signature
@@ -206,9 +232,11 @@ A `.osu` carries timing/effect/sound metadata we don't yet model. Storing it now
   so they're a strong supervision signal for "where the emphasis is".
 
 ### How to adapt (incremental, none block current work)
-1. **Extract & store now** (this session): per map, save kiai spans, all timing
-   points (BPM sections + SV), and difficulty/creator metadata in the preprocess
-   manifest. No model change; future-proofs conditioning.
+1. **Extract & store** — **[done]**: the preprocess manifest records `has_kiai`,
+   `n_timing_points`, `bpm`, and difficulty/creator metadata per map (and the
+   parser exposes `kiai_spans()` / `TimingPoint.kiai`). No model change yet;
+   future-proofs conditioning. (Full per-section SV/kiai timeseries not stored
+   yet — only summary flags.)
 2. **Kiai channel** (small experiment): add a 7th signal channel `kiai_hold`
    (+1 during kiai) so the model learns to ramp density/spacing in choruses;
    condition or just predict it and use it to modulate decode density.
