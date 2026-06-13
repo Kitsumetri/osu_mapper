@@ -18,9 +18,11 @@ from .data.timing import estimate_timing_point
 from .model.diffusion import GaussianDiffusion
 from .model.unet import UNet1d
 from .parsing.beatmap import Beatmap, write_osu
+from .postprocess import snap_to_grid
 
 
-def generate(audio_path, ckpt_path, out_path, steps=200, window=2048, base=64, use_ema=True):
+def generate(audio_path, ckpt_path, out_path, steps=200, window=2048, base=64,
+             use_ema=True, snap=True):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     ckpt = torch.load(ckpt_path, map_location=device)
     cargs = ckpt.get("args", {})
@@ -61,6 +63,9 @@ def generate(audio_path, ckpt_path, out_path, steps=200, window=2048, base=64, u
     tp = estimate_timing_point(y)
     bpm = 60000.0 / tp.beat_length
     print(f"estimated timing: {bpm:.1f} BPM, offset {tp.time} ms")
+    if snap:
+        moved = snap_to_grid(objects, tp)
+        print(f"beat-snapped {moved}/{len(objects)} objects to the grid")
     write_osu(bm, objects, out_path, timing_points=[tp])
     print(f"wrote {out_path}")
     return out_path
@@ -72,8 +77,9 @@ def main():
     ap.add_argument("--ckpt", default="checkpoints/model_last.pt")
     ap.add_argument("--out", default="generated.osu")
     ap.add_argument("--steps", type=int, default=100)
+    ap.add_argument("--no-snap", action="store_true", help="disable beat-snapping")
     args = ap.parse_args()
-    generate(args.audio, args.ckpt, args.out, steps=args.steps)
+    generate(args.audio, args.ckpt, args.out, steps=args.steps, snap=not args.no_snap)
 
 
 if __name__ == "__main__":
