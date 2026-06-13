@@ -29,16 +29,18 @@ def _make_dataset(root, items):
 def test_dataset_crops_long_sample(tmp_path):
     _make_dataset(tmp_path, [("a", "aud0", 4000, 300)])
     ds = OsuSignalDataset(tmp_path, crop_frames=1024)
-    sig, mel = ds[0]
+    sig, mel, ctx = ds[0]
     assert sig.shape == (N_SIGNAL_CHANNELS, 1024)
     assert mel.shape == (AUDIO.n_mels, 1024)
     assert sig.dtype == torch.float32 and mel.dtype == torch.float32
+    from src.conditioning import CONTEXT_DIM
+    assert ctx.shape == (CONTEXT_DIM,)
 
 
 def test_dataset_pads_short_sample(tmp_path):
     _make_dataset(tmp_path, [("b", "aud0", 300, 100)])
     ds = OsuSignalDataset(tmp_path, crop_frames=1024)
-    sig, mel = ds[0]
+    sig, mel, ctx = ds[0]
     assert sig.shape[1] == 1024 and mel.shape[1] == 1024
     assert float(sig[0, -1]) == -1.0   # padded onset stays at baseline
     assert float(sig[4, -1]) == 0.0    # padded cursor centred

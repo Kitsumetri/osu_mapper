@@ -53,20 +53,29 @@ class GaussianDiffusion:
         return x
 
     @torch.no_grad()
-    def ddim_sample(self, model, cond, shape, steps: int = 100, eta: float = 0.0):
+    def ddim_sample(self, model, cond, shape, steps: int = 100, eta: float = 0.0,
+                    ctx=None, guidance: float = 1.0):
         """DDIM sampling: correct accelerated sampling over a step subsequence.
 
-        eta=0 is deterministic. Returns the final x0 estimate (B,C,T).
+        eta=0 is deterministic. ``ctx`` is the difficulty context vector; with
+        ``guidance`` > 1 we apply classifier-free guidance toward it. Returns the
+        final x0 estimate (B,C,T).
         """
         b = shape[0]
         x = torch.randn(shape, device=self.device)
         # evenly spaced subsequence of timesteps, descending
         seq = torch.linspace(0, self.timesteps - 1, steps, device=self.device).long()
         seq = torch.unique(seq).tolist()
+        use_cfg = ctx is not None and guidance != 1.0
         for k in reversed(range(len(seq))):
             i = seq[k]
             t = torch.full((b,), i, device=self.device, dtype=torch.long)
-            eps = model(x, cond, t)
+            if use_cfg:
+                eps_c = model(x, cond, t, ctx=ctx)
+                eps_u = model(x, cond, t, ctx=None)
+                eps = eps_u + guidance * (eps_c - eps_u)
+            else:
+                eps = model(x, cond, t, ctx=ctx)
             acp_t = self.alphas_cumprod[i]
             x0 = (x - torch.sqrt(1 - acp_t) * eps) / torch.sqrt(acp_t)
             x0 = x0.clamp(-1.5, 1.5)

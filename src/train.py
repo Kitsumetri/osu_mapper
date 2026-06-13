@@ -21,6 +21,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
+from .conditioning import CONTEXT_DIM
 from .config import AUDIO, N_SIGNAL_CHANNELS
 from .data.dataset import OsuSignalDataset
 from .model.diffusion import GaussianDiffusion
@@ -71,7 +72,8 @@ def train(args):
     dl = DataLoader(ds, batch_size=args.batch, shuffle=True, num_workers=args.workers,
                     drop_last=True, pin_memory=True, persistent_workers=args.workers > 0)
 
-    model = UNet1d(N_SIGNAL_CHANNELS, AUDIO.n_mels, base=args.base, attn=args.attn).to(device)
+    model = UNet1d(N_SIGNAL_CHANNELS, AUDIO.n_mels, base=args.base, attn=args.attn,
+                   ctx_dim=CONTEXT_DIM).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"model: {n_params / 1e6:.1f}M params (base={args.base}, attn={args.attn})")
     ema = EMA(model, decay=args.ema) if args.ema > 0 else None
@@ -100,15 +102,18 @@ def train(args):
         running = 0.0
         t0 = time.time()
         opt.zero_grad(set_to_none=True)
-        for i, (sig, mel) in enumerate(dl):
+        for i, (sig, mel, ctx) in enumerate(dl):
             sig = sig.to(device, non_blocking=True)
             mel = mel.to(device, non_blocking=True)
+            ctx = ctx.to(device, non_blocking=True)
             b = sig.shape[0]
+            # classifier-free guidance: randomly drop the difficulty context
+            ctx_drop = torch.rand(b, device=device) < args.cfg_drop
             t = torch.randint(0, diff.timesteps, (b,), device=device)
             noise = torch.randn_like(sig)
             x_t = diff.q_sample(sig, t, noise)
             with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=device == "cuda"):
-                pred = model(x_t, mel, t)
+                pred = model(x_t, mel, t, ctx=ctx, ctx_drop=ctx_drop)
                 loss = torch.nn.functional.mse_loss(pred, noise) / args.accum
             scaler.scale(loss).backward()
             running += loss.item() * args.accum
@@ -163,6 +168,8 @@ def main():
     ap.add_argument("--attn", type=lambda s: s.lower() != "false", default=True)
     ap.add_argument("--lr", type=float, default=1.5e-4)
     ap.add_argument("--grad-clip", type=float, default=0.5)
+    ap.add_argument("--cfg-drop", type=float, default=0.15,
+                    help="prob. of dropping difficulty context (classifier-free guidance)")
     ap.add_argument("--ema", type=float, default=0.999, help="EMA decay (0 disables)")
     ap.add_argument("--timesteps", type=int, default=1000)
     ap.add_argument("--warmup", type=int, default=1000)

@@ -112,11 +112,19 @@ class UNet1d(nn.Module):
         mults=(1, 2, 4, 8),
         t_dim: int = 256,
         attn: bool = True,
+        ctx_dim: int = 0,
     ):
         super().__init__()
         self.sig_channels = sig_channels
         self.t_dim = t_dim
+        self.ctx_dim = ctx_dim
         self.time_mlp = nn.Sequential(nn.Linear(t_dim, t_dim), nn.SiLU(), nn.Linear(t_dim, t_dim))
+        if ctx_dim > 0:
+            # difficulty context -> added to the timestep embedding (FiLM path).
+            # A learned "null" embedding enables classifier-free guidance.
+            self.ctx_mlp = nn.Sequential(nn.Linear(ctx_dim, t_dim), nn.SiLU(),
+                                         nn.Linear(t_dim, t_dim))
+            self.null_ctx = nn.Parameter(torch.zeros(t_dim))
         in_ch = sig_channels + cond_channels
         self.in_conv = nn.Conv1d(in_ch, base, 3, padding=1)
 
@@ -148,9 +156,22 @@ class UNet1d(nn.Module):
         self.out_norm = nn.GroupNorm(math.gcd(8, prev), prev)
         self.out_conv = nn.Conv1d(prev, sig_channels, 3, padding=1)
 
-    def forward(self, x_t, cond, t):
-        """x_t (B,C,T), cond (B,Cc,T), t (B,)"""
+    def forward(self, x_t, cond, t, ctx=None, ctx_drop=None):
+        """x_t (B,C,T), cond=mel (B,Cc,T), t (B,), ctx (B,ctx_dim) difficulty.
+
+        ctx=None uses the null embedding (unconditioned). ctx_drop (B,) bool mask
+        replaces those rows with the null embedding (classifier-free guidance).
+        """
         t_emb = self.time_mlp(timestep_embedding(t, self.t_dim))
+        if self.ctx_dim > 0:
+            b = x_t.shape[0]
+            if ctx is None:
+                c_emb = self.null_ctx.expand(b, -1)
+            else:
+                c_emb = self.ctx_mlp(ctx)
+                if ctx_drop is not None:
+                    c_emb = torch.where(ctx_drop[:, None], self.null_ctx.expand(b, -1), c_emb)
+            t_emb = t_emb + c_emb
         h = self.in_conv(torch.cat([x_t, cond], dim=1))
         skips = [h]
         for block, attn, ds in zip(self.downs, self.down_attn, self.down_samps):

@@ -14,6 +14,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from ..conditioning import context_from_manifest
+
 
 @lru_cache(maxsize=256)
 def _load_mel_cached(path_str: str) -> np.ndarray:
@@ -53,4 +55,5 @@ class OsuSignalDataset(Dataset):
             sigpad = np.full((sig.shape[0], pad), -1.0, dtype=np.float32)
             sigpad[4:6] = 0.0  # cursor centre
             sig = np.concatenate([sig, sigpad], axis=1)
-        return torch.from_numpy(sig), torch.from_numpy(mel)
+        ctx = torch.tensor(context_from_manifest(it), dtype=torch.float32)
+        return torch.from_numpy(sig), torch.from_numpy(mel), ctx

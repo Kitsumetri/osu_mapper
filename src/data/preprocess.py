@@ -23,6 +23,7 @@ import numpy as np
 from tqdm import tqdm
 
 from ..config import AUDIO
+from ..difficulty import star_rating
 from ..parsing.beatmap import parse_beatmap
 from .audio import audio_to_mel
 from .signal import encode_beatmap
@@ -100,10 +101,12 @@ def process_library(songs_dir: Path, out_dir: Path, limit: int | None = None,
                     continue
                 item_id = _safe(f"{set_dir.name}__{bm.version}").replace(" ", "_")
                 np.savez_compressed(items_dir / f"{item_id}.npz", signal=sig)
+                sr = star_rating(bm.path)
                 manifest.append({
                     "item_id": item_id, "audio_id": aid,
                     "creator": bm.creator, "title": bm.title, "version": bm.version,
                     "n_objects": len(bm.hit_objects),
+                    "star_rating": round(sr, 3) if sr is not None else 0.0,
                     "cs": bm.circle_size, "ar": bm.approach_rate,
                     "od": bm.overall_difficulty, "hp": bm.hp,
                     "slider_multiplier": bm.slider_multiplier,

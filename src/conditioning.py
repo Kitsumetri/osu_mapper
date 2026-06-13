@@ -22,6 +22,22 @@ def context_vector(sr: float, ar: float, od: float, hp: float, cs: float,
     return [min(1.5, max(0.0, raw[f] / _SCALE[f])) for f in CONTEXT_FIELDS]
 
 
+def target_context(sr: float, ar: float | None = None, od: float | None = None,
+                   hp: float | None = None, cs: float | None = None,
+                   density: float | None = None) -> list[float]:
+    """Build an inference context from a target star rating.
+
+    AR/OD/HP/CS/density default to rough functions of SR (matching the corpus
+    trends in RESEARCH.md §8) when not given explicitly.
+    """
+    ar = ar if ar is not None else min(10.0, 4.0 + 0.7 * sr)
+    od = od if od is not None else min(10.0, 3.0 + 0.8 * sr)
+    hp = hp if hp is not None else 5.0
+    cs = cs if cs is not None else 4.0
+    density = density if density is not None else max(0.8, 0.8 * sr)
+    return context_vector(sr, ar, od, hp, cs, density)
+
+
 def context_from_manifest(item: dict) -> list[float]:
     """Build the context vector from a manifest entry (defaults if missing)."""
     dur = max(1e-6, item.get("duration_s", 1.0))
