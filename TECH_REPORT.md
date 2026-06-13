@@ -37,7 +37,7 @@ decoder $\mathcal{D}$ (Section 8) then maps a sampled signal to hit objects.
 | Symbol | Meaning |
 |--------|---------|
 | $T$ | number of time frames (sequence length) |
-| $C=6$ | map-signal channels |
+| $C=10$ | map-signal channels |
 | $F=64$ | mel bands |
 | $N$ | number of diffusion steps ($N=1000$) |
 | $t \in \{1,\dots,N\}$ | diffusion timestep (not song time) |
@@ -74,7 +74,7 @@ $$
 ### 3.2 Beatmap signal — the diffusion target
 
 The beatmap is encoded as a continuous multi-channel signal
-$\mathbf{x}_0\in[-1,1]^{C\times T}$ with $C=6$ channels:
+$\mathbf{x}_0\in[-1,1]^{C\times T}$ with $C=10$ channels (v3):
 
 | ch | name | meaning |
 |----|------|---------|
@@ -84,6 +84,8 @@ $\mathbf{x}_0\in[-1,1]^{C\times T}$ with $C=6$ channels:
 | 3 | `new_combo` | impulse at new-combo objects |
 | 4 | `cursor_x` | normalised playfield $x$, interpolated over time |
 | 5 | `cursor_y` | normalised playfield $y$, interpolated over time |
+| 6 | `kiai_hold` | $+1$ during kiai (chorus) sections, else $-1$ |
+| 7–9 | `whistle`/`finish`/`clap` | impulse at objects carrying that hitsound |
 
 **Onset / new-combo** channels place a Gaussian bump at each object's frame
 $c = \text{time}/\Delta\tau$:
@@ -282,6 +284,31 @@ attention diverged under bf16 mixed precision. The output projection is
 **zero-initialised**, so each attention block starts as an identity map and
 eases in during training.
 
+### 6.4 Difficulty conditioning & classifier-free guidance
+
+The denoiser is additionally conditioned on a **difficulty context vector**
+$\mathbf{d}\in\mathbb{R}^{6}$ — a normalised
+$[\mathrm{SR}, \mathrm{AR}, \mathrm{OD}, \mathrm{HP}, \mathrm{CS}, \text{density}]$
+(SR = the rosu-pp star rating). It is embedded and **added to the timestep
+embedding**, so every residual block is modulated by *(diffusion step +
+difficulty)*:
+
+$$ \mathbf{e} = \mathrm{MLP}_t(\gamma(t)) + g,\qquad
+g = \begin{cases} \mathrm{MLP}_d(\mathbf{d}), & \text{conditioned},\\ \mathbf{n}, & \text{null (dropped)},\end{cases} $$
+
+where $\mathbf{n}$ is a **learned null embedding**. During training the context is
+dropped to $\mathbf{n}$ with probability $p_\text{drop}=0.15$, which trains both
+the conditional and unconditional models in one network.
+
+**Classifier-free guidance.** At inference we combine the two predictions to push
+the sample toward the requested difficulty with strength $w$:
+
+$$ \hat\epsilon = \epsilon_\theta(\mathbf{x}_t,\mathbf{c},t,\mathbf{n}) + w\big(\epsilon_\theta(\mathbf{x}_t,\mathbf{c},t,\mathbf{d}) - \epsilon_\theta(\mathbf{x}_t,\mathbf{c},t,\mathbf{n})\big),\quad w\approx 2. $$
+
+$w=1$ recovers plain conditional sampling; $w>1$ trades diversity for stronger
+adherence to the target star rating. Because rosu-pp gives a cheap SR read-out of
+the *generated* map, the requested vs achieved SR can be checked and $w$ tuned.
+
 ---
 
 ## 7. Optimisation
@@ -399,7 +426,7 @@ delta.
 | Group | Value |
 |-------|-------|
 | Audio | $f_s=22050$, $n_\text{fft}=1024$, hop $=256$, $F=64$ mels, $[20,11025]$ Hz |
-| Signal | $C=6$ channels, frame rate $\approx 86$ Hz, crop $T=3072$ ($\approx 36$ s) |
+| Signal | $C=10$ channels, frame rate $\approx 86$ Hz, crop $T=3072$ ($\approx 36$ s) |
 | Diffusion | $N=1000$, linear $\beta\in[10^{-4}, 2\times10^{-2}]$, $\epsilon$-prediction |
 | Sampler | DDIM, $S\approx100$, $\eta=0$ |
 | U-Net | base $=160$, mults $(1,2,4,8)$, $t$-dim $256$, attention (4 heads, QK-norm), $\approx$ 97 M params |
