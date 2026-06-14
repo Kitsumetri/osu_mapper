@@ -14,18 +14,37 @@ import csv
 import json
 import math
 import subprocess
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from .conditioning import CONTEXT_DIM
 from .config import AUDIO, N_SIGNAL_CHANNELS
 from .data.dataset import OsuSignalDataset
 from .model.diffusion import GaussianDiffusion
 from .model.unet import UNet1d
+
+
+class _Tee:
+    """Duplicate a stream (stdout/stderr) into a log file so the run folder keeps
+    a full transcript of prints, warnings, and tracebacks."""
+
+    def __init__(self, stream, fh):
+        self.stream = stream
+        self.fh = fh
+
+    def write(self, s):
+        self.stream.write(s)
+        self.fh.write(s)
+        self.fh.flush()
+
+    def flush(self):
+        self.stream.flush()
+        self.fh.flush()
 
 
 class EMA:
@@ -74,13 +93,30 @@ def train(args):
         run_dir = Path(args.runs) / run_id
     ckpt_dir = run_dir / "ckpt"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    print(f"device={device}  run={run_dir}")
+    # tee stdout/stderr (prints, warnings, tracebacks) into runs/<id>/train.log
+    log_fh = open(run_dir / "train.log", "a", encoding="utf-8")  # noqa: SIM115
+    sys.stdout = _Tee(sys.stdout, log_fh)
+    sys.stderr = _Tee(sys.stderr, log_fh)
+    print(f"device={device}  run={run_dir}  ({datetime.now():%Y-%m-%d %H:%M:%S})")
 
+    # train/val split: hold out a deterministic slice for validation. The val set
+    # uses a non-augmented dataset view so the metric is stable across epochs.
     ds = OsuSignalDataset(args.data, crop_frames=args.crop, min_objects=args.min_objects,
                           augment=args.augment)
-    print(f"dataset: {len(ds)} difficulties")
-    dl = DataLoader(ds, batch_size=args.batch, shuffle=True, num_workers=args.workers,
+    val_ds_full = OsuSignalDataset(args.data, crop_frames=args.crop,
+                                   min_objects=args.min_objects, augment=False)
+    n_total = len(ds)
+    perm = torch.randperm(n_total, generator=torch.Generator().manual_seed(1234)).tolist()
+    n_val = int(n_total * args.val_frac) if args.val_frac > 0 else 0
+    val_idx, train_idx = perm[:n_val], perm[n_val:]
+    train_ds = Subset(ds, train_idx) if n_val else ds
+    val_ds = Subset(val_ds_full, val_idx) if n_val else None
+    print(f"dataset: {n_total} difficulties (train {len(train_ds)}, val {n_val})")
+    dl = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=args.workers,
                     drop_last=True, pin_memory=True, persistent_workers=args.workers > 0)
+    val_dl = (DataLoader(val_ds, batch_size=args.batch, shuffle=False,
+                         num_workers=args.workers, drop_last=False, pin_memory=True)
+              if val_ds is not None else None)
 
     model = UNet1d(N_SIGNAL_CHANNELS, AUDIO.n_mels, base=args.base, attn=args.attn,
                    ctx_dim=CONTEXT_DIM, attn_levels=args.attn_levels).to(device)
@@ -121,7 +157,32 @@ def train(args):
     metrics = open(run_dir / "metrics.csv", "a" if not new_metrics else "w", newline="")  # noqa: SIM115
     writer = csv.writer(metrics)
     if new_metrics:
-        writer.writerow(["epoch", "avg_loss", "lr", "sec"])
+        writer.writerow(["epoch", "avg_loss", "val_loss", "lr", "sec"])
+
+    @torch.no_grad()
+    def _validate():
+        """Average diffusion loss over the held-out set. Uses a fixed RNG for the
+        timestep/noise draws so the number is comparable across epochs."""
+        if val_dl is None:
+            return None
+        model.eval()
+        g = torch.Generator(device=device).manual_seed(1234)
+        tot, nb = 0.0, 0
+        for sig, mel, ctx in val_dl:
+            sig = sig.to(device, non_blocking=True)
+            mel = mel.to(device, non_blocking=True)
+            ctx = ctx.to(device, non_blocking=True)
+            b = sig.shape[0]
+            t = torch.randint(0, diff.timesteps, (b,), device=device, generator=g)
+            noise = torch.randn(sig.shape, device=device, generator=g)
+            x_t = diff.q_sample(sig, t, noise)
+            with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=device == "cuda"):
+                pred = model(x_t, mel, t, ctx=ctx)      # full conditioning (no CFG drop)
+                loss = torch.nn.functional.mse_loss(pred, noise)
+            tot += loss.item()
+            nb += 1
+        model.train()
+        return tot / max(1, nb)
 
     for epoch in range(start_epoch, args.epochs):
         model.train()
@@ -159,11 +220,17 @@ def train(args):
                     cur = loss.item() * args.accum
                     print(f"  e{epoch} step {gstep}/{total_steps} loss {cur:.4f} lr {lr:.2e}")
         avg = running / max(1, len(dl))
+        val = _validate()
         dt = time.time() - t0
         lr_now = opt.param_groups[0]["lr"]
-        print(f"epoch {epoch} avg_loss {avg:.4f} lr {lr_now:.2e} ({dt:.1f}s)")
-        writer.writerow([epoch, f"{avg:.5f}", f"{lr_now:.3e}", f"{dt:.1f}"])
+        val_str = f"{val:.4f}" if val is not None else "n/a"
+        print(f"epoch {epoch} avg_loss {avg:.4f} val_loss {val_str} lr {lr_now:.2e} ({dt:.1f}s)")
+        writer.writerow([epoch, f"{avg:.5f}", f"{val:.5f}" if val is not None else "",
+                         f"{lr_now:.3e}", f"{dt:.1f}"])
         metrics.flush()
+
+        # select the best checkpoint by val loss when available, else train loss
+        score = val if val is not None else avg
 
         def _ckpt(path, epoch=epoch, best=best, gstep=gstep):
             torch.save({"model": model.state_dict(),
@@ -173,13 +240,13 @@ def train(args):
                         "git_commit": config["git_commit"]}, path)
 
         _ckpt(ckpt_dir / "last.pt")
-        if avg < best:
-            best = avg
+        if score < best:
+            best = score
             _ckpt(ckpt_dir / "best.pt", best=best)
         if (epoch + 1) % args.save_every == 0:
             _ckpt(ckpt_dir / f"epoch_{epoch + 1}.pt")
     metrics.close()
-    print(f"done. best avg_loss {best:.4f}  ->  {run_dir}")
+    print(f"done. best score {best:.4f}  ->  {run_dir}")
 
 
 def main():
@@ -209,6 +276,8 @@ def main():
     ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--min-objects", type=int, default=50)
+    ap.add_argument("--val-frac", type=float, default=0.02,
+                    help="fraction of difficulties held out for validation (0 disables)")
     ap.add_argument("--log-every", type=int, default=50)
     ap.add_argument("--save-every", type=int, default=25)
     ap.add_argument("--resume", default=None,
