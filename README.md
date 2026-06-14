@@ -1,5 +1,7 @@
 # osu_mapper — audio → osu! beatmap generation
 
+> **Continuing this project? Start with [`NEW_AGENT_PROMPT.md`](NEW_AGENT_PROMPT.md) and [`HANDOFF.md`](HANDOFF.md).**
+
 A diffusion-based pipeline that learns to generate **osu!standard** beatmaps
 from raw audio, trained on a local osu! Songs library.
 
@@ -70,9 +72,10 @@ pip install -r requirements.txt
 # 1. preprocess into a deduped, manifest-indexed dataset (see STORAGE.md)
 python main.py preprocess --songs "C:/osu!/Songs" --out data/processed/std-v1 --limit 3000
 
-# 2. train the diffusion model (logs + checkpoints under runs/<id>/)
-python main.py train --data data/processed/std-v1 --tag std-v1-base160 \
-    --epochs 120 --batch 12 --crop 3072 --base 160
+# 2. train the diffusion model (logs + checkpoints under runs/<id>/).
+#    base 128 is the stable default — base 160 + bf16 diverges (see gotchas).
+python main.py train --data data/processed/std-v3-all --tag mymodel \
+    --epochs 50 --batch 32 --crop 3072
 
 # 3. generate a .osu at a target star rating (DDIM + classifier-free guidance,
 #    EMA weights, kiai + hitsounds decoded, beat-snapped)

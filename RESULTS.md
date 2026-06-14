@@ -1,6 +1,31 @@
 # Results
 
 Status of training runs and generated-map quality. Metrics use `src/metrics.py`.
+**Current release: v4** (`runs/20260614-110223-std-v4-full/ckpt/best.pt`).
+
+## v4 full-data (current release)
+
+Trained on the **entire curated library** (31,270 std maps ≤12★, parallel
+preprocess) at base 128 / batch 32. The run was **killed by an OS/sleep event at
+epoch 16** (no traceback, 0 procs — not a code bug); `best.pt` = **epoch 15,
+loss 0.0077**, which is already a strong model.
+
+SR sweep (`evaluate.py`): conditioning monotonic; metric-realism **improved over
+v3** (16–17/19 metrics in the real p10–p90 band; streams now match real, e.g.
+SR6 stream 0.34 ≈ real 0.31). SR calibration is looser than v3-heavy2 (only 15
+epochs) — `--match-sr` corrects it at inference (target 5→4.86, 6→6.02 in 2–3
+iters). Curated data (≤12★) removes the joke-map outliers.
+
+Packaged samples: `[AI-v4]` (4.86★), `[AI-v4-6star]` (6.02★).
+
+**Play feedback (v4)** — better than v3, ≈ v3b. Open items (all in
+RESEARCH §10 / HANDOFF): slider endpoints sometimes off-playfield; **no
+reverse sliders** (representation gap); kiai #1 short/mis-timed (alignment);
+streams sometimes poor; some onsets slightly off-¼ (beyond snap tolerance); curve
+shape sometimes bad; trailing unhittable last note recurs; no breaks (too dense).
+
+**To finish v4 properly**: resume/retrain to ~50 epochs (add `--resume`; the run
+died undertrained) for tighter SR calibration + cleaner curves.
 
 ## v1 baseline (complete)
 

@@ -94,9 +94,12 @@ python -m src.corpus_stats --songs "C:/osu!/Songs"   # rebuild reference_stats.j
 ## 5b. Open TODOs (the live task list is session-scoped — these are the durable copy)
 
 1. **Full-data train** on `std-v3-all` (in progress / next) — §6 below.
-2. **Cheap post-train wins** (no retrain): hitsound-threshold tune (RESEARCH
-   §10.1.C), SR-offset bake into `target_context` (§10.1.B), density/break
-   control (§10.1.D).
+2. **Cheap post-train wins** (no retrain, decode/postprocess):
+   - clamp slider control points so endpoints stay inside the playfield (v4 fb #1);
+   - tighten `trim_isolated_ends` / drop a final note unhittable even by auto (fb #7);
+   - widen/loosen onset snap so more circles land on ¼ (fb #5);
+   - hitsound-threshold tune (RESEARCH §10.1.C); SR-offset bake into
+     `target_context` (§10.1.B); density/break control / write `[Events]` breaks (§10.1.D, fb #8).
 3. **v4 re-preprocess batch**: style/mapper conditioning (§10.1.E) + dedicated
    slider-shape channels (§10.1.F) → retrain.
 4. **v5**: flow/distance-snap pattern modelling, multi-section BPM timing, learned
