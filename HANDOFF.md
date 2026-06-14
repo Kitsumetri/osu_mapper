@@ -139,7 +139,8 @@ These can't run while the 10-ch ranked train holds the GPU + venv:
 4. **Test + wire `torch.compile`** (GPU-free): verify Windows/Triton works; if so add a
    `--compile` flag handling the `_orig_mod.` state_dict prefix (else resume/generate break).
 5. **v5 fresh train** on `data/processed/ranked-v5` (17-ch) on `feat/v5-slider-style`
-   (code DONE, commit 272c736; preprocess running) — then eval/package `[AI-v5-sliders]`.
+   (code DONE, commit 272c736; **dataset DONE: 23,626 items, 17-ch, 12.2 GB**) —
+   only waiting on the GPU now. Then eval/package `[AI-v5-sliders]`.
 6. **adaLN-zero** conditioning (impl + fresh train; A/B vs plain v5) — RESEARCH §10.2.
 7. **SR-offset bake** into `target_context` (needs a finished model's SR sweep; §10.1.B).
 
