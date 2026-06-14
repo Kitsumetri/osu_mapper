@@ -392,62 +392,22 @@ clap/finish to the nearest object.
 
 ## 10. Roadmap: v3 status → v4 → v5
 
-### 10.0 v3 status (shipped)
-10-channel signal + difficulty conditioning + CFG; heavy model
-(`std-v3-heavy2`, base 128, loss 0.0056) generates difficulty-controllable maps
-(in-game SR ≈ target ±0.5), kiai, hitsounds, curved sliders. **Decode fixes from
-play feedback**: slider ends snapped to the ¼-grid (55%→0% off-grid), bezier
-control points simplified via RDP (6–8→≤4), slider time-overlap clamp,
-beat-snap, dangling-end trim, `--match-sr` calibration loop.
+### 10.0–10.1 v3/v4 — shipped (summary; details in RESULTS.md)
 
-**Still open (from play feedback) — mostly model/conditioning, not decode:**
-| # | feedback | nature | plan |
-|---|----------|--------|------|
-| 1 | no breaks (too dense) | model leaves no gaps | `[Events]` breaks shipped (§10.1.D-iii) but only mark existing gaps; real fix is density conditioning (§10.1.D-i/ii) |
-| 2 | kiai lags the drop ~10–12 s, 1/3 coverage | kiai channel alignment | more data + downbeat-snap kiai edges — v4 |
-| 6 | some circle placement odd | pattern quality | flow/DS modelling — v5 §10.2 |
-| — | streams slightly low, SR drift at extremes | undertrained tails | more data (v4) + bake SR-offset (§10.1.B) |
-| — | hitsounds slightly high (~0.5 vs 0.33) | accent threshold | ✅ DONE — `accent_threshold=0.85` → ~0.33 (§10.1.C) |
+v3 (10-ch signal + difficulty conditioning + CFG) and v4/**v4b** (ranked-only data
++ crop 4096 + attn_levels 3 + flip aug, current release) are done. Decode/post wins
+shipped and in the code: slider-end snap + RDP simplify, slider-tail clamp, beat-snap
++ trim, **C** `accent_threshold=0.85` (hitsounds → ~0.33), **D-iii** `[Events]` breaks
+(cosmetic), `--match-sr`.
 
-### 10.1 v4 — scale + control (next; some need a re-preprocess)
-
-The current full-library preprocess (`std-v3-all`, ~28k maps, curated SR≤12)
-feeds this. Batch the representation-changing items into one re-preprocess+retrain.
-
-- **A. Scale (running)** — train on the full library (≈28k vs 6k), base 128,
-  **batch 32** (VRAM was only ~half used), more epochs. Biggest single lever;
-  expected to lift streams, calibrate SR tails, sharpen patterns. *No repr change.*
-- **B. SR-offset bake (cheap, post-eval)** — measure target-vs-achieved over an
-  `evaluate.py` sweep; fit a correction into `target_context` so one pass hits the
-  target (today `--match-sr` iterates). Revisit `density≈0.8·sr` vs §8.
-- **C. Hitsound + accent threshold (cheap, decode)** — ✅ **DONE (2026-06-14)**:
-  `decode_signal(accent_threshold=0.85)` brings hitsound usage to ~0.33 (real),
-  from ~0.52 at threshold 0. Calibrated by sweeping on real generated output —
-  the accent channels saturate near +1, so only a high cut thins them.
-- **D. Density / breaks control** — the model fills everything (no gaps → no
-  breaks). Options: (i) condition density more strongly / separately so quiet
-  target → sparser; (ii) suppress onsets where the mel energy is low
-  (intro/break/outro detection); (iii) write explicit `[Events]` break periods
-  for gaps >~3.5 s. (i)+(ii) are the real fixes; (iii) is cosmetic. **(iii) DONE
-  (2026-06-14)**: `postprocess.compute_breaks` + `write_osu(breaks=…)`. But (iii)
-  only marks gaps that already exist — dense songs still produce 0 breaks, so
-  (i)/(ii) remain the open root-cause fix.
-- **E. Style / mapper conditioning** *(repr: wider ctx)* — append a coarse style
-  class (farm/stream/tech/alt, clustered from `metrics.py` pattern stats) or a
-  learned `creator` embedding to `c`, with the same CFG. Targets "Sotarks 1-2
-  farm" vs "tech". Manifest already stores `creator`.
-- **F. Slider-shape + repeats channels** *(repr: +channels)* — move slider shape
-  off the shared, noisy cursor channel into **dedicated K-anchor offset channels**
-  at the slider head, so curves are a first-class denoised target (RDP becomes a
-  clean-up, not a crutch). **Also encode `slides` (repeat count)**: today the
-  representation loses it — a reverse slider (`slides≥2`, ~8% of real sliders)
-  is encoded as a *slow forward* slider (hold box over the full out-and-back
-  duration + forward-only cursor trace), so the decoder always emits `slides=1`
-  and we never generate reverse sliders. Add a small per-slider-head repeat
-  signal (e.g. a channel whose value encodes slides 1/2/3) and decode it.
-
-*v4 batch*: one re-preprocess adding (E style label + F slider channels), retrain
-with the wider context at scale; B/C/D-ii/D-iii are inference-side, ship anytime.
+**Still open, referenced below:**
+- **B. SR-offset bake** into `target_context` — fit target-vs-achieved from one
+  `evaluate.py` sweep so one pass hits the SR (today `--match-sr` iterates).
+- **D-i/ii. Density / breaks (model-side)** — condition density harder, or suppress
+  onsets in low-mel-energy sections; the `[Events]` writer only marks existing gaps.
+- **E. Style / mapper conditioning** *(wider ctx)* — coarse style class or `creator`
+  embedding + CFG. **Deferred** from the v5 batch as too speculative (§10.3).
+- **F. Slider-shape + `slides` channels** — **implemented as the v5 batch → §10.3.**
 
 ### 10.2 v5 — pattern realism & timing fidelity
 

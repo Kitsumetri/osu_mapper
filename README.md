@@ -1,6 +1,6 @@
 # osu_mapper — audio → osu! beatmap generation
 
-> **Continuing this project? Start with [`NEW_AGENT_PROMPT.md`](NEW_AGENT_PROMPT.md) and [`HANDOFF.md`](HANDOFF.md).**
+> **Continuing this project? Start with [`HANDOFF.md`](HANDOFF.md).**
 
 A diffusion-based pipeline that learns to generate **osu!standard** beatmaps
 from raw audio, trained on a local osu! Songs library.
@@ -25,22 +25,14 @@ audio.mp3 ──► log-mel (64×T) ──┐
 ### Signal representation (`src/data/signal.py`)
 
 At ~86 frames/sec (sr 22050, hop 256 → 11.6 ms/frame) each beatmap becomes a
-`(10, T)` array in `[-1, 1]` (v3):
-
-| ch | name         | encoding |
-|----|--------------|----------|
-| 0  | onset        | Gaussian bump at each circle/slider-head |
-| 1  | slider_hold  | +1 during slider body, else -1 |
-| 2  | spinner_hold | +1 during spinner, else -1 |
-| 3  | new_combo    | Gaussian bump at new-combo objects |
-| 4  | cursor_x     | object x normalised to [-1,1], interpolated |
-| 5  | cursor_y     | object y normalised to [-1,1], interpolated |
-| 6  | kiai_hold    | +1 during kiai (chorus) sections, else -1 |
-| 7–9 | whistle/finish/clap | Gaussian bump at objects with that hitsound |
+`(C, T)` array in `[-1, 1]`. **v4 = 10 channels**: onset, slider_hold,
+spinner_hold, new_combo, cursor_x/y, kiai_hold, whistle/finish/clap. **v5 = 17**:
+adds 6 slider-anchor `dx/dy` channels (control-point offsets held over the slider
+span) + a `slides` channel, so slider shape and reverse sliders are first-class
+rather than read off the noisy cursor path (see [`TECH_REPORT.md`](TECH_REPORT.md) §3.2).
 
 Difficulty is supplied as an **input context vector** `[SR, AR, OD, HP, CS,
-density]` (conditioning, not a channel) — see [`TECH_REPORT.md`](TECH_REPORT.md) §
-conditioning.
+density]` (conditioning, not a channel).
 
 Encode/decode is near-lossless on real maps (100% onset timing recall, exact
 circle/slider/spinner counts on round-trip).
@@ -69,26 +61,25 @@ pip install -r requirements.txt
 ## Quickstart
 
 ```bash
-# 1. preprocess into a deduped, manifest-indexed dataset (see "Data & run layout")
-python main.py preprocess --songs "C:/osu!/Songs" --out data/processed/std-v1 --limit 3000
+# 1. preprocess ranked maps into a deduped, manifest-indexed dataset
+uv run python -m src.data.preprocess --songs "C:/osu!/Songs" --out data/processed/ranked --ranked-only --workers 10
 
-# 2. train the diffusion model (logs + checkpoints under runs/<id>/).
-#    base 128 is the stable default — base 160 + bf16 diverges (see gotchas).
-python main.py train --data data/processed/std-v3-all --tag mymodel \
-    --epochs 50 --batch 32 --crop 3072
+# 2. train (logs + checkpoints under runs/<id>/). base 128 is the stable default —
+#    base 160 + bf16 diverges (see gotchas). --resume runs/<id>/ckpt/last.pt to continue.
+uv run python -m src.train --data data/processed/ranked --tag mymodel \
+    --base 128 --crop 4096 --attn-levels 3 --batch 16 --epochs 60 --save-every 5
 
-# 3. generate a .osu at a target star rating (DDIM + classifier-free guidance,
-#    EMA weights, kiai + hitsounds decoded, beat-snapped)
-python main.py generate --audio song.mp3 --ckpt runs/<id>/ckpt/best.pt \
-    --out generated.osu --sr 4.5 --guidance 2.0
+# 3. generate a .osu at a target star rating (DDIM + CFG, EMA, kiai + hitsounds, snapped)
+uv run python -m src.generate --audio song.mp3 --ckpt runs/<id>/ckpt/last.pt \
+    --out generated.osu --sr 5 --match-sr --guidance 2.0
 ```
 
-Each stage is also runnable directly, e.g. `python -m src.train ...`. Training
-features: bf16, EMA, cosine LR + warmup, gradient accumulation, self-attention
-U-Net, train/val split, and per-run logging. See "Data & run layout" below.
+Training features: bf16, EMA, cosine LR + warmup, grad accumulation, self-attention
+U-Net, flip augmentation, train/val split, per-run logging, `--resume`. See "Data &
+run layout" below.
 
 > **Why train from scratch (not a pretrained model)?** The diffusion target is a
-> bespoke 10-channel beatmap "signal" with no pretrained equivalent on HF/torch.
+> bespoke multi-channel beatmap "signal" with no pretrained equivalent on HF/torch.
 > A pretrained *audio* encoder (e.g. for the mel conditioning) could help later,
 > but the denoiser itself must be trained for this representation.
 
@@ -143,9 +134,8 @@ artifacts/                     # exported, shareable outputs (generated/packaged
 ## Development
 
 ```bash
-pytest                 # 92 hermetic tests, ~6 s
-ruff check .           # lint
-ruff format .          # format
+uv run pytest          # 94 hermetic tests
+uv run ruff check .    # lint
 ```
 
 The test suite is hermetic — it builds tiny synthetic `.osu`/`.npz` fixtures in
@@ -179,34 +169,17 @@ live in `pyproject.toml` (`E,F,I,UP,B,SIM`, 100-col).
 
 ## Roadmap / TODO
 
-Done:
+**Shipped:** robust `.osu` parser/writer; near-lossless signal encode/decode;
+deduped manifest preprocessing; conditional diffusion U-Net (base 128, QK-norm
+attn, bf16, EMA) + DDPM/DDIM; end-to-end `audio → .osu` + packaging; difficulty
+conditioning + CFG; kiai + hitsound channels; curved sliders + beat/slider snap;
+eval harness (`metrics`/`corpus_stats`/`evaluate` + `--match-sr`); **ranked-only
+data** (osu!.db filter) + more context + flip aug (**v4b**, current release).
 
-- [x] Robust `.osu` parser + writer (type bitflags, slider timing, spinners, kiai)
-- [x] Beatmap ↔ signal encode/decode (near-lossless round-trip)
-- [x] Deduped, manifest-indexed preprocessing (mel-per-audio + per-difficulty
-      signal + metadata for difficulty/style/kiai conditioning)
-- [x] Conditional diffusion U-Net + DDPM/DDIM sampling
-- [x] End-to-end `audio → .osu` generation + playable-folder packaging
-- [x] Hermetic pytest suite (92 tests) + ruff + uv
-- [x] Timing estimation v1 (`data/timing.py`: BPM + offset via librosa)
-- [x] Curved Bezier sliders (encode slider shape into the cursor signal, decode
-      a multi-point Bezier from the cursor path)
-- [x] Eval metrics (`src/metrics.py`: density, stream/jump, spacing, on-grid)
-- [x] Stable training: attention U-Net (base 128), bf16, EMA, cosine LR, CFG,
-      `runs/` logging; QK-norm + base-128 fix attention divergence
-- [x] **v3 (10-channel)**: kiai + whistle/finish/clap channels; **difficulty
-      conditioning** (SR context vector + classifier-free guidance) — in-game SR
-      ≈ target ±0.5; kiai + hitsounds + curved sliders all generate
-- [x] Rhythm: bounded ¼-grid beat-snap + **slider-end snapping** (slider ends
-      55%→0% off-grid) + bezier **RDP** simplification (≤4 control pts)
-- [x] Eval harness: `metrics.py` (+ kiai/hitsound), `corpus_stats.py` (SR-bucketed
-      reference over 31k maps), `evaluate.py` (SR sweep), `--match-sr` calibration
-
-Next — see `RESEARCH.md §10` for the full **v4 / v5** plan and `RESULTS.md` for
-run history. In short: v4 shipped (full-library + difficulty conditioning + decode
-fixes); current work trains on **ranked-only data** with more context + flip
-augmentation; v5 tackles the representation wins (slider-shape/repeat channels,
-style conditioning, flow/distance-snap modelling, multi-section BPM timing).
+**Next** — see `RESEARCH.md §10` (full plan), `RESULTS.md` (history), `HANDOFF.md §6`
+(queue): v5 17-channel slider representation (curves + reverse sliders, code done,
+train pending); rhythm fix (v4b regressed onsets off ¼ → 1/6·1/8); adaLN-zero;
+flow/distance-snap modelling; multi-section BPM timing.
 
 ## Prior art / credits
 
