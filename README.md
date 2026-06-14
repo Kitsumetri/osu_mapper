@@ -1,0 +1,192 @@
+# osu_mapper — audio → osu! beatmap generation
+
+A diffusion-based pipeline that learns to generate **osu!standard** beatmaps
+from raw audio, trained on a local osu! Songs library.
+
+## Approach
+
+Inspired by [osu-dreamer](https://github.com/jaswon/osu-dreamer): instead of
+predicting a discrete token list, a beatmap is represented as a **frame-aligned
+multi-channel signal** at the audio spectrogram's frame rate, and a **1D
+conditional DDPM U-Net** (with self-attention at the coarse levels for
+long-range structure) denoises that signal conditioned on the mel spectrogram.
+The generated signal is decoded back into discrete hit objects — including
+curved Bezier sliders read from the cursor path — and written to a valid `.osu`
+file.
+
+```
+audio.mp3 ──► log-mel (64×T) ──┐
+                               ├─►  1D U-Net (DDIM denoise)  ──►  signal (10×T)  ──► decode ──► .osu
+   noise (10×T) ───────────────┘     ▲ conditioned on mel + difficulty (SR/AR/OD/HP/CS/density)
+```
+
+### Signal representation (`src/data/signal.py`)
+
+At ~86 frames/sec (sr 22050, hop 256 → 11.6 ms/frame) each beatmap becomes a
+`(10, T)` array in `[-1, 1]` (v3):
+
+| ch | name         | encoding |
+|----|--------------|----------|
+| 0  | onset        | Gaussian bump at each circle/slider-head |
+| 1  | slider_hold  | +1 during slider body, else -1 |
+| 2  | spinner_hold | +1 during spinner, else -1 |
+| 3  | new_combo    | Gaussian bump at new-combo objects |
+| 4  | cursor_x     | object x normalised to [-1,1], interpolated |
+| 5  | cursor_y     | object y normalised to [-1,1], interpolated |
+| 6  | kiai_hold    | +1 during kiai (chorus) sections, else -1 |
+| 7–9 | whistle/finish/clap | Gaussian bump at objects with that hitsound |
+
+Difficulty is supplied as an **input context vector** `[SR, AR, OD, HP, CS,
+density]` (conditioning, not a channel) — see [`TECH_REPORT.md`](TECH_REPORT.md) §
+conditioning.
+
+Encode/decode is near-lossless on real maps (100% onset timing recall, exact
+circle/slider/spinner counts on round-trip).
+
+For the full mathematical model — the diffusion process, training objective,
+DDIM sampling, the U-Net + QK-norm attention, and the decode math — see
+[`TECH_REPORT.md`](TECH_REPORT.md).
+
+## Install
+
+With [uv](https://docs.astral.sh/uv/) (recommended) — the CUDA torch index is
+already wired up in `pyproject.toml`:
+
+```bash
+uv sync --extra dev      # creates .venv and installs everything (incl. cu124 torch)
+uv run pytest            # run anything inside the env with `uv run ...`
+```
+
+Or with pip:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu124
+pip install -r requirements.txt
+```
+
+## Quickstart
+
+```bash
+# 1. preprocess into a deduped, manifest-indexed dataset (see STORAGE.md)
+python main.py preprocess --songs "C:/osu!/Songs" --out data/processed/std-v1 --limit 3000
+
+# 2. train the diffusion model (logs + checkpoints under runs/<id>/)
+python main.py train --data data/processed/std-v1 --tag std-v1-base160 \
+    --epochs 120 --batch 12 --crop 3072 --base 160
+
+# 3. generate a .osu at a target star rating (DDIM + classifier-free guidance,
+#    EMA weights, kiai + hitsounds decoded, beat-snapped)
+python main.py generate --audio song.mp3 --ckpt runs/<id>/ckpt/best.pt \
+    --out generated.osu --sr 4.5 --guidance 2.0
+```
+
+Each stage is also runnable directly, e.g. `python -m src.train ...`. Training
+features: bf16, EMA, cosine LR + warmup, gradient accumulation, self-attention
+U-Net. See `STORAGE.md` for the data/runs/artifacts layout.
+
+> **Why train from scratch (not a pretrained model)?** The diffusion target is a
+> bespoke 10-channel beatmap "signal" with no pretrained equivalent on HF/torch.
+> A pretrained *audio* encoder (e.g. for the mel conditioning) could help later,
+> but the denoiser itself must be trained for this representation.
+
+## Project layout
+
+```
+src/
+  config.py              audio/signal config + frame<->time helpers
+  metrics.py             pattern/quality metrics (density, stream/jump, on-grid, ...)
+  parsing/beatmap.py     robust .osu parser + writer (bitflags, sliders, spinners, kiai)
+  data/
+    audio.py             log-mel spectrogram extraction
+    signal.py            beatmap <-> signal encode/decode (+ Bezier-slider decoder)
+    timing.py            BPM + beat-offset estimation (librosa)
+    preprocess.py        library crawler -> deduped mels + items + manifest.json
+    dataset.py           manifest-indexed, mel-deduped torch Dataset
+  model/
+    unet.py              1D conditional U-Net (FiLM time emb + QK-norm attention)
+    diffusion.py         Gaussian DDPM schedule, DDPM + DDIM sampling
+  train.py               training loop (bf16, EMA, cosine LR, runs/ logging)
+  generate.py            audio -> .osu inference (DDIM, EMA, estimated timing)
+  package_map.py         build a playable osu! Songs folder from a generated map
+tests/                   hermetic pytest suite (no dataset/GPU needed)
+main.py                  CLI dispatcher (preprocess | train | generate)
+```
+
+## Development
+
+```bash
+pytest                 # 81 hermetic tests, ~6 s
+ruff check .           # lint
+ruff format .          # format
+```
+
+The test suite is hermetic — it builds tiny synthetic `.osu`/`.npz` fixtures in
+a temp dir and never touches the real Songs library or a GPU. Lint/format rules
+live in `pyproject.toml` (`E,F,I,UP,B,SIM`, 100-col).
+
+## Notes & gotchas (learned while building)
+
+- **Sampler matters.** Naive *strided* ancestral DDPM under-denoises and yields
+  dense, noise-like maps. Use full DDPM or, for speed, the **DDIM** sampler in
+  `diffusion.py` (correct over a step subsequence).
+- **Frame grid, not milliseconds.** Everything is aligned on the audio frame
+  grid to avoid timing drift between audio and hit objects.
+- **Slider duration comes from length, not your end-time.** osu! derives a
+  slider's duration from `pixel_length / slider_velocity`, so `write_osu` clamps
+  each slider's length to fit the gap before the next object (otherwise ~19% of
+  generated objects overlapped in time).
+- **bf16 + attention can diverge.** Fixed plain dot-product attention with
+  **QK-normalisation + learnable temperature + zero-init output projection** — but
+  even then **base 160 diverged twice** (sudden loss spike, ~e12–21). **base 128
+  is the stable default** (lr 1.2e-4, grad-clip 0.3); `best.pt` survives a late
+  spike. Watch the loss; monitor on `avg_loss 0.[3-9]`.
+- **Slider ends must be snapped too.** Beat-snap only moves onsets; a slider's
+  duration (= length/velocity) lands off-grid → `postprocess.snap_slider_ends`
+  snaps it (55%→0% off-grid). `package_map` must keep the *generated*
+  SliderMultiplier or it rescales durations and un-snaps them.
+- The original prototype's `uninherited = bool(str)` bug made every timing point
+  "uninherited"; fixed and covered by a regression test.
+- An unanchored `data/` gitignore rule once hid the whole `src/data/` package —
+  artifact ignores are now anchored to the repo root (`/data/`, `/runs/`, ...).
+
+## Roadmap / TODO
+
+Done:
+
+- [x] Robust `.osu` parser + writer (type bitflags, slider timing, spinners, kiai)
+- [x] Beatmap ↔ signal encode/decode (near-lossless round-trip)
+- [x] Deduped, manifest-indexed preprocessing (mel-per-audio + per-difficulty
+      signal + metadata for difficulty/style/kiai conditioning)
+- [x] Conditional diffusion U-Net + DDPM/DDIM sampling
+- [x] End-to-end `audio → .osu` generation + playable-folder packaging
+- [x] Hermetic pytest suite (81 tests) + ruff + uv
+- [x] Timing estimation v1 (`data/timing.py`: BPM + offset via librosa)
+- [x] Curved Bezier sliders (encode slider shape into the cursor signal, decode
+      a multi-point Bezier from the cursor path)
+- [x] Eval metrics (`src/metrics.py`: density, stream/jump, spacing, on-grid)
+- [x] Stable training: attention U-Net (base 128), bf16, EMA, cosine LR, CFG,
+      `runs/` logging; QK-norm + base-128 fix attention divergence
+- [x] **v3 (10-channel)**: kiai + whistle/finish/clap channels; **difficulty
+      conditioning** (SR context vector + classifier-free guidance) — in-game SR
+      ≈ target ±0.5; kiai + hitsounds + curved sliders all generate
+- [x] Rhythm: bounded ¼-grid beat-snap + **slider-end snapping** (slider ends
+      55%→0% off-grid) + bezier **RDP** simplification (≤4 control pts)
+- [x] Eval harness: `metrics.py` (+ kiai/hitsound), `corpus_stats.py` (SR-bucketed
+      reference over 31k maps), `evaluate.py` (SR sweep), `--match-sr` calibration
+
+Next — see `RESEARCH.md §10` for the full **v4 / v5** plan:
+
+- **v4 (scaling + control)**: train on the full library (~28k maps, running) at
+  bigger batch; density/**break** control; style/mapper conditioning; dedicated
+  slider-shape channels; bake the SR-offset correction; hitsound-threshold tune.
+- **v5 (pattern realism)**: flow / distance-snap modelling (real streams/jumps,
+  fixes odd placement); multi-section BPM timing; learned kiai/break segmentation.
+
+## Prior art / credits
+
+- [jaswon/osu-dreamer](https://github.com/jaswon/osu-dreamer) — signal + diffusion approach
+- [OliBomby/osu-diffusion](https://github.com/OliBomby/osu-diffusion),
+  [Mapperatorinator](https://github.com/OliBomby/Mapperatorinator) — DiT-style coordinate diffusion
+- [gyataro/osuT5](https://github.com/gyataro/osuT5) — seq2seq event tokens
+- [kotritrona/osumapper](https://github.com/kotritrona/osumapper) — earlier TF approach
+- [osu! file format wiki](https://osu.ppy.sh/wiki/en/Client/File_formats/osu_(file_format))

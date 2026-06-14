@@ -1,0 +1,9 @@
+# Normalise line endings: store text as LF in the repo, check out native.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.mp3 binary
+*.ogg binary
+*.osz binary
+*.npz binary
+*.pt binary
