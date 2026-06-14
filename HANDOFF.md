@@ -129,6 +129,21 @@ partially. That's the next re-preprocess batch, not this one.
 
 ## 5b. Open TODOs (the live task list is session-scoped — these are the durable copy)
 
+### Blocked queue (2026-06-14) — waiting on GPU / the live training to finish
+These can't run while the 10-ch ranked train holds the GPU + venv:
+1. **Eval + package the 10-ch ranked model** ("final v4") once training ends — on
+   `feat/v4-fulldata`: best-val epoch, SR sweep, package `[AI-v5]`, write RESULTS (§6).
+2. **Prune `ranked-full` milestone ckpts** (epoch_N.pt, ~8 GB) after picking best.
+3. **Update torch** 2.6→2.11+/cu128 (venv is DLL-locked by the run): bump pyproject,
+   `uv lock --upgrade` + `uv sync` + `pytest` + generate smoke. (librosa, no torchaudio.)
+4. **Test + wire `torch.compile`** (GPU-free): verify Windows/Triton works; if so add a
+   `--compile` flag handling the `_orig_mod.` state_dict prefix (else resume/generate break).
+5. **v5 fresh train** on `data/processed/ranked-v5` (17-ch) on `feat/v5-slider-style`
+   (code DONE, commit 272c736; preprocess running) — then eval/package `[AI-v5-sliders]`.
+6. **adaLN-zero** conditioning (impl + fresh train; A/B vs plain v5) — RESEARCH §10.2.
+7. **SR-offset bake** into `target_context` (needs a finished model's SR sweep; §10.1.B).
+
+### Standing
 1. **Ranked train** (the final v4/v5 run) — in progress; see §4b + §6.
 2. **Cheap post-train wins** (no retrain, decode/postprocess):
    - ✅ **DONE (2026-06-14)** — clamp slider tails to the playfield
