@@ -94,7 +94,11 @@ def _process_set(args):
             except Exception:
                 errors += 1
                 continue
-            item_id = _safe(f"{set_dir.name}__{bm.version}").replace(" ", "_")
+            # short source-path hash guarantees uniqueness even when two diffs
+            # share a version name or _safe()'s truncation coincides (else savez
+            # silently overwrites and two manifest rows point at one file).
+            uid = hashlib.sha1(str(bm.path).lower().encode()).hexdigest()[:8]
+            item_id = _safe(f"{set_dir.name}__{bm.version}").replace(" ", "_") + f"__{uid}"
             np.savez_compressed(items_dir / f"{item_id}.npz", signal=sig)
             entries.append({
                 "item_id": item_id, "audio_id": aid,
