@@ -26,6 +26,35 @@ Generation (DDIM 100 steps, ~0.5 s) on a held-out song vs the real Expert diff:
 Valid, playable `.osu` that re-parses cleanly. Reads the rhythm, but feels loose
 (low on-grid), is too dense/stream-heavy, and had only straight sliders.
 
+## v3 heavy (complete) — best model
+
+Full v3 on the large dataset. **base 128** (base 160 + bf16 diverged twice).
+
+- **Data**: 6001 difficulties (10-channel signals + star rating).
+- **Model**: base 128 + QK-norm attention + difficulty conditioning + CFG.
+- **Run**: 100 epochs, batch 14, crop 3072, ~46 s/epoch (~75 min); loss → **0.0056**,
+  no divergence (lr 1.2e-4, grad-clip 0.3).
+
+SR sweep (`evaluate.py`, guidance 2.0) — achieved SR now tracks the target
+closely (the draft's +1.5–2★ offset largely self-corrected with full data):
+
+| target SR | achieved | density | real density | metrics in p10–p90 |
+|----------:|---------:|--------:|-------------:|-------------------:|
+| 2.0 | 2.50 | 1.77 | 1.7 | 13/19 |
+| 3.0 | 2.78 | 2.47 | 2.7 | **17/19** |
+| 4.0 | 3.69 | 2.96 | 3.6 | 15/19 |
+| 5.0 | 5.07 | 3.79 | 4.4 | 16/19 |
+| 6.0 | 6.86 | 5.32 | 5.8 | 15/19 |
+
+Conditioning is monotonic and near-calibrated for 3–5★; density/streams track
+real maps; curved sliders, kiai (1–3 spans), and hitsounds all generate.
+Hitsound usage ~0.35–0.58 (real ~0.33 — slightly high, was 0.67 in the draft).
+Packaged sample: `[AI-v3]` folder (SR 5.07, 947 objects, 0 overlaps, 3 kiai).
+
+Remaining: SR slightly drifts at the extremes (2, 6); streams a touch low;
+hitsounds a touch high. Next: v4 (RESEARCH §10) — style conditioning,
+slider-shape channels, multi-section timing.
+
 ## v3 draft (complete) — conditioning works
 
 Proof-of-concept for the v3 representation (10 channels: + kiai + whistle/finish/

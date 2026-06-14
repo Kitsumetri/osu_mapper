@@ -77,9 +77,11 @@ python -m src.corpus_stats --songs "C:/osu!/Songs"   # rebuild reference_stats.j
 
 ## 5. Current state (2026-06-14)
 
-- **Heavy v3 training RUNNING**: `runs/20260614-015114-std-v3-heavy` — base 160,
-  97.5M params, 6001 maps, 150 epochs, ~62–66 s/epoch (≈2.7 h), loss healthy
-  (~0.012 @ epoch 11). A persistent monitor watches for divergence/completion.
+- **Heavy v3 COMPLETE (best model)**: `runs/20260614-021054-std-v3-heavy2/ckpt/best.pt`
+  — base 128, 6001 maps, 100 epochs, loss **0.0056**, no divergence. SR
+  conditioning near-calibrated (target 3→2.78, 5→5.07), 13–17/19 metrics in real
+  range, kiai+hitsounds+curved sliders work. Sample packaged as `[AI-v3]`.
+  (The base-160 attempt `_diverged`/deleted — see §8.)
 - **Reference** `artifacts/reference_stats.json`: 31,362 maps, bucketed by SR,
   includes kiai/hitsound metrics.
 - **v3 draft** (1500 maps) already proved conditioning works: target SR 2/4/6 →
