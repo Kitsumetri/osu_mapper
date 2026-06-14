@@ -76,7 +76,8 @@ def train(args):
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     print(f"device={device}  run={run_dir}")
 
-    ds = OsuSignalDataset(args.data, crop_frames=args.crop, min_objects=args.min_objects)
+    ds = OsuSignalDataset(args.data, crop_frames=args.crop, min_objects=args.min_objects,
+                          augment=args.augment)
     print(f"dataset: {len(ds)} difficulties")
     dl = DataLoader(ds, batch_size=args.batch, shuffle=True, num_workers=args.workers,
                     drop_last=True, pin_memory=True, persistent_workers=args.workers > 0)
@@ -197,6 +198,8 @@ def main():
     ap.add_argument("--attn-levels", type=int, default=2,
                     help="apply self-attention at the N deepest U-Net levels "
                          "(2=default; 3 gives finer-resolution pattern context)")
+    ap.add_argument("--augment", type=lambda s: s.lower() != "false", default=True,
+                    help="playfield h/v flip augmentation (default on; 'false' to disable)")
     ap.add_argument("--lr", type=float, default=1.2e-4)
     ap.add_argument("--grad-clip", type=float, default=0.3)
     ap.add_argument("--cfg-drop", type=float, default=0.15,

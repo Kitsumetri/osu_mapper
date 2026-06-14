@@ -25,7 +25,7 @@ def _load_mel_cached(path_str: str) -> np.ndarray:
 
 class OsuSignalDataset(Dataset):
     def __init__(self, processed_dir: str | Path, crop_frames: int = 1024,
-                 min_objects: int = 0):
+                 min_objects: int = 0, augment: bool = False):
         self.dir = Path(processed_dir)
         manifest_path = self.dir / "manifest.json"
         if not manifest_path.exists():
@@ -35,6 +35,10 @@ class OsuSignalDataset(Dataset):
         if not self.items:
             raise FileNotFoundError(f"no items in {manifest_path} (min_objects={min_objects})")
         self.crop = crop_frames
+        # playfield-mirror augmentation: osu!std is symmetric under horizontal /
+        # vertical flips, so mirroring the cursor channels yields a valid alternate
+        # map for the same audio. Free 4x spatial variety, train-time only.
+        self.augment = augment
 
     def __len__(self):
         return len(self.items)
@@ -55,5 +59,13 @@ class OsuSignalDataset(Dataset):
             sigpad = np.full((sig.shape[0], pad), -1.0, dtype=np.float32)
             sigpad[4:6] = 0.0  # cursor centre
             sig = np.concatenate([sig, sigpad], axis=1)
+        if self.augment:
+            # cursor channels are normalised so playfield centre is 0; negating
+            # mirrors positions about the centre. ch4=x (horizontal), ch5=y (vertical).
+            sig = sig.copy()
+            if np.random.rand() < 0.5:
+                sig[4] = -sig[4]
+            if np.random.rand() < 0.5:
+                sig[5] = -sig[5]
         ctx = torch.tensor(context_from_manifest(it), dtype=torch.float32)
         return torch.from_numpy(sig), torch.from_numpy(mel), ctx
