@@ -45,7 +45,8 @@ def find_sets(songs_dir: Path):
 
 
 def process_library(songs_dir: Path, out_dir: Path, limit: int | None = None,
-                    min_objects: int = 50, max_seconds: float = 240.0):
+                    min_objects: int = 50, max_seconds: float = 240.0,
+                    max_sr: float = 12.0):
     mels_dir = out_dir / "mels"
     items_dir = out_dir / "items"
     mels_dir.mkdir(parents=True, exist_ok=True)
@@ -94,6 +95,11 @@ def process_library(songs_dir: Path, out_dir: Path, limit: int | None = None,
                 mels_cached += 1
 
             for bm in bms:
+                # curation: skip broken / joke maps with absurd star rating
+                sr = star_rating(bm.path)
+                if sr is not None and sr > max_sr:
+                    skipped += 1
+                    continue
                 try:
                     sig = encode_beatmap(bm, T).astype(np.float16)
                 except Exception:
@@ -101,7 +107,6 @@ def process_library(songs_dir: Path, out_dir: Path, limit: int | None = None,
                     continue
                 item_id = _safe(f"{set_dir.name}__{bm.version}").replace(" ", "_")
                 np.savez_compressed(items_dir / f"{item_id}.npz", signal=sig)
-                sr = star_rating(bm.path)
                 manifest.append({
                     "item_id": item_id, "audio_id": aid,
                     "creator": bm.creator, "title": bm.title, "version": bm.version,
@@ -133,9 +138,11 @@ def main():
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--min-objects", type=int, default=50)
     ap.add_argument("--max-seconds", type=float, default=240.0)
+    ap.add_argument("--max-sr", type=float, default=12.0,
+                    help="skip maps with star rating above this (junk/joke maps)")
     args = ap.parse_args()
     process_library(Path(args.songs), Path(args.out), args.limit,
-                    args.min_objects, args.max_seconds)
+                    args.min_objects, args.max_seconds, args.max_sr)
 
 
 if __name__ == "__main__":
