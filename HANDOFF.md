@@ -57,7 +57,7 @@ audio.mp3 ─► log-mel (64×T) ──────────────┐
 | `src/corpus_stats.py` | reference distributions over the library (by SR) |
 | `src/evaluate.py` | SR-sweep eval (achieved vs target + metrics) |
 | `src/package_map.py` | build a playable Songs folder from a generated map |
-| `tests/` | 66 hermetic tests (no dataset/GPU) |
+| `tests/` | 86 hermetic tests (no dataset/GPU) |
 | `runs/<id>/` | training runs (config.json, metrics.csv, ckpt/) — gitignored |
 | `data/processed/<tag>/` | preprocessed datasets — gitignored |
 | `artifacts/` | generated maps, reference_stats.json — gitignored |
@@ -65,7 +65,7 @@ audio.mp3 ─► log-mel (64×T) ──────────────┐
 ## 4. How to run
 
 ```bash
-pytest                                   # 66 tests, ~6 s
+pytest                                   # 86 tests, ~6 s
 ruff check . && ruff format .
 python -m src.data.preprocess --songs "C:/osu!/Songs" --out data/processed/std-v3-full --limit 6000
 python -m src.train --data data/processed/std-v3-full --tag std-v3-heavy --base 160 --crop 3072 --epochs 150
@@ -95,11 +95,18 @@ python -m src.corpus_stats --songs "C:/osu!/Songs"   # rebuild reference_stats.j
 
 1. **Full-data train** on `std-v3-all` (in progress / next) — §6 below.
 2. **Cheap post-train wins** (no retrain, decode/postprocess):
-   - clamp slider control points so endpoints stay inside the playfield (v4 fb #1);
-   - tighten `trim_isolated_ends` / drop a final note unhittable even by auto (fb #7);
-   - widen/loosen onset snap so more circles land on ¼ (fb #5);
-   - hitsound-threshold tune (RESEARCH §10.1.C); SR-offset bake into
-     `target_context` (§10.1.B); density/break control / write `[Events]` breaks (§10.1.D, fb #8).
+   - ✅ **DONE (2026-06-14)** — clamp slider tails to the playfield
+     (`postprocess.clamp_slider_endpoints`, fb #1); tighten trailing trim
+     (`trim_isolated_ends` trailing 2.2 s < leading 3.0 s, fb #7); loosen onset
+     snap (`snap_to_grid` 60 ms/50 %, fb #5); hitsound-threshold tune
+     (`decode_signal(accent_threshold=0.85)` → 0.33 usage, §10.1.C); `[Events]`
+     breaks (`compute_breaks` + `write_osu(breaks=…)`, §10.1.D-iii). See
+     RESULTS.md "v4 decode/post-process wins". *Not yet validated in-game by the
+     user — package a fresh sample for them to test.*
+   - **Still open**: SR-offset bake into `target_context` (§10.1.B, needs an
+     `evaluate.py` sweep); real density/break control is **model-side** (§10.1.D-i/ii)
+     — the `[Events]` writer only marks existing gaps, it doesn't make a dense map
+     sparser (dense songs still produce 0 breaks).
 3. **v4 re-preprocess batch**: style/mapper conditioning (§10.1.E) + dedicated
    slider-shape channels (§10.1.F) → retrain.
 4. **v5**: flow/distance-snap pattern modelling, multi-section BPM timing, learned

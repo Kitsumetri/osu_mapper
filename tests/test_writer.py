@@ -44,6 +44,18 @@ def test_writes_hitsounds(sample_osu, tmp_path):
     assert sorted(o.hit_sound for o in bm2.hit_objects) == [2, 8]
 
 
+def test_writes_break_events(sample_osu, tmp_path):
+    bm = parse_beatmap(sample_osu)
+    out = tmp_path / "brk.osu"
+    write_osu(bm, bm.hit_objects, out, timing_points=[TimingPoint(0, 400.0, 4, True)],
+              breaks=[(1200, 4800)])
+    text = out.read_text(encoding="utf-8")
+    assert "2,1200,4800" in text
+    # the break line sits in the [Events] section
+    events = text.split("[Events]")[1].split("[TimingPoints]")[0]
+    assert "2,1200,4800" in events
+
+
 def test_writer_handles_empty_timing(sample_osu, tmp_path):
     bm = parse_beatmap(sample_osu)
     out = tmp_path / "out.osu"

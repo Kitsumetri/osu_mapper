@@ -27,6 +27,32 @@ shape sometimes bad; trailing unhittable last note recurs; no breaks (too dense)
 **To finish v4 properly**: resume/retrain to ~50 epochs (add `--resume`; the run
 died undertrained) for tighter SR calibration + cleaner curves.
 
+### v4 decode/post-process wins (2026-06-14, no retrain)
+
+Cheap play-feedback fixes on the same `best.pt` (validated on a real generation,
+Thaehan - Kawaii @ 4.5★, 100 DDIM steps):
+
+- **Slider tails clamped to playfield** (fb #1) — `clamp_slider_endpoints` caps a
+  slider's pixel length so osu!'s extrapolation past the last anchor can't shoot
+  the tail off-screen (anchors clamped too; `end_time` scaled with length).
+  Result: **0 / 116 off-field slider tails** (sliders previously escaped the
+  512x384 field after `snap_slider_ends` stretched their length).
+- **Hitsound usage calibrated** (10.1.C) — accent channels saturate near +1, so
+  the old threshold 0 over-fired (~0.52). Swept on real output: threshold **0.85
+  -> 0.33 hitsound fraction** (matches real ~0.33); 0.0-0.6 all stay ~0.52. New
+  `decode_signal(accent_threshold=0.85)` default.
+- **Trailing trim tightened** (fb #7) — `trim_isolated_ends` now trims trailing
+  lone notes at a smaller gap (2.2 s) than leading ones (3.0 s), catching outro
+  notes the old 3 s threshold missed.
+- **Onset snap loosened** (fb #5) — `snap_to_grid` bound raised 45 ms/40% ->
+  60 ms/50% of the subdivision, so more circles land cleanly on 1/4 (still bounded
+  so a wrong BPM can't drag the whole map).
+- **`[Events]` breaks** (10.1.D-iii) — `compute_breaks` writes break periods for
+  gaps >=3.5 s. *Cosmetic / honest limit*: it only marks gaps that already exist;
+  the dense v4 model leaves none on busy songs (0 breaks on Kawaii), so this helps
+  intros/outros and sparse maps, not the "too dense" root cause (that's model-side
+  — density conditioning, 10.1.D-i/ii).
+
 ## v1 baseline (complete)
 
 First full run — establishes that the pipeline works end-to-end.

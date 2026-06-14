@@ -403,11 +403,11 @@ beat-snap, dangling-end trim, `--match-sr` calibration loop.
 **Still open (from play feedback) — mostly model/conditioning, not decode:**
 | # | feedback | nature | plan |
 |---|----------|--------|------|
-| 1 | no breaks (too dense) | model leaves no gaps | density/break control — v4 §10.1.D |
+| 1 | no breaks (too dense) | model leaves no gaps | `[Events]` breaks shipped (§10.1.D-iii) but only mark existing gaps; real fix is density conditioning (§10.1.D-i/ii) |
 | 2 | kiai lags the drop ~10–12 s, 1/3 coverage | kiai channel alignment | more data + downbeat-snap kiai edges — v4 |
 | 6 | some circle placement odd | pattern quality | flow/DS modelling — v5 §10.2 |
 | — | streams slightly low, SR drift at extremes | undertrained tails | more data (v4) + bake SR-offset (§10.1.B) |
-| — | hitsounds slightly high (~0.5 vs 0.33) | accent threshold | raise `_hit_sound` threshold (cheap) |
+| — | hitsounds slightly high (~0.5 vs 0.33) | accent threshold | ✅ DONE — `accent_threshold=0.85` → ~0.33 (§10.1.C) |
 
 ### 10.1 v4 — scale + control (next; some need a re-preprocess)
 
@@ -420,13 +420,18 @@ feeds this. Batch the representation-changing items into one re-preprocess+retra
 - **B. SR-offset bake (cheap, post-eval)** — measure target-vs-achieved over an
   `evaluate.py` sweep; fit a correction into `target_context` so one pass hits the
   target (today `--match-sr` iterates). Revisit `density≈0.8·sr` vs §8.
-- **C. Hitsound + accent threshold (cheap, decode)** — raise the accent decode
-  threshold so hitsound usage matches real ~0.33 (now ~0.5).
+- **C. Hitsound + accent threshold (cheap, decode)** — ✅ **DONE (2026-06-14)**:
+  `decode_signal(accent_threshold=0.85)` brings hitsound usage to ~0.33 (real),
+  from ~0.52 at threshold 0. Calibrated by sweeping on real generated output —
+  the accent channels saturate near +1, so only a high cut thins them.
 - **D. Density / breaks control** — the model fills everything (no gaps → no
   breaks). Options: (i) condition density more strongly / separately so quiet
   target → sparser; (ii) suppress onsets where the mel energy is low
   (intro/break/outro detection); (iii) write explicit `[Events]` break periods
-  for gaps >~3.5 s. (i)+(ii) are the real fixes; (iii) is cosmetic.
+  for gaps >~3.5 s. (i)+(ii) are the real fixes; (iii) is cosmetic. **(iii) DONE
+  (2026-06-14)**: `postprocess.compute_breaks` + `write_osu(breaks=…)`. But (iii)
+  only marks gaps that already exist — dense songs still produce 0 breaks, so
+  (i)/(ii) remain the open root-cause fix.
 - **E. Style / mapper conditioning** *(repr: wider ctx)* — append a coarse style
   class (farm/stream/tech/alt, clustered from `metrics.py` pattern stats) or a
   learned `creator` embedding to `c`, with the same CFG. Targets "Sotarks 1-2

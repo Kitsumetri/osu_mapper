@@ -19,7 +19,13 @@ from .data.timing import estimate_timing_point
 from .model.diffusion import GaussianDiffusion
 from .model.unet import UNet1d
 from .parsing.beatmap import Beatmap, TimingPoint, write_osu
-from .postprocess import snap_slider_ends, snap_to_grid, trim_isolated_ends
+from .postprocess import (
+    clamp_slider_endpoints,
+    compute_breaks,
+    snap_slider_ends,
+    snap_to_grid,
+    trim_isolated_ends,
+)
 
 
 def generate(audio_path, ckpt_path, out_path, steps=100, base=64, use_ema=True,
@@ -63,12 +69,16 @@ def generate(audio_path, ckpt_path, out_path, steps=100, base=64, use_ema=True,
         if snap:
             snap_to_grid(objects, tp)                       # snap onsets to grid
             snap_slider_ends(objects, tp, bm.slider_multiplier)  # snap slider ends
+        # keep slider tails inside the playfield (must run after length-changing
+        # snap_slider_ends, before breaks/write which read end_time gaps)
+        clamp_slider_endpoints(objects)
+        breaks = compute_breaks(objects)
         timing = [tp]
         for ks, ke in decode_kiai(sig):
             timing.append(TimingPoint(ks, -100.0, tp.meter, False, effects=1))
             timing.append(TimingPoint(ke, -100.0, tp.meter, False, effects=0))
         timing.sort(key=lambda t: t.time)
-        write_osu(bm, objects, out_path, timing_points=timing)
+        write_osu(bm, objects, out_path, timing_points=timing, breaks=breaks)
         return objects
 
     if match_sr and sr is not None and ctx_dim:

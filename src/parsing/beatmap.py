@@ -312,8 +312,14 @@ def write_osu(
     hit_objects: list[HitObject],
     out_path: str | Path,
     timing_points: list[TimingPoint] | None = None,
+    breaks: list[tuple[int, int]] | None = None,
 ) -> Path:
-    """Write a minimal but valid .osu file from generated hit objects."""
+    """Write a minimal but valid .osu file from generated hit objects.
+
+    ``breaks`` is an optional list of ``(start_ms, end_ms)`` break periods written
+    into ``[Events]`` (osu! break event = ``2,start,end``) so long silent gaps
+    render as proper breaks.
+    """
     out_path = Path(out_path)
     tps = timing_points if timing_points is not None else bm.timing_points
     if not tps:
@@ -360,6 +366,10 @@ def write_osu(
         "SliderTickRate:1",
         "",
         "[Events]",
+    ]
+    for start, end in (breaks or []):
+        lines.append(f"2,{int(start)},{int(end)}")
+    lines += [
         "",
         "[TimingPoints]",
     ]

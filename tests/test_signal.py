@@ -103,6 +103,21 @@ def test_kiai_and_hitsound_roundtrip():
     assert abs(orig_clap - dec_clap) <= 1
 
 
+def test_accent_threshold_filters_weak_hitsounds():
+    # two onsets: one with a strong clap accent (+1), one with a weak one (+0.2).
+    n = 40
+    sig = np.full((N_SIGNAL_CHANNELS, n), -1.0, dtype=np.float32)
+    sig[4:6] = 0.0
+    sig[0, 5] = 1.0
+    sig[0, 20] = 1.0
+    sig[9, 5] = 1.0       # strong clap on first onset
+    sig[9, 20] = 0.2      # weak clap on second onset
+    strong = decode_signal(sig, onset_threshold=0.3, accent_threshold=0.4)
+    assert sum(1 for o in strong if o.hit_sound & 8) == 1   # only the strong one
+    loose = decode_signal(sig, onset_threshold=0.3, accent_threshold=0.0)
+    assert sum(1 for o in loose if o.hit_sound & 8) == 2     # both fire at 0
+
+
 def test_curved_slider_becomes_bezier():
     """A slider whose cursor path curves should decode to a multi-point Bezier."""
     n = 60
