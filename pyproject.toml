@@ -5,7 +5,7 @@ description = "Diffusion-based osu! beatmap generation from raw audio"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "torch>=2.6",
+    "torch>=2.11",
     "numpy>=1.26",
     "librosa>=0.11",
     "soundfile>=0.13",
@@ -32,14 +32,14 @@ build-backend = "hatchling.build"
 packages = ["src"]
 
 # --- uv -----------------------------------------------------------------------
-# CUDA build of torch comes from the PyTorch index. Switch cu124 to match your
+# CUDA build of torch comes from the PyTorch index. Switch cu128 to match your
 # CUDA version (or drop the source block for the CPU build).
 [tool.uv.sources]
-torch = { index = "pytorch-cu124" }
+torch = { index = "pytorch-cu128" }
 
 [[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 # --- ruff ---------------------------------------------------------------------
