@@ -15,7 +15,8 @@ from .parsing.beatmap import PLAYFIELD_H, PLAYFIELD_W, HitObject, TimingPoint
 
 
 def trim_isolated_ends(objects: list[HitObject], max_gap_ms: float = 3000.0,
-                       trail_gap_ms: float | None = None) -> int:
+                       trail_gap_ms: float | None = None,
+                       spinner_tail_ms: float = 1200.0) -> int:
     """Drop leading/trailing objects separated from the body by a huge silent gap.
 
     Fixes the "one lone note seconds after the song ends" artefact: if the last
@@ -23,7 +24,12 @@ def trim_isolated_ends(objects: list[HitObject], max_gap_ms: float = 3000.0,
     is almost certainly not musical. Trailing notes are trimmed more aggressively
     than leading ones (``trail_gap_ms`` defaults below ``max_gap_ms``) because a
     lone outro note the auto-player still "hits" but a human never sees coming is
-    the common play-feedback artefact (fb #7). Returns the number removed.
+    the common play-feedback artefact (fb #7).
+
+    Also drops a lone trailing *circle* that lands within ``spinner_tail_ms`` after
+    the final spinner: that's a phantom spin-down onset the auto-player can't hit
+    (recurring fb). Only the very last object is touched, so a real circle after a
+    spinner mid-map is untouched. Returns the number removed.
     """
     if len(objects) < 3:
         return 0
@@ -32,6 +38,10 @@ def trim_isolated_ends(objects: list[HitObject], max_gap_ms: float = 3000.0,
     objs = sorted(objects, key=lambda o: o.time)
     removed = 0
     while len(objs) >= 2 and objs[-1].time - objs[-2].end_time > trail_gap_ms:
+        objs.pop()
+        removed += 1
+    if (len(objs) >= 2 and objs[-1].is_circle and objs[-2].is_spinner
+            and 0 <= objs[-1].time - objs[-2].end_time < spinner_tail_ms):
         objs.pop()
         removed += 1
     while len(objs) >= 2 and objs[1].time - objs[0].end_time > max_gap_ms:

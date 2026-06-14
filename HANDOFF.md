@@ -75,6 +75,42 @@ python -m src.metrics --osu out.osu --ref-stats artifacts/reference_stats.json
 python -m src.corpus_stats --songs "C:/osu!/Songs"   # rebuild reference_stats.json (all maps)
 ```
 
+## 4b. NEXT SESSION — v5 ranked-data + context experiment (prep DONE, train SCHEDULED)
+
+User direction (2026-06-14): train on **ranked maps only** (quality), give the
+model **more context** (attention/crop), then draft→debug→full train. They asked
+to start the heavy work **~1 h later** (machine in use) — a wakeup is scheduled.
+
+**Prep committed this session (no training run yet):**
+- `src/data/osu_db.py` — parses `osu!.db` (validated: consumes the real 32 MB DB
+  to the exact byte). `ranked_osu_paths(songs, db)` → **23,825 ranked/approved/
+  loved std maps on disk** (vs the v4 set which included 4.3k graveyard + 1.2k
+  unsubmitted). 3 hermetic tests (synthetic DB).
+- `preprocess --ranked-only [--osu-db PATH]` — joins osu!.db, keeps only
+  ranked/approved/loved. Default db path `<songs>/../osu!.db`.
+- `train --resume runs/<id>/ckpt/last.pt` — saves optimizer+gstep+best, appends
+  metrics, continues the LR schedule in place. **Crash-resilient** (machine slept
+  mid-train twice). Old checkpoints lack opt state (resume still works, opt warm-starts).
+- `UNet1d(attn_levels=N)` + `train --attn-levels N` — self-attention at the N
+  deepest levels (default 2; **3 = finer-resolution pattern context**). `generate`
+  reads it from ckpt args (old ckpts → 2, back-compat verified).
+- Decode: `trim_isolated_ends` now drops a lone trailing **circle right after the
+  final spinner** (phantom spin-down onset, recurring fb "auto can't hit it").
+
+**Execution steps (run after the wakeup fires):**
+1. Draft preprocess (subset): `python -m src.data.preprocess --songs "C:/osu!/Songs" --out data/processed/ranked-draft --ranked-only --limit 2500 --workers 16`
+2. Draft train (~12 ep, more context): `python -m src.train --data data/processed/ranked-draft --tag ranked-draft --base 128 --crop 4096 --attn-levels 3 --batch 16 --epochs 12 --save-every 4` — **watch divergence** (`avg_loss 0.[3-9]`) and VRAM (drop `--batch` to 12 / `--crop` to 3072 if OOM). Generate a sample; eyeball streams/sliders.
+3. If stable → full ranked preprocess: same cmd, `--out data/processed/ranked-full`, no `--limit`.
+4. Full train: `... --data data/processed/ranked-full --tag ranked-full --base 128 --crop 4096 --attn-levels 3 --batch 16 --epochs 60 --save-every 5` (use `--resume .../last.pt` after any sleep/crash).
+5. Eval (`evaluate.py` SR sweep), package `[AI-v5]`, update RESULTS + memory + §5.
+
+**Design notes:** hop length is deliberately NOT increased — coarser hop = worse
+stream timing precision (the opposite of the fix). More context comes from larger
+`--crop` + `attn_levels`. base stays 128 (160+bf16 diverges, §8). The straight-
+slider issue (60-80% are lines) is mostly a **representation** gap — dedicated
+slider-shape channels (RESEARCH §10.1.F); ranked data + more training helps only
+partially. That's the next re-preprocess batch, not this one.
+
 ## 5. Current state (2026-06-14)
 
 - **Best model = `runs/20260614-021054-std-v3-heavy2/ckpt/best.pt`** (base 128,

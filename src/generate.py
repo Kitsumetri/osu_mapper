@@ -35,9 +35,10 @@ def generate(audio_path, ckpt_path, out_path, steps=100, base=64, use_ema=True,
     cargs = ckpt.get("args", {})
     base = cargs.get("base", base)
     attn = cargs.get("attn", False)        # old checkpoints had no attention
+    attn_levels = cargs.get("attn_levels", 2)  # old ckpts: 2 deepest levels
     ctx_dim = CONTEXT_DIM if ("cfg_drop" in cargs or "ctx_dim" in cargs) else 0
     model = UNet1d(N_SIGNAL_CHANNELS, AUDIO.n_mels, base=base, attn=attn,
-                   ctx_dim=ctx_dim).to(device)
+                   ctx_dim=ctx_dim, attn_levels=attn_levels).to(device)
     weights = ckpt["ema"] if (use_ema and ckpt.get("ema")) else ckpt["model"]
     model.load_state_dict(weights)
     model.eval()

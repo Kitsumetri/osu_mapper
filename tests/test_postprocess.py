@@ -57,6 +57,28 @@ def test_trim_trailing_more_aggressive_than_leading():
     assert trim_isolated_ends(objs2) == 0
 
 
+def test_trim_drops_circle_after_trailing_spinner():
+    from src.parsing.beatmap import TYPE_SPINNER, HitObject
+    from src.postprocess import trim_isolated_ends
+    objs = _circles([0, 200, 400])
+    objs.append(HitObject(x=256, y=192, time=600, type=TYPE_SPINNER, end_time=2000))
+    objs.append(HitObject(x=100, y=100, time=2300, type=TYPE_CIRCLE, end_time=2300))  # +300ms
+    removed = trim_isolated_ends(objs)
+    assert removed == 1
+    assert not objs[-1].is_circle or objs[-1].is_spinner  # last object is the spinner
+    assert objs[-1].is_spinner
+
+
+def test_trim_keeps_circle_well_after_spinner():
+    from src.parsing.beatmap import TYPE_SPINNER, HitObject
+    from src.postprocess import trim_isolated_ends
+    objs = _circles([0, 200, 400])
+    objs.append(HitObject(x=256, y=192, time=600, type=TYPE_SPINNER, end_time=2000))
+    objs.append(HitObject(x=100, y=100, time=3500, type=TYPE_CIRCLE, end_time=3500))  # 1.5s after
+    # 1500ms > spinner_tail default (1200) but < trail (2200) -> kept
+    assert trim_isolated_ends(objs) == 0
+
+
 def test_clamp_slider_endpoint_caps_overlong_length():
     from src.parsing.beatmap import TYPE_SLIDER
     from src.postprocess import clamp_slider_endpoints

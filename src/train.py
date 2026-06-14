@@ -61,8 +61,17 @@ def _lr_at(step, total, warmup, base_lr):
 
 def train(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    run_id = f"{datetime.now():%Y%m%d-%H%M%S}-{args.tag}"
-    run_dir = Path(args.runs) / run_id
+    # --resume continues an interrupted run *in place* (same run dir, appended
+    # metrics, restored optimizer/EMA/step so the LR schedule stays continuous).
+    resume_ck = None
+    if args.resume:
+        resume_ck = torch.load(args.resume, map_location=device, weights_only=False)
+        run_dir = Path(args.resume).resolve().parent.parent
+        run_id = run_dir.name
+        print(f"resuming {args.resume} (epoch {resume_ck.get('epoch')}) -> {run_dir}")
+    else:
+        run_id = f"{datetime.now():%Y%m%d-%H%M%S}-{args.tag}"
+        run_dir = Path(args.runs) / run_id
     ckpt_dir = run_dir / "ckpt"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     print(f"device={device}  run={run_dir}")
@@ -73,7 +82,7 @@ def train(args):
                     drop_last=True, pin_memory=True, persistent_workers=args.workers > 0)
 
     model = UNet1d(N_SIGNAL_CHANNELS, AUDIO.n_mels, base=args.base, attn=args.attn,
-                   ctx_dim=CONTEXT_DIM).to(device)
+                   ctx_dim=CONTEXT_DIM, attn_levels=args.attn_levels).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"model: {n_params / 1e6:.1f}M params (base={args.base}, attn={args.attn})")
     ema = EMA(model, decay=args.ema) if args.ema > 0 else None
@@ -84,20 +93,36 @@ def train(args):
     use_scaler = device == "cuda" and amp_dtype == torch.float16
     scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
 
-    config = {**vars(args), "run_id": run_id, "n_params": n_params,
-              "git_commit": _git_commit(), "amp_dtype": str(amp_dtype),
-              "dataset_size": len(ds)}
-    (run_dir / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
-    metrics = open(run_dir / "metrics.csv", "w", newline="")  # noqa: SIM115
-    writer = csv.writer(metrics)
-    writer.writerow(["epoch", "avg_loss", "lr", "sec"])
-
     steps_per_epoch = max(1, len(dl) // args.accum)
     total_steps = steps_per_epoch * args.epochs
     warmup = min(args.warmup, total_steps // 10)
     gstep = 0
     best = float("inf")
-    for epoch in range(args.epochs):
+    start_epoch = 0
+    if resume_ck is not None:
+        model.load_state_dict(resume_ck["model"])
+        if ema and resume_ck.get("ema"):
+            ema.shadow.load_state_dict(resume_ck["ema"])
+        if resume_ck.get("opt"):
+            opt.load_state_dict(resume_ck["opt"])
+        start_epoch = int(resume_ck.get("epoch", -1)) + 1
+        gstep = int(resume_ck.get("gstep", start_epoch * steps_per_epoch))
+        best = float(resume_ck.get("best", best))
+        print(f"  restored: start_epoch={start_epoch} gstep={gstep} best={best:.5f}")
+
+    config = {**vars(args), "run_id": run_id, "n_params": n_params,
+              "git_commit": _git_commit(), "amp_dtype": str(amp_dtype),
+              "dataset_size": len(ds)}
+    if resume_ck is None:
+        (run_dir / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
+    # append on resume so the existing metrics history is preserved
+    new_metrics = resume_ck is None or not (run_dir / "metrics.csv").exists()
+    metrics = open(run_dir / "metrics.csv", "a" if not new_metrics else "w", newline="")  # noqa: SIM115
+    writer = csv.writer(metrics)
+    if new_metrics:
+        writer.writerow(["epoch", "avg_loss", "lr", "sec"])
+
+    for epoch in range(start_epoch, args.epochs):
         model.train()
         running = 0.0
         t0 = time.time()
@@ -139,16 +164,17 @@ def train(args):
         writer.writerow([epoch, f"{avg:.5f}", f"{lr_now:.3e}", f"{dt:.1f}"])
         metrics.flush()
 
-        def _ckpt(path, epoch=epoch):
+        def _ckpt(path, epoch=epoch, best=best, gstep=gstep):
             torch.save({"model": model.state_dict(),
                         "ema": ema.shadow.state_dict() if ema else None,
+                        "opt": opt.state_dict(), "gstep": gstep, "best": best,
                         "args": vars(args), "epoch": epoch,
                         "git_commit": config["git_commit"]}, path)
 
         _ckpt(ckpt_dir / "last.pt")
         if avg < best:
             best = avg
-            _ckpt(ckpt_dir / "best.pt")
+            _ckpt(ckpt_dir / "best.pt", best=best)
         if (epoch + 1) % args.save_every == 0:
             _ckpt(ckpt_dir / f"epoch_{epoch + 1}.pt")
     metrics.close()
@@ -168,6 +194,9 @@ def main():
     # v3 @e12) even with QK-norm. Keep LR/clip conservative.
     ap.add_argument("--base", type=int, default=128)
     ap.add_argument("--attn", type=lambda s: s.lower() != "false", default=True)
+    ap.add_argument("--attn-levels", type=int, default=2,
+                    help="apply self-attention at the N deepest U-Net levels "
+                         "(2=default; 3 gives finer-resolution pattern context)")
     ap.add_argument("--lr", type=float, default=1.2e-4)
     ap.add_argument("--grad-clip", type=float, default=0.3)
     ap.add_argument("--cfg-drop", type=float, default=0.15,
@@ -179,6 +208,9 @@ def main():
     ap.add_argument("--min-objects", type=int, default=50)
     ap.add_argument("--log-every", type=int, default=50)
     ap.add_argument("--save-every", type=int, default=25)
+    ap.add_argument("--resume", default=None,
+                    help="resume an interrupted run from a checkpoint (e.g. "
+                         "runs/<id>/ckpt/last.pt); continues in the same run dir")
     args = ap.parse_args()
     train(args)
 
