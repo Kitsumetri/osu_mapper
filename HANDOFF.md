@@ -143,8 +143,12 @@ partially. That's the next re-preprocess batch, not this one.
      `evaluate.py` sweep); real density/break control is **model-side** (§10.1.D-i/ii)
      — the `[Events]` writer only marks existing gaps, it doesn't make a dense map
      sparser (dense songs still produce 0 breaks).
-3. **v4 re-preprocess batch**: style/mapper conditioning (§10.1.E) + dedicated
-   slider-shape channels (§10.1.F) → retrain.
+3. **v5 slider-shape + style batch** (CHOSEN 2026-06-14; branch `feat/v5-slider-style`
+   off `feat/v4-fulldata`) — **full design in RESEARCH §10.3**: dedicated K=3
+   slider-anchor "hold-box" channels + `slides` (reverse-slider) channel + coarse
+   style-class conditioning; channels 10→17; fresh train. Workflow: analysis (done)
+   → doc/memory sync (done) → implement code + hermetic tests (no GPU) → gate on the
+   running ranked run's eval → re-preprocess `ranked-v5` → fresh train.
 4. **v5**: flow/distance-snap pattern modelling, multi-section BPM timing, learned
    kiai/break segmentation (RESEARCH §10.2). **Arch (2026 survey)**: keep MHSA+QK-norm
    + U-Net long skips; try **adaLN-zero** conditioning (contained DiT win). **Perf**:

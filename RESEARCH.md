@@ -481,6 +481,84 @@ with the wider context at scale; B/C/D-ii/D-iii are inference-side, ship anytime
   now: pin `sdpa_kernel([CUDNN_ATTENTION, EFFICIENT_ATTENTION])` to force the best
   fused backend.
 
+## 10.3 v5 slider-shape + style — design (ACTIVE BUILD, branch `feat/v5-slider-style`)
+
+The next batch (chosen 2026-06-14). Bundles §10.1.F (slider channels) + §10.1.E
+(style) into **one re-preprocess + fresh train** (both change the representation,
+so one data pass). Targets the top play-feedback complaints: **sliders are
+straight lines (60–80%)** and **no reverse sliders**, plus **sparse pattern
+vocabulary**. Validated direction: Mapperatorinator's `osu_diffusion` makes slider
+anchors + repeat counts first-class typed points (see [[reference-mapperatorinator]]).
+
+### Why the current encoding fails
+Slider shape is traced into the shared `cursor_x/cursor_y` channels across the
+hold (`signal.encode_beatmap`), so it competes with the global cursor path and
+denoises to mush → the decoder's straight-vs-curve test usually picks a line. And
+`slides` (repeat count) is dropped entirely: a reverse slider is encoded as a slow
+forward slider, so the decoder always emits `slides=1`.
+
+### Slider-shape channels (the F fix) — "hold-box" anchor encoding
+Move shape into **dedicated channels that carry the control-point offsets as a
+constant value over the slider's hold span** (like `slider_hold`, but valued).
+Hold-boxes are smooth and denoise-friendly; decode reads the span mean (robust to
+noise). Fixed **K=3 anchor slots** (covers waves/arcs; RDP already simplifies real
+sliders to ≤4 control points):
+
+- For anchor *i* ∈ {1..K}: two channels `slider_dx_i`, `slider_dy_i` = the offset
+  of control point *i* from the slider head, normalised by playfield size
+  (dx/512, dy/384) into ~[-1,1], held constant over the hold span (baseline 0
+  elsewhere). Sliders with < K control points repeat the last anchor (decode
+  dedupes consecutive identical anchors).
+- **`slides` channel**: hold-box valued by repeat count, e.g. `clip((slides-1)/3,
+  0,1)*2-1` → 1→-1, 2→-0.33, 3→+0.33; decode rounds the span mean back.
+
+Encode: from each slider's `curve_points` (first K, head-relative) + `slides`.
+Decode: at a slider head, read the K anchor channels' hold-span means → control
+points = head + offsets; read `slides` → repeat count; `length` = anchor path
+length (one traversal); osu! derives duration from length×slides. The cursor
+channels keep carrying the *circle/jump* path; sliders no longer pollute them.
+
+### Style conditioning (the E fix) — start coarse
+Extend the context vector (`conditioning.py`, currently `[SR,AR,OD,HP,CS,density]`)
+with a **coarse style class** (4–6 clusters via KMeans over `metrics.py` pattern
+stats: density, stream/jump ratio, spacing variance), embedded and added to the
+FiLM path with **per-field CFG dropout** (drop style independently of difficulty,
+à la Mapperatorinator). Defer per-creator embeddings (huge vocab + cold-start);
+manifest already has `creator`, and `osu!.db` has `Tags` if we want tags later.
+
+### Channel layout: 10 → 17
+`[onset, slider_hold, spinner_hold, new_combo, cursor_x, cursor_y, kiai_hold,
+whistle, finish, clap, slider_dx1, slider_dy1, slider_dx2, slider_dy2, slider_dx3,
+slider_dy3, slides]`. `N_SIGNAL_CHANNELS=17`; new `CH_*` indices.
+
+### Implementation checklist (hermetic-testable before any retrain)
+1. `config.py`: channels 10→17 + indices.
+2. `signal.py`: `encode_beatmap` writes the 7 new channels; `decode_signal` /
+   `_slider_path` read anchors + slides instead of cursor-traced shape.
+3. `conditioning.py`: add style dim; `CONTEXT_DIM` bump; per-field CFG dropout.
+4. `dataset.py`: **flip aug must also negate `slider_dx_i` (h-flip) and
+   `slider_dy_i` (v-flip)** — else augmentation corrupts slider geometry.
+5. `preprocess.py`: re-encode → new dataset `ranked-v5`; compute + store style
+   cluster in the manifest (separate light pass / `corpus`-style step).
+6. `model`/`train`: input channels + `ctx_dim` follow config; **fresh train**
+   (17-ch model can't load the 10-ch v4 ckpt).
+7. Tests: round-trip a curved + a reverse slider through encode→decode; flip-aug
+   negates the new channels; style ctx shape. `TECH_REPORT.md` channel table.
+
+### Risks / mitigations
+- Anchor channels are sparse (active only during sliders) → noisier. Mitigation:
+  hold-box (not spikes) + span-mean decode + RDP cleanup retained.
+- Reverse-slider length: anchors describe **one** traversal; `length` = that path,
+  `slides` = repeats, hold span = full out-and-back; let osu! derive duration.
+- 17-ch model is a fresh train (no resume from v4) — gate it on the current
+  ranked run's eval first, so we know the baseline it must beat.
+
+### Sequencing
+Analysis (this doc) → sync memory/docs → implement code + hermetic tests (safe,
+no GPU) → **after the running ranked train finishes + is evaluated** → re-preprocess
+`ranked-v5` → fresh train → eval/package `[AI-v5-sliders]`. Inference-side wins
+(§10.1.B SR-bake, §10.1.D-ii energy-gated breaks, kiai-snap) ship independently.
+
 ## References
 - [Mapping techniques (Basics)](https://osu.ppy.sh/wiki/en/Mapping_Techniques/Basics)
 - [Technical maps](https://osu.ppy.sh/wiki/en/Beatmap/Technical_maps)
