@@ -82,7 +82,10 @@ def package(generated: Path, original: Path, songs_dir: Path,
     bm.approach_rate = orig.approach_rate
     bm.overall_difficulty = orig.overall_difficulty
     bm.hp = orig.hp
-    bm.slider_multiplier = orig.slider_multiplier
+    # KEEP the generated map's SliderMultiplier — its slider lengths are
+    # calibrated to it (beat-snapped ends). Overriding with the original's SM
+    # rescales every slider duration and breaks the rhythm snapping.
+    bm.slider_multiplier = gen.slider_multiplier
 
     out_osu = out_dir / f"{_safe(artist + ' - ' + title)} ({bm.creator}) [{prefix} AI].osu"
     write_osu(bm, gen.hit_objects, out_osu, timing_points=gen.timing_points)
