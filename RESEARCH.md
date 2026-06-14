@@ -431,10 +431,15 @@ feeds this. Batch the representation-changing items into one re-preprocess+retra
   class (farm/stream/tech/alt, clustered from `metrics.py` pattern stats) or a
   learned `creator` embedding to `c`, with the same CFG. Targets "Sotarks 1-2
   farm" vs "tech". Manifest already stores `creator`.
-- **F. Slider-shape channels** *(repr: +channels)* — move slider shape off the
-  shared, noisy cursor channel into **dedicated K-anchor offset channels** at the
-  slider head, so curves are a first-class denoised target (RDP becomes a clean-up,
-  not a crutch).
+- **F. Slider-shape + repeats channels** *(repr: +channels)* — move slider shape
+  off the shared, noisy cursor channel into **dedicated K-anchor offset channels**
+  at the slider head, so curves are a first-class denoised target (RDP becomes a
+  clean-up, not a crutch). **Also encode `slides` (repeat count)**: today the
+  representation loses it — a reverse slider (`slides≥2`, ~8% of real sliders)
+  is encoded as a *slow forward* slider (hold box over the full out-and-back
+  duration + forward-only cursor trace), so the decoder always emits `slides=1`
+  and we never generate reverse sliders. Add a small per-slider-head repeat
+  signal (e.g. a channel whose value encodes slides 1/2/3) and decode it.
 
 *v4 batch*: one re-preprocess adding (E style label + F slider channels), retrain
 with the wider context at scale; B/C/D-ii/D-iii are inference-side, ship anytime.
