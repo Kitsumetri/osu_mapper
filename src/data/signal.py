@@ -151,7 +151,30 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
 
 
 # --- decoding -----------------------------------------------------------------
-def _slider_path(start, cur_x, cur_y, p, end_frame, max_anchors: int = 6):
+def _rdp(points, eps: float = 18.0):
+    """Ramer-Douglas-Peucker: drop control points that are within ``eps`` px of
+    the line through their neighbours, so simple shapes use fewer anchors."""
+    if len(points) < 3:
+        return points
+    a, b = points[0], points[-1]
+    ax, ay = a
+    bx, by = b
+    dx, dy = bx - ax, by - ay
+    norm = (dx * dx + dy * dy) ** 0.5 or 1.0
+    dmax, idx = 0.0, 0
+    for i in range(1, len(points) - 1):
+        px, py = points[i]
+        d = abs(dy * px - dx * py + bx * ay - by * ax) / norm  # point-line distance
+        if d > dmax:
+            dmax, idx = d, i
+    if dmax <= eps:
+        return [a, b]
+    left = _rdp(points[:idx + 1], eps)
+    right = _rdp(points[idx:], eps)
+    return left[:-1] + right
+
+
+def _slider_path(start, cur_x, cur_y, p, end_frame, max_anchors: int = 8):
     """Build a slider curve that follows the cursor signal during the hold.
 
     Samples cursor positions between frame ``p`` and ``end_frame`` and returns
@@ -192,6 +215,12 @@ def _slider_path(start, cur_x, cur_y, p, end_frame, max_anchors: int = 6):
     if ctype == "L":
         pts = [pts[-1]]
         length = straight or 10.0
+    else:
+        # simplify the control polygon so simple shapes (waves, arcs) use few
+        # anchors instead of every sampled frame (feedback: Z-waves over-pointed).
+        simplified = _rdp([(sx, sy), *pts])[1:]
+        if simplified:
+            pts = simplified
     return ctype, pts, max(10.0, length)
 
 

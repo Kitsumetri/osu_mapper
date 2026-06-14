@@ -46,6 +46,20 @@ def test_trim_keeps_dense_tail():
     assert trim_isolated_ends(objs, max_gap_ms=3000) == 0
 
 
+def test_snap_slider_ends_to_grid():
+    from src.parsing.beatmap import TYPE_SLIDER
+    from src.postprocess import snap_slider_ends
+    tp = TimingPoint(0, 400.0, 4, True)   # 1/4 = 100ms
+    # slider starting at 0 with an off-grid 230ms duration -> should snap to 200ms
+    s = HitObject(x=0, y=0, time=0, type=TYPE_SLIDER, end_time=230, length=322.0,
+                  curve_type="L", curve_points=[(100, 0)], slides=1)
+    nxt = HitObject(x=0, y=0, time=1000, type=TYPE_CIRCLE, end_time=1000)
+    snap_slider_ends([s, nxt], tp, slider_multiplier=1.4)
+    dur = s.end_time - s.time
+    assert dur % 100 == 0          # on the 1/4 grid
+    assert abs(dur - 200) <= 1     # nearest multiple of 100 to 230 is 200
+
+
 def test_preserves_slider_duration():
     from src.parsing.beatmap import TYPE_SLIDER
     tp = TimingPoint(0, 400.0, 4, True)

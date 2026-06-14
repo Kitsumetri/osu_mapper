@@ -19,7 +19,7 @@ from .data.timing import estimate_timing_point
 from .model.diffusion import GaussianDiffusion
 from .model.unet import UNet1d
 from .parsing.beatmap import Beatmap, TimingPoint, write_osu
-from .postprocess import snap_to_grid, trim_isolated_ends
+from .postprocess import snap_slider_ends, snap_to_grid, trim_isolated_ends
 
 
 def generate(audio_path, ckpt_path, out_path, steps=100, base=64, use_ema=True,
@@ -55,13 +55,14 @@ def generate(audio_path, ckpt_path, out_path, steps=100, base=64, use_ema=True,
         sig = sig[0, :, :T].float().cpu().numpy()
         objects = decode_signal(sig)
         trim_isolated_ends(objects)
-        if snap:
-            snap_to_grid(objects, tp)
         bm = Beatmap(path=Path(out_path))
         bm.audio_filename = Path(audio_path).name
         bm.title = Path(audio_path).stem
         bm.version = f"AI {sr:.1f} star" if sr else "AI Generated"
         bm.approach_rate, bm.overall_difficulty, bm.hp, bm.circle_size = 8.0, 7.0, 5.0, 4.0
+        if snap:
+            snap_to_grid(objects, tp)                       # snap onsets to grid
+            snap_slider_ends(objects, tp, bm.slider_multiplier)  # snap slider ends
         timing = [tp]
         for ks, ke in decode_kiai(sig):
             timing.append(TimingPoint(ks, -100.0, tp.meter, False, effects=1))
