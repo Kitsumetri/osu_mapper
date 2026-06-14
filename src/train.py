@@ -80,6 +80,13 @@ def _lr_at(step, total, warmup, base_lr):
 
 def train(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    # cheap, safe perf settings (no effect on architecture / ckpt compatibility):
+    # TF32 matmul + autotuned conv kernels for our fixed crop size.
+    torch.set_float32_matmul_precision("high")
+    if device == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
     # --resume continues an interrupted run *in place* (same run dir, appended
     # metrics, restored optimizer/EMA/step so the LR schedule stays continuous).
     resume_ck = None
@@ -124,7 +131,8 @@ def train(args):
     print(f"model: {n_params / 1e6:.1f}M params (base={args.base}, attn={args.attn})")
     ema = EMA(model, decay=args.ema) if args.ema > 0 else None
     diff = GaussianDiffusion(timesteps=args.timesteps, device=device)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4,
+                            fused=(device == "cuda"))
     bf16_ok = device == "cuda" and torch.cuda.is_bf16_supported()
     amp_dtype = torch.bfloat16 if bf16_ok else torch.float16
     use_scaler = device == "cuda" and amp_dtype == torch.float16
