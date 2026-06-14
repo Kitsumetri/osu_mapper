@@ -18,9 +18,10 @@ file.
 
 ```
 audio.mp3 ──► log-mel (64×T) ──┐
-                               ├─►  1D U-Net (DDIM denoise)  ──►  signal (10×T)  ──► decode ──► .osu
-   noise (10×T) ───────────────┘     ▲ conditioned on mel + difficulty (SR/AR/OD/HP/CS/density)
+                               ├─►  1D U-Net (DDIM denoise)  ──►  signal (C×T)  ──► decode ──► .osu
+   noise (C×T) ────────────────┘     ▲ conditioned on mel + difficulty (SR/AR/OD/HP/CS/density)
 ```
+(C = 17 signal channels on v5, 10 on v4 — see below.)
 
 ### Signal representation (`src/data/signal.py`)
 

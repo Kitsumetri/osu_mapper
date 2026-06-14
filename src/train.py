@@ -254,6 +254,7 @@ def train(args):
                         "ema": ema.shadow.state_dict() if ema else None,
                         "opt": opt.state_dict(), "gstep": gstep, "best": best,
                         "args": vars(args), "epoch": epoch,
+                        "sig_channels": N_SIGNAL_CHANNELS,
                         "git_commit": config["git_commit"]}, path)
 
         _ckpt(ckpt_dir / "last.pt")

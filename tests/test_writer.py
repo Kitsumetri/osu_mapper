@@ -56,6 +56,42 @@ def test_writes_break_events(sample_osu, tmp_path):
     assert "2,1200,4800" in events
 
 
+def test_slider_extras_are_spec_correct(sample_osu, tmp_path):
+    from src.parsing.beatmap import TYPE_SLIDER, HitObject
+    bm = parse_beatmap(sample_osu)
+    objs = [
+        HitObject(x=100, y=100, time=0, type=TYPE_SLIDER, hit_sound=0,
+                  curve_type="B", curve_points=[(150, 80), (200, 120)], slides=1, length=120.0),
+        HitObject(x=200, y=200, time=600, type=TYPE_SLIDER, hit_sound=0,
+                  curve_type="L", curve_points=[(300, 200)], slides=2, length=100.0),  # reverse
+    ]
+    out = tmp_path / "sl.osu"
+    write_osu(bm, objs, out, timing_points=[TimingPoint(0, 400.0, 4, True)])
+    lines = [ln for ln in out.read_text(encoding="utf-8").splitlines()
+             if "|" in ln and "," in ln and not ln.startswith("[")]
+    for ln, slides in zip(lines, (1, 2)):
+        f = ln.split(",")
+        # x,y,time,type,hitSound,curve|pts,slides,length,edgeSounds,edgeSets,hitSample
+        assert len(f) == 11, ln
+        edge_sounds, edge_sets, hit_sample = f[8], f[9], f[10]
+        parts_snd = edge_sounds.split("|")
+        assert len(parts_snd) == slides + 1
+        assert all(p.isdigit() for p in parts_snd)               # integers (spec)
+        assert all(":" in p for p in edge_sets.split("|"))        # set:set pairs
+        assert hit_sample.count(":") == 4                         # set:set:idx:vol:file
+
+
+def test_slider_without_curve_points_is_written_as_circle(sample_osu, tmp_path):
+    from src.parsing.beatmap import TYPE_SLIDER, HitObject
+    bm = parse_beatmap(sample_osu)
+    # a slider that lost its curve points must not be written with the slider bit set
+    objs = [HitObject(x=100, y=100, time=0, type=TYPE_SLIDER, curve_points=[], end_time=0)]
+    out = tmp_path / "deg.osu"
+    write_osu(bm, objs, out, timing_points=[TimingPoint(0, 400.0, 4, True)])
+    o = parse_beatmap(out).hit_objects[0]
+    assert not o.is_slider and o.is_circle
+
+
 def test_writer_handles_empty_timing(sample_osu, tmp_path):
     bm = parse_beatmap(sample_osu)
     out = tmp_path / "out.osu"

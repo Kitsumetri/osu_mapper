@@ -544,6 +544,41 @@ patterns/kiai/hitsounds; the open items:
   v5 slider channels (§10.3, implemented) for curves+reverse; flow/distance-snap
   (§10.2) for streams. Need the v5 train + likely v6 flow work.
 
+## 11. Audit follow-ups (external review 2026-06-14, `AGENT_RESEARCH.md`)
+
+A separate auditor read every `src/` file + re-derived the diffusion math (all
+correct). Defects were at the encode/decode/writer boundary + config hygiene.
+
+**Fixed this pass** (commit on `feat/v5-slider-style`): **C-1** spec-correct slider
+`edgeSounds`/`edgeSets`/`hitSample` in `write_osu` (was a malformed, shifted field
+that lazer could reject); **C-2** `generate` now writes AR/OD/HP/CS from
+`conditioning.target_settings(sr)` instead of a hardcoded AR8/OD7 — the file's
+difficulty (and the rosu SR read-back) now match what the model was conditioned on;
+**C-3** a slider that lost its curve points is rewritten as a circle (not type&2
+with no path); **S-8** short-song mel pad uses −1.0 (silence) not 0.0 (≈−40 dB);
+**S-16** `corpus_stats` parses + mode-filters before the expensive rosu call;
+checkpoints now store `sig_channels`; deleted dead `src/utils/` + unused
+`h5py`/`pyyaml` deps + `colorlog`; synced `requirements.txt`; fixed TECH_REPORT §9
+(listed the *diverged* base-160/0.5 config as "current" → now base-128/0.3) + the
+v5 decode (§8.2) + README channel count.
+
+**Deferred (tasks created / future work):**
+- **Per-slider SV** (5.1) — emit an inherited timing point per slider so geometry
+  length *and* model-intended duration are both honoured (solves the SV=1
+  shape-vs-rhythm tension; makes `sv_changes_per_min` non-zero). *Task.*
+- **Per-channel target standardisation** (5.2) — train on `(x−μ_c)/σ_c` (corpus
+  per-channel stats) to zero-centre the −1-baseline channels; a suspected
+  contributor to the base-160 bf16 divergence. *Task.*
+- **Zero-terminal-SNR β + v-prediction** (5.3) — the principled fix likely needed
+  to unblock base ≥160 (higher leverage than just lowering LR). *Future / pairs with 5.2.*
+- **Batched CFG** (5.4) — one concatenated forward instead of two → ~2× faster
+  sampling, identical output. *Task.*
+- **Attention on the up-path** (S-5) — symmetric attention; A/B vs the 17/19 metric.
+- Minor: `package_map` re-parse drops `[Events]` breaks (S-17); `item_id` hash to
+  avoid the ~0.04% collisions (S-9); `evaluate`/`_validate` batch-size weighting
+  (S-14). Investigations: lazer tolerance of the old slider field (now fixed
+  anyway), long-song attention-length transfer (U-5).
+
 ## References
 - [Mapping techniques (Basics)](https://osu.ppy.sh/wiki/en/Mapping_Techniques/Basics)
 - [Technical maps](https://osu.ppy.sh/wiki/en/Beatmap/Technical_maps)

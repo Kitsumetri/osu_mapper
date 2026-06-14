@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .conditioning import CONTEXT_DIM, target_context
+from .conditioning import CONTEXT_DIM, target_context, target_settings
 from .config import AUDIO, N_SIGNAL_CHANNELS
 from .data.audio import load_audio, log_mel
 from .data.signal import decode_kiai, decode_signal
@@ -66,7 +66,16 @@ def generate(audio_path, ckpt_path, out_path, steps=100, base=64, use_ema=True,
         bm.audio_filename = Path(audio_path).name
         bm.title = Path(audio_path).stem
         bm.version = f"AI {sr:.1f} star" if sr else "AI Generated"
-        bm.approach_rate, bm.overall_difficulty, bm.hp, bm.circle_size = 8.0, 7.0, 5.0, 4.0
+        # write AR/OD/HP/CS consistent with what the model was conditioned on
+        # (target_settings), so the file's difficulty matches the generated map and
+        # the rosu SR read-back is scored on the right settings. Fall back to a
+        # mid-difficulty default when generating unconditioned.
+        if ctx_dim and sr_used is not None:
+            s = target_settings(sr_used)
+            bm.approach_rate, bm.overall_difficulty = s["ar"], s["od"]
+            bm.hp, bm.circle_size = s["hp"], s["cs"]
+        else:
+            bm.approach_rate, bm.overall_difficulty, bm.hp, bm.circle_size = 8.0, 7.0, 5.0, 4.0
         if snap:
             snap_to_grid(objects, tp)                       # snap onsets to grid
             snap_slider_ends(objects, tp, bm.slider_multiplier)  # snap slider ends

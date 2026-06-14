@@ -63,7 +63,9 @@ class OsuSignalDataset(Dataset):
             mel, sig = mel[:, start:start + L], sig[:, start:start + L]
         else:
             pad = L - T
-            mel = np.pad(mel, ((0, 0), (0, pad)))
+            # pad mel with -1.0 = true silence (after audio.py's (dB+40)/40 norm);
+            # the np.pad default 0.0 is ~-40 dB (audible) -> teaches "audio -> empty map".
+            mel = np.pad(mel, ((0, 0), (0, pad)), constant_values=-1.0)
             sigpad = np.full((sig.shape[0], pad), -1.0, dtype=np.float32)
             sigpad[CH_CURX:CH_CURY + 1] = 0.0  # cursor centre
             if sig.shape[0] >= N_SIGNAL_CHANNELS:

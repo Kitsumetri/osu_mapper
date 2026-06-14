@@ -383,11 +383,22 @@ def write_osu(
         elif o.is_slider and o.curve_points:
             pts = "|".join(f"{cx}:{cy}" for cx, cy in o.curve_points)
             ctype = o.curve_type or "L"
+            # spec-correct slider extras: edgeSounds = |-list of integer hitsounds,
+            # edgeSets = |-list of set:set, then the hitSample. One edge per head +
+            # each repeat (slides+1). (Was "0:0|0:0,0:0:0:0:" which mis-shaped the
+            # edgeSounds field and dropped hitSample.)
+            n_edges = o.slides + 1
+            edge_sounds = "|".join(["0"] * n_edges)
+            edge_sets = "|".join(["0:0"] * n_edges)
             lines.append(
                 f"{o.x},{o.y},{o.time},{o.type},{o.hit_sound},"
-                f"{ctype}|{pts},{o.slides},{o.length},0:0|0:0,0:0:0:0:"
+                f"{ctype}|{pts},{o.slides},{o.length},{edge_sounds},{edge_sets},0:0:0:0:"
             )
         else:
-            lines.append(f"{o.x},{o.y},{o.time},{o.type},{o.hit_sound},0:0:0:0:")
+            # circle — or a slider that somehow lost its curve points: rewrite it
+            # as a circle (clear the slider bit, set the circle bit) so osu! never
+            # sees type&2 with no path (malformed/dropped object).
+            typ = ((o.type & ~TYPE_SLIDER) | TYPE_CIRCLE) if o.is_slider else o.type
+            lines.append(f"{o.x},{o.y},{o.time},{typ},{o.hit_sound},0:0:0:0:")
     out_path.write_text("\n".join(lines), encoding="utf-8")
     return out_path
