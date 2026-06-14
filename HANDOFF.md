@@ -129,20 +129,26 @@ partially. That's the next re-preprocess batch, not this one.
 
 ## 5b. Open TODOs (the live task list is session-scoped — these are the durable copy)
 
-### Blocked queue (2026-06-14) — waiting on GPU / the live training to finish
-These can't run while the 10-ch ranked train holds the GPU + venv:
-1. **Eval + package the 10-ch ranked model** ("final v4") once training ends — on
-   `feat/v4-fulldata`: best-val epoch, SR sweep, package `[AI-v5]`, write RESULTS (§6).
-2. **Prune `ranked-full` milestone ckpts** (epoch_N.pt, ~8 GB) after picking best.
-3. **Update torch** 2.6→2.11+/cu128 (venv is DLL-locked by the run): bump pyproject,
-   `uv lock --upgrade` + `uv sync` + `pytest` + generate smoke. (librosa, no torchaudio.)
-4. **Test + wire `torch.compile`** (GPU-free): verify Windows/Triton works; if so add a
-   `--compile` flag handling the `_orig_mod.` state_dict prefix (else resume/generate break).
-5. **v5 fresh train** on `data/processed/ranked-v5` (17-ch) on `feat/v5-slider-style`
-   (code DONE, commit 272c736; **dataset DONE: 23,626 items, 17-ch, 12.2 GB**) —
-   only waiting on the GPU now. Then eval/package `[AI-v5-sliders]`.
-6. **adaLN-zero** conditioning (impl + fresh train; A/B vs plain v5) — RESEARCH §10.2.
-7. **SR-offset bake** into `target_context` (needs a finished model's SR sweep; §10.1.B).
+### Done 2026-06-14 (after the user stopped training)
+- ✅ **v4b eval + `[AI-v4b]` packaged** (ranked model epoch 48, val 0.00486; SR
+  monotonic, 17–19/19 in-range). v4 branch merged to **main**. Feedback in §10.4.
+- ✅ **Pruned `ranked-full` ckpts** → only `last.pt` kept (== epoch-48 best);
+  deleted stale `checkpoints/` folder (~10 GB freed).
+- ✅ **torch 2.6→2.11.0+cu128** (commit cc3c445; 94 tests pass on it).
+- ✅ **`torch.compile` wired behind `--compile`** (off by default; commit 47a864e).
+  **BLOCKED on this Windows box**: stock triton has no Windows build; `triton-windows`
+  works but then needs MSVC `cl.exe` and **no VS/Build Tools is installed**. Ready
+  for Linux/cloud or once Build Tools + triton-windows are installed. The wiring
+  compiles a separate `fwd_model` so checkpoints keep the raw (un-prefixed) state_dict.
+
+### Open queue (v5 branch `feat/v5-slider-style`) — GPU-gated / next work
+1. **Fix v4b rhythm regression** (NEW top issue, decode-side, no retrain): off-¼
+   notes (~1/6·1/8) + strange pauses — A/B snap tolerance (60→45 ms) and add 1/6,1/8
+   divisors; probe density. Test on the v4b 10-ch ckpt (needs `main`/v4 code). §10.4.
+2. **v5 fresh train** on `data/processed/ranked-v5` (17-ch; code DONE 272c736; dataset
+   DONE 23,626 items) — only GPU-gated. Then eval/package `[AI-v5-sliders]`.
+3. **adaLN-zero** conditioning (impl + fresh train; A/B vs plain v5) — RESEARCH §10.2.
+4. **SR-offset bake** into `target_context` (needs a model's SR sweep; §10.1.B).
 
 ### Standing
 1. **Ranked train** (the final v4/v5 run) — in progress; see §4b + §6.
