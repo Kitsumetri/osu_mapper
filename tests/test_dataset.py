@@ -89,6 +89,37 @@ def test_augment_flips_cursor_channels_only(tmp_path):
     assert seen_y == {True, False}             # both vertical orientations appear
 
 
+def test_augment_flips_slider_anchor_channels(tmp_path):
+    from src.config import CH_SLIDER_ANCHORS, CH_SLIDES
+    np.random.seed(0)
+    (tmp_path / "mels").mkdir(parents=True)
+    (tmp_path / "items").mkdir(parents=True)
+    T = 256
+    np.save(tmp_path / "mels" / "aud0.npy", np.random.rand(AUDIO.n_mels, T).astype(np.float16))
+    sig = np.full((N_SIGNAL_CHANNELS, T), -1.0, dtype=np.float16)
+    sig[4:6] = 0.0
+    sig[CH_SLIDER_ANCHORS:CH_SLIDES] = 0.0
+    sig[CH_SLIDER_ANCHORS + 0] = 0.5   # dx1
+    sig[CH_SLIDER_ANCHORS + 1] = 0.3   # dy1
+    sig[CH_SLIDES] = -0.33             # slides (flip-invariant)
+    np.savez_compressed(tmp_path / "items" / "a.npz", signal=sig)
+    (tmp_path / "manifest.json").write_text(
+        json.dumps([{"item_id": "a", "audio_id": "aud0", "n_objects": 100}]), encoding="utf-8")
+
+    ds = OsuSignalDataset(tmp_path, crop_frames=T, augment=True)
+    seen_dx, seen_dy = set(), set()
+    for _ in range(60):
+        s = ds[0][0].numpy()
+        dx, dy = s[CH_SLIDER_ANCHORS + 0], s[CH_SLIDER_ANCHORS + 1]
+        assert np.allclose(dx, 0.5, atol=1e-2) or np.allclose(dx, -0.5, atol=1e-2)
+        assert np.allclose(dy, 0.3, atol=1e-2) or np.allclose(dy, -0.3, atol=1e-2)
+        assert np.allclose(s[CH_SLIDES], -0.33, atol=1e-2)   # slides never flipped
+        seen_dx.add(bool(np.allclose(dx, -0.5, atol=1e-2)))
+        seen_dy.add(bool(np.allclose(dy, -0.3, atol=1e-2)))
+    assert seen_dx == {True, False}   # dx flips horizontally
+    assert seen_dy == {True, False}   # dy flips vertically
+
+
 def test_dataset_min_objects_filter_and_missing(tmp_path):
     _make_dataset(tmp_path, [("a", "aud0", 2000, 40), ("b", "aud1", 2000, 300)])
     assert len(OsuSignalDataset(tmp_path, crop_frames=512, min_objects=50)) == 1

@@ -483,12 +483,16 @@ with the wider context at scale; B/C/D-ii/D-iii are inference-side, ship anytime
 
 ## 10.3 v5 slider-shape + style — design (ACTIVE BUILD, branch `feat/v5-slider-style`)
 
-The next batch (chosen 2026-06-14). Bundles §10.1.F (slider channels) + §10.1.E
-(style) into **one re-preprocess + fresh train** (both change the representation,
-so one data pass). Targets the top play-feedback complaints: **sliders are
-straight lines (60–80%)** and **no reverse sliders**, plus **sparse pattern
-vocabulary**. Validated direction: Mapperatorinator's `osu_diffusion` makes slider
-anchors + repeat counts first-class typed points (see [[reference-mapperatorinator]]).
+The next batch (chosen 2026-06-14; **refined to proven-only**). **Scope: §10.1.F
+slider channels only.** Targets the two most visible, highest-confidence
+complaints: **sliders are straight lines (60–80%)** and **no reverse sliders**.
+Validated direction: Mapperatorinator's `osu_diffusion` makes slider anchors +
+repeat counts first-class typed points (see [[reference-mapperatorinator]]).
+
+**§10.1.E style/mapper conditioning is DEFERRED** (not in this batch): KMeans
+cluster quality, whether a coarse label captures real "style", and whether
+conditioning on it actually helps are all uncertain and indirect — too speculative
+to bundle. It stays a separate later experiment; `CONTEXT_DIM` is unchanged here.
 
 ### Why the current encoding fails
 Slider shape is traced into the shared `cursor_x/cursor_y` channels across the
@@ -518,32 +522,32 @@ points = head + offsets; read `slides` → repeat count; `length` = anchor path
 length (one traversal); osu! derives duration from length×slides. The cursor
 channels keep carrying the *circle/jump* path; sliders no longer pollute them.
 
-### Style conditioning (the E fix) — start coarse
-Extend the context vector (`conditioning.py`, currently `[SR,AR,OD,HP,CS,density]`)
-with a **coarse style class** (4–6 clusters via KMeans over `metrics.py` pattern
-stats: density, stream/jump ratio, spacing variance), embedded and added to the
-FiLM path with **per-field CFG dropout** (drop style independently of difficulty,
-à la Mapperatorinator). Defer per-creator embeddings (huge vocab + cold-start);
-manifest already has `creator`, and `osu!.db` has `Tags` if we want tags later.
+Cursor channels also change: stop tracing slider control points into
+`cursor_x/cursor_y` (that's the noise source). The cursor keeps only the object
+**head** keyframe (+ the slider **end** keyframe for flow continuity); slider body
+shape lives entirely in the anchor channels.
 
-### Channel layout: 10 → 17
-`[onset, slider_hold, spinner_hold, new_combo, cursor_x, cursor_y, kiai_hold,
-whistle, finish, clap, slider_dx1, slider_dy1, slider_dx2, slider_dy2, slider_dx3,
-slider_dy3, slides]`. `N_SIGNAL_CHANNELS=17`; new `CH_*` indices.
+### Channel layout: 10 → 17 (new channels APPENDED, indices 0–9 unchanged)
+`[0 onset, 1 slider_hold, 2 spinner_hold, 3 new_combo, 4 cursor_x, 5 cursor_y,
+6 kiai_hold, 7 whistle, 8 finish, 9 clap, 10 slider_dx1, 11 slider_dy1,
+12 slider_dx2, 13 slider_dy2, 14 slider_dx3, 15 slider_dy3, 16 slides]`.
+`N_SIGNAL_CHANNELS=17`. Appending (not reordering) keeps the v4/ranked 10-ch
+models + existing tests valid; anchors baseline 0, `slides` baseline -1.
 
 ### Implementation checklist (hermetic-testable before any retrain)
-1. `config.py`: channels 10→17 + indices.
-2. `signal.py`: `encode_beatmap` writes the 7 new channels; `decode_signal` /
-   `_slider_path` read anchors + slides instead of cursor-traced shape.
-3. `conditioning.py`: add style dim; `CONTEXT_DIM` bump; per-field CFG dropout.
-4. `dataset.py`: **flip aug must also negate `slider_dx_i` (h-flip) and
-   `slider_dy_i` (v-flip)** — else augmentation corrupts slider geometry.
-5. `preprocess.py`: re-encode → new dataset `ranked-v5`; compute + store style
-   cluster in the manifest (separate light pass / `corpus`-style step).
-6. `model`/`train`: input channels + `ctx_dim` follow config; **fresh train**
-   (17-ch model can't load the 10-ch v4 ckpt).
-7. Tests: round-trip a curved + a reverse slider through encode→decode; flip-aug
-   negates the new channels; style ctx shape. `TECH_REPORT.md` channel table.
+1. `config.py`: append 7 channels (10→17) + `CH_*` indices.
+2. `signal.py`: `encode_beatmap` writes anchor (RDP≤K, head-relative, normalised,
+   held over span) + `slides` channels, and only head/end cursor keyframes;
+   `decode_signal` reads anchors (span-mean) + `slides` (round) for slider geometry,
+   replacing `_slider_path`'s cursor trace.
+3. `dataset.py`: **flip aug must negate `slider_dx_i` (h-flip, ch 10/12/14) and
+   `slider_dy_i` (v-flip, ch 11/13/15)** — else augmentation corrupts slider
+   geometry; `slides` (16) is flip-invariant. Pad anchors to 0, `slides` to -1.
+4. `model`/`train`: input channels follow config; **fresh train** (17-ch can't load
+   the 10-ch v4 ckpt). `CONTEXT_DIM` unchanged (no style this batch).
+5. Tests: round-trip a curved + a **reverse** slider through encode→decode; flip-aug
+   negates the new channels. Update `TECH_REPORT.md` channel table.
+6. `conditioning.py`: **unchanged** (style deferred).
 
 ### Risks / mitigations
 - Anchor channels are sparse (active only during sliders) → noisier. Mitigation:

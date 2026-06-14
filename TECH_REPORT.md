@@ -37,7 +37,7 @@ decoder $\mathcal{D}$ (Section 8) then maps a sampled signal to hit objects.
 | Symbol | Meaning |
 |--------|---------|
 | $T$ | number of time frames (sequence length) |
-| $C=10$ | map-signal channels |
+| $C=17$ | map-signal channels (v5; 10 in v3) |
 | $F=64$ | mel bands |
 | $N$ | number of diffusion steps ($N=1000$) |
 | $t \in \{1,\dots,N\}$ | diffusion timestep (not song time) |
@@ -74,7 +74,8 @@ $$
 ### 3.2 Beatmap signal — the diffusion target
 
 The beatmap is encoded as a continuous multi-channel signal
-$\mathbf{x}_0\in[-1,1]^{C\times T}$ with $C=10$ channels (v3):
+$\mathbf{x}_0\in[-1,1]^{C\times T}$ with $C=17$ channels (v5; channels 0–9 are the
+v3 set, 10–16 are the v5 slider-shape additions):
 
 | ch | name | meaning |
 |----|------|---------|
@@ -86,6 +87,8 @@ $\mathbf{x}_0\in[-1,1]^{C\times T}$ with $C=10$ channels (v3):
 | 5 | `cursor_y` | normalised playfield $y$, interpolated over time |
 | 6 | `kiai_hold` | $+1$ during kiai (chorus) sections, else $-1$ |
 | 7–9 | `whistle`/`finish`/`clap` | impulse at objects carrying that hitsound |
+| 10–15 | `slider_dx/dy_{1..3}` | $K{=}3$ control-point offsets from the slider head, normalised by $(W,H)$, **held constant over the slider span** (baseline 0) |
+| 16 | `slides` | repeat count held over the slider span ($1{\to}{-}1,\,2{\to}{-}\tfrac13,\dots$); recovers reverse sliders |
 
 **Onset / new-combo** channels place a Gaussian bump at each object's frame
 $c = \text{time}/\Delta\tau$:
@@ -108,10 +111,19 @@ $$
 \tilde{x} = \frac{2x}{W}-1,\qquad \tilde{y} = \frac{2y}{H}-1,
 $$
 
-and **linearly interpolated** between objects so the path is smooth. For
-sliders, the control points are written into the cursor channels across the hold,
-so the *slider shape* is carried by the signal (used to reconstruct curved
-sliders in Section 8.2).
+and **linearly interpolated** between objects so the path is smooth. The cursor
+stores only object **heads** (and each slider's **end**, for flow continuity).
+
+**Slider-shape (v5)** channels carry the body geometry off the shared cursor
+path. For each slider, its control polygon is RDP-simplified to $K{=}3$ anchors;
+each anchor's head-relative offset $(\Delta x/W,\,\Delta y/H)$ is **held constant
+over the slider span** (a valued box, like `slider_hold`). The `slides` channel
+holds the repeat count likewise. Holding a constant value over the span (rather
+than a single-frame spike) makes these a smooth, denoise-friendly regression
+target; decoding reads the **span mean** (robust to noise) — see Section 8.2.
+This replaces v3's cursor-traced shape, which competed with the global cursor
+path and decoded to near-straight lines, and recovers reverse sliders ($\text{slides}\ge 2$)
+that v3 dropped entirely.
 
 ---
 
@@ -434,7 +446,7 @@ moved slider ends from ~55% off the ¼-grid to ~0%.
 | Group | Value |
 |-------|-------|
 | Audio | $f_s=22050$, $n_\text{fft}=1024$, hop $=256$, $F=64$ mels, $[20,11025]$ Hz |
-| Signal | $C=10$ channels, frame rate $\approx 86$ Hz, crop $T=3072$ ($\approx 36$ s) |
+| Signal | $C=17$ channels (v5), frame rate $\approx 86$ Hz, crop $T=4096$ ($\approx 48$ s) |
 | Diffusion | $N=1000$, linear $\beta\in[10^{-4}, 2\times10^{-2}]$, $\epsilon$-prediction |
 | Sampler | DDIM, $S\approx100$, $\eta=0$ |
 | U-Net | base $=160$, mults $(1,2,4,8)$, $t$-dim $256$, attention (4 heads, QK-norm), $\approx$ 97 M params |

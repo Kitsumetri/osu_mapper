@@ -93,7 +93,7 @@ def test_kiai_and_hitsound_roundtrip():
                       for t in range(0, 8000, 200)]
     n = int(AUDIO.time_to_frame(8000)) + 10
     sig = encode_beatmap(bm, n)
-    assert sig.shape[0] == N_SIGNAL_CHANNELS == 10
+    assert sig.shape[0] == N_SIGNAL_CHANNELS
     spans = decode_kiai(sig, min_ms=1000.0)
     assert len(spans) == 1
     assert abs(spans[0][0] - 2000) < 60 and abs(spans[0][1] - 6000) < 60
@@ -118,24 +118,53 @@ def test_accent_threshold_filters_weak_hitsounds():
     assert sum(1 for o in loose if o.hit_sound & 8) == 2     # both fire at 0
 
 
-def test_curved_slider_becomes_bezier():
-    """A slider whose cursor path curves should decode to a multi-point Bezier."""
+def test_curved_slider_from_anchor_channels():
+    """v5: a slider whose dedicated anchor channels hold distinct offsets decodes
+    to a multi-point Bezier (shape no longer rides the cursor channels)."""
+    from src.config import CH_SLIDER_ANCHORS, CH_SLIDES
     n = 60
     sig = np.full((N_SIGNAL_CHANNELS, n), -1.0, dtype=np.float32)
+    sig[4:6] = 0.0           # cursor centred (head at playfield centre)
+    sig[CH_SLIDER_ANCHORS:CH_SLIDES] = 0.0  # anchors baseline 0
     sig[0, 5] = 1.0          # one onset
-    sig[1, 5:40] = 1.0       # long slider hold
-    # cursor traces a strong half-circle curve during the hold (arc/chord ~1.57,
-    # well above the straight-vs-curve threshold)
-    fr = np.arange(n)
-    ang = np.clip((fr - 5) / 35.0, 0, 1) * np.pi
-    sig[4] = np.cos(ang) * 0.5   # x: +0.5 -> -0.5
-    sig[5] = np.sin(ang) * 0.5   # y: 0 -> peak -> 0
+    sig[1, 5:40] = 1.0       # long slider hold over frames 5..39
+    # three distinct held anchor offsets -> a wave (dx1,dy1),(dx2,dy2),(dx3,dy3)
+    span = slice(5, 40)
+    sig[CH_SLIDER_ANCHORS + 0, span] = 0.2    # dx1
+    sig[CH_SLIDER_ANCHORS + 1, span] = 0.3    # dy1
+    sig[CH_SLIDER_ANCHORS + 2, span] = 0.4    # dx2
+    sig[CH_SLIDER_ANCHORS + 3, span] = -0.2   # dy2
+    sig[CH_SLIDER_ANCHORS + 4, span] = 0.6    # dx3
+    sig[CH_SLIDER_ANCHORS + 5, span] = 0.1    # dy3
     dec = decode_signal(sig, onset_threshold=0.3, min_spinner_frames=100)
     sliders = [o for o in dec if o.is_slider]
     assert sliders, "expected a slider"
     s = sliders[0]
     assert s.curve_type == "B"
     assert len(s.curve_points) >= 2
+
+
+def test_slider_shape_and_reverse_roundtrip():
+    """encode->decode preserves a curved slider's shape and a reverse slider's
+    repeat count (the two v5 representation fixes)."""
+    import pathlib
+
+    from src.parsing.beatmap import TYPE_SLIDER, Beatmap, HitObject
+    bm = Beatmap(path=pathlib.Path("x.osu"))
+    # a curved (wave) slider with 3 control points, and a reverse slider (slides=2)
+    curved = HitObject(x=100, y=100, time=0, type=TYPE_SLIDER, end_time=400,
+                       curve_type="B", curve_points=[(180, 40), (260, 160), (340, 60)],
+                       slides=1, length=300.0)
+    reverse = HitObject(x=200, y=300, time=800, type=TYPE_SLIDER, end_time=1400,
+                        curve_type="L", curve_points=[(320, 300)], slides=2, length=120.0)
+    bm.hit_objects = [curved, reverse]
+    n = int(AUDIO.time_to_frame(1400)) + 10
+    sig = encode_beatmap(bm, n)
+    dec = sorted((o for o in decode_signal(sig, min_spinner_frames=100) if o.is_slider),
+                 key=lambda o: o.time)
+    assert len(dec) == 2
+    assert dec[0].curve_type == "B" and len(dec[0].curve_points) >= 2   # curve survived
+    assert dec[1].slides == 2                                           # reverse survived
 
 
 def test_no_time_overlap_after_write_reparse(sample_osu, tmp_path):

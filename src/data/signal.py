@@ -15,7 +15,14 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..config import AUDIO, N_SIGNAL_CHANNELS, AudioConfig
+from ..config import (
+    AUDIO,
+    CH_SLIDER_ANCHORS,
+    CH_SLIDES,
+    N_SIGNAL_CHANNELS,
+    N_SLIDER_ANCHORS,
+    AudioConfig,
+)
 from ..parsing.beatmap import (
     PLAYFIELD_H,
     PLAYFIELD_W,
@@ -59,6 +66,16 @@ def _denorm_y(v: float) -> int:
     return int(round((v + 1) / 2 * PLAYFIELD_H))
 
 
+def _enc_slides(slides: int) -> float:
+    """Repeat count -> [-1, 1]: 1->-1, 2->-1/3, 3->1/3, 4->1 (held over the span)."""
+    return float(np.clip((slides - 1) / 3.0, 0.0, 1.0) * 2 - 1)
+
+
+def _dec_slides(v: float) -> int:
+    """Inverse of _enc_slides: span-mean -> nearest repeat count (>=1)."""
+    return int(round((float(np.clip(v, -1.0, 1.0)) + 1) / 2 * 3)) + 1
+
+
 def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.ndarray:
     """Return a (N_SIGNAL_CHANNELS, n_frames) float32 array in [-1, 1]."""
     sig = np.zeros((N_SIGNAL_CHANNELS, n_frames), dtype=np.float32)
@@ -70,6 +87,10 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
     whistle = np.zeros(n_frames, dtype=np.float32)
     finish = np.zeros(n_frames, dtype=np.float32)
     clap = np.zeros(n_frames, dtype=np.float32)
+    # v5 slider-shape channels: head-relative control-point offsets (baseline 0)
+    # held over the slider span, + a repeat-count channel (baseline -1 = 1 slide).
+    anchors = np.zeros((2 * N_SLIDER_ANCHORS, n_frames), dtype=np.float32)
+    slides_ch = -np.ones(n_frames, dtype=np.float32)
 
     # cursor key-frames (time_frame, x, y) for interpolation
     keys_t: list[float] = []
@@ -100,16 +121,24 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
             a, b = int(round(f_start)), int(round(f_end))
             if b >= a:
                 slider[a:b + 1] = 1.0
-            # trace the slider's control points into the cursor channel over the
-            # hold so the signal carries the *shape* (waves/arcs), not just the
-            # endpoints. Control points are distributed evenly across the hold.
-            if obj.curve_points:
-                cps = obj.curve_points
-                for idx, (cx, cy) in enumerate(cps, start=1):
-                    ft = f_start + (f_end - f_start) * idx / len(cps)
-                    keys_t.append(ft)
-                    keys_x.append(_norm_x(cx))
-                    keys_y.append(_norm_y(cy))
+            # slider *shape* now lives in dedicated channels (not the shared cursor
+            # path): RDP-simplify the control polygon to <=K anchors, store each as
+            # a head-relative offset held over the span. slides -> repeat channel.
+            cps = obj.curve_points or [(obj.x, obj.y)]
+            simplified = _rdp([(obj.x, obj.y), *cps])[1:] or [cps[-1]]
+            anchor_pts = (simplified + [simplified[-1]] * N_SLIDER_ANCHORS)[:N_SLIDER_ANCHORS]
+            if b >= a:
+                for i, (ax, ay) in enumerate(anchor_pts):
+                    dx = float(np.clip((ax - obj.x) / PLAYFIELD_W, -1.2, 1.2))
+                    dy = float(np.clip((ay - obj.y) / PLAYFIELD_H, -1.2, 1.2))
+                    anchors[2 * i, a:b + 1] = dx
+                    anchors[2 * i + 1, a:b + 1] = dy
+                slides_ch[a:b + 1] = _enc_slides(obj.slides)
+            # cursor end key-frame (flow into the next object) = last anchor
+            ex, ey = anchor_pts[-1]
+            keys_t.append(f_end)
+            keys_x.append(_norm_x(ex))
+            keys_y.append(_norm_y(ey))
         elif obj.is_spinner:
             f_end = min(n_frames - 1, cfg.time_to_frame(obj.end_time))
             a, b = int(round(f_start)), int(round(f_end))
@@ -147,6 +176,8 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
     sig[7] = whistle * 2 - 1
     sig[8] = finish * 2 - 1
     sig[9] = clap * 2 - 1
+    sig[CH_SLIDER_ANCHORS:CH_SLIDER_ANCHORS + 2 * N_SLIDER_ANCHORS] = anchors
+    sig[CH_SLIDES] = slides_ch
     return sig
 
 
@@ -224,6 +255,38 @@ def _slider_path(start, cur_x, cur_y, p, end_frame, max_anchors: int = 8):
     return ctype, pts, max(10.0, length)
 
 
+def _slider_from_anchors(start, anchor_ch, p, end_frame):
+    """Build a slider curve from the v5 dedicated anchor channels.
+
+    Each of the K anchors' offset is read as the *mean over the slider span*
+    (robust to denoising noise), denormalised, and added to the head. Consecutive
+    duplicate anchors are dropped (padding / collapsed shapes). Returns
+    ``(curve_type, control_points, length)``.
+    """
+    sx, sy = start
+    lo = p
+    hi = min(end_frame, anchor_ch.shape[1] - 1)
+    if hi < lo:
+        hi = lo
+    prev = (sx, sy)
+    pts: list[tuple[int, int]] = []
+    length = 0.0
+    for i in range(N_SLIDER_ANCHORS):
+        dx = float(anchor_ch[2 * i, lo:hi + 1].mean())
+        dy = float(anchor_ch[2 * i + 1, lo:hi + 1].mean())
+        ax = int(np.clip(sx + dx * PLAYFIELD_W, 0, PLAYFIELD_W))
+        ay = int(np.clip(sy + dy * PLAYFIELD_H, 0, PLAYFIELD_H))
+        if (ax, ay) == prev:
+            continue
+        length += float(np.hypot(ax - prev[0], ay - prev[1]))
+        pts.append((ax, ay))
+        prev = (ax, ay)
+    if not pts:  # all anchors collapsed to the head -> tiny linear slider
+        return "L", [(int(np.clip(sx + 10, 0, PLAYFIELD_W)), sy)], 10.0
+    ctype = "B" if len(pts) >= 2 else "L"
+    return ctype, pts, max(10.0, length)
+
+
 def _pick_peaks(channel: np.ndarray, threshold: float, min_gap: int) -> list[int]:
     """Local-maxima peak picker on a [-1,1] channel.
 
@@ -269,6 +332,12 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
     whistle = sig[7] if has_accents else None
     finish = sig[8] if has_accents else None
     clap = sig[9] if has_accents else None
+    # v5 dedicated slider channels (anchors + repeat count); fall back to the
+    # cursor-traced shape for older 10-channel signals.
+    has_slider_ch = sig.shape[0] >= N_SIGNAL_CHANNELS
+    _ar_end = CH_SLIDER_ANCHORS + 2 * N_SLIDER_ANCHORS
+    anchor_ch = sig[CH_SLIDER_ANCHORS:_ar_end] if has_slider_ch else None
+    slides_sig = sig[CH_SLIDES] if has_slider_ch else None
     n = sig.shape[1]
 
     def _hit_sound(p: int) -> int:
@@ -332,12 +401,18 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
         end_frame = max(p + 1, min(j - 1, next_onset - 1))
         hs = _hit_sound(p)
         if win.size and win.max() > 0.0 and (end_frame - p) >= min_slider_frames:
-            # follow the cursor path during the hold -> a real curved slider
-            ctype, pts, length = _slider_path((x, y), cur_x, cur_y, p, end_frame)
+            if has_slider_ch:
+                # v5: shape from dedicated anchor channels; repeat count from slides
+                ctype, pts, length = _slider_from_anchors((x, y), anchor_ch, p, end_frame)
+                sl = _dec_slides(float(slides_sig[p:end_frame + 1].mean()))
+            else:
+                # legacy 10-channel: follow the cursor path during the hold
+                ctype, pts, length = _slider_path((x, y), cur_x, cur_y, p, end_frame)
+                sl = 1
             typ = TYPE_SLIDER | (TYPE_NEW_COMBO if is_nc else 0)
             obj = HitObject(x=x, y=y, time=time, type=typ, hit_sound=hs,
                             curve_type=ctype, curve_points=pts,
-                            slides=1, length=length,
+                            slides=sl, length=length,
                             end_time=int(round(cfg.frame_to_time(end_frame))))
             objects.append(obj)
         else:
