@@ -563,6 +563,27 @@ no GPU) → **after the running ranked train finishes + is evaluated** → re-pr
 `ranked-v5` → fresh train → eval/package `[AI-v5-sliders]`. Inference-side wins
 (§10.1.B SR-bake, §10.1.D-ii energy-gated breaks, kiai-snap) ship independently.
 
+## 10.4 v4b play-feedback action items (2026-06-14)
+
+From the in-game v4b comparison (see RESULTS.md). Ranked+context+aug validated for
+patterns/kiai/hitsounds; the open items:
+
+- **Rhythm regression (NEW — top decode priority, testable on v4b, no retrain).**
+  v4b puts some notes off the ¼ grid (look like 1/6 or 1/8) and leaves occasional
+  strange 0.5–2 s pauses; v4 rhythm was tighter. Two hypotheses, not exclusive:
+  (a) the snap loosening (45→60 ms / 40→50 %, fb #5) now pulls onsets onto the
+  *wrong* ¼ line — **test reverting to 45 ms**; (b) ranked maps use 1/6·1/8
+  subdivisions that `snap_to_grid`'s ¼(+⅓) grid can't place, so they land
+  off-grid — **add 1/6, 1/8 divisors (per-section)**. Also probe the pauses
+  (density / `onset_threshold`). A/B these decode params on the v4b ckpt.
+- **Kiai ends 1–3 s early** — extend the decoded kiai end (pad to the next
+  downbeat) in `decode_kiai`.
+- **No spinners** — `spinner_hold` rarely fires at decode; check the spinner
+  encode/threshold, or accept (low priority).
+- **Curve sliders still low / streams still weak** — the representation fixes:
+  v5 slider channels (§10.3, implemented) for curves+reverse; flow/distance-snap
+  (§10.2) for streams. Need the v5 train + likely v6 flow work.
+
 ## References
 - [Mapping techniques (Basics)](https://osu.ppy.sh/wiki/en/Mapping_Techniques/Basics)
 - [Technical maps](https://osu.ppy.sh/wiki/en/Beatmap/Technical_maps)

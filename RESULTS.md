@@ -3,20 +3,35 @@
 Status of training runs and generated-map quality. Metrics use `src/metrics.py`.
 **Current release: v4** (`runs/20260614-110223-std-v4-full/ckpt/best.pt`).
 
-## v5 ranked train (IN PROGRESS — 2026-06-14)
+## v4b — ranked train (DONE 2026-06-14, merged to main)
 
-Training the final v4/v5 model on **ranked-only data**: `osu!.db` ranked filter →
-~23.8k ranked/approved/loved std maps (`data/processed/ranked-full`), with **more
+The "final v4" / **v4b** model: `runs/20260614-151630-ranked-full/ckpt/` (only
+`last.pt` kept), **epoch 48, val_loss 0.00486** (well below v4 release's 0.0077).
+Ranked-only data (`osu!.db` filter → ~23.6k ranked/approved/loved maps), **more
 context** (`--crop 4096 --attn-levels 3`), **h/v flip augmentation**, train/val
-split (`val_loss` in metrics.csv), and a per-run `train.log`. Motivation: the v4
-play feedback (straight sliders, weak streams, sparse pattern vocabulary, junk in
-the unranked data). Draft (12 ep on the ranked subset) was clean: loss 0.53→0.022,
-no divergence, crop4096+attn3+batch16 fits the 4070 Ti. Full run: 60 epochs,
-`--save-every 5`, resumable. Results + sample to be filled in when it finishes.
+split, `train.log`. Stopped by the user near convergence (val plateaued ~0.0050).
 
-Heavier representation wins (slider-shape/repeat channels, style conditioning)
-were triaged to v5 proper — see RESEARCH §10.1.E/F and the Mapperatorinator
-analysis. The single cheap+high-probability adoption (flip aug) is in this run.
+**Eval (SR sweep, Headphone Actor):** SR monotonic ✓; **17–19/19 metrics in-range**
+(beats the v4 release's 16–17); hitsounds 0.23–0.31 ≈ real 0.33. SR offset persists
+(target 6→5.69, 5→4.43) → use `--match-sr`. Packaged `[AI-v4b]` (5.92★, 520 obj).
+
+**Play feedback (v4b vs v4 — user, in-game):**
+- ✅ **Kiai much better**: 2 sections start at near-perfect timing (v4 lagged the
+  drop ~10–12 s); minor — ends 1–3 s early.
+- ✅ **No dead trailing note** (decode trim fix validated in-game).
+- ✅ **Hitsounds slightly better** than v4.
+- ✅ **Jumps / patterns / streams much better** than v4 (streams still "feel bad"
+  but clearly improved) — **validates ranked data + context + flip aug**.
+- ⚠️ **Rhythm REGRESSED vs v4**: occasional strange pauses (0.5–2 s gaps); some
+  notes off the ¼ grid, look like 1/6 or 1/8. **NEW top issue** (see below).
+- ➖ **No spinners** generated (acceptable for now, but a gap).
+- ➖ **Curve sliders still low** in both — the slider-representation gap; the v5
+  17-ch slider channels (implemented, untrained) target exactly this.
+
+**Net:** ranked + context + aug is a clear win (kiai, patterns/jumps/streams,
+hitsounds, dead-note). The one regression is **rhythm** — likely the snap
+loosening (60 ms/50 %) and/or the ranked model using 1/6·1/8 subdivisions the
+¼-only snap can't place. Action items recorded in RESEARCH §10.4.
 
 ## v4 full-data (release)
 
