@@ -192,6 +192,15 @@ def train(args):
         model.train()
         return tot / max(1, nb)
 
+    # torch.compile wraps the model for the training forward only; EMA, optimizer,
+    # validation and checkpoints all use the *raw* `model`, so saved state_dicts
+    # never carry the compiled `_orig_mod.` prefix (resume/generate stay compatible).
+    # NOTE: on Windows this needs `triton-windows` + MSVC Build Tools (cl.exe);
+    # without them torch.compile raises at the first step. Default off.
+    fwd_model = torch.compile(model) if (args.compile and device == "cuda") else model
+    if args.compile:
+        print("torch.compile enabled (first step compiles; needs triton + a C compiler)")
+
     for epoch in range(start_epoch, args.epochs):
         model.train()
         running = 0.0
@@ -208,7 +217,7 @@ def train(args):
             noise = torch.randn_like(sig)
             x_t = diff.q_sample(sig, t, noise)
             with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=device == "cuda"):
-                pred = model(x_t, mel, t, ctx=ctx, ctx_drop=ctx_drop)
+                pred = fwd_model(x_t, mel, t, ctx=ctx, ctx_drop=ctx_drop)
                 loss = torch.nn.functional.mse_loss(pred, noise) / args.accum
             scaler.scale(loss).backward()
             running += loss.item() * args.accum
@@ -275,6 +284,9 @@ def main():
                          "(2=default; 3 gives finer-resolution pattern context)")
     ap.add_argument("--augment", type=lambda s: s.lower() != "false", default=True,
                     help="playfield h/v flip augmentation (default on; 'false' to disable)")
+    ap.add_argument("--compile", action="store_true",
+                    help="torch.compile the training forward (needs triton + a C "
+                         "compiler; on Windows: triton-windows + MSVC Build Tools)")
     ap.add_argument("--lr", type=float, default=1.2e-4)
     ap.add_argument("--grad-clip", type=float, default=0.3)
     ap.add_argument("--cfg-drop", type=float, default=0.15,
