@@ -87,22 +87,24 @@ python -m src.corpus_stats --songs "C:/osu!/Songs"   # rebuild reference_stats.j
   more epochs; VRAM was only ~half used). See RESEARCH §10.1.A.
 - **Reference** `artifacts/reference_stats.json`: 31,362 maps, bucketed by SR,
   includes kiai/hitsound metrics.
-- **v3 draft** (1500 maps) already proved conditioning works: target SR 2/4/6 →
-  monotonic achieved SR; kiai + hitsounds generate.
-- Git: `feat/diffusion-pipeline`, ~8 commits unpushed (**I cannot push — the user
-  pushes**; HTTPS needs their browser auth, their SSH key isn't on GitHub).
+- **Git**: v3 merged to `main`; active branch `feat/v4-fulldata`. **I cannot push
+  — the user pushes** (HTTPS needs their browser auth; their SSH key isn't on
+  GitHub). Commit locally with descriptive messages.
 
-## 6. When the heavy run finishes — do this
+## 6. When the full-data run finishes — do this
 
-1. Check `runs/.../metrics.csv` (no divergence; best loss).
-2. `python -m src.evaluate --audio <a real audio.mp3> --ckpt runs/.../ckpt/best.pt --srs 2,3,4,5,6`
-   — confirm achieved SR tracks target; note the **SR offset**.
-3. **Validate `--match-sr`** at runtime (deferred during training to keep GPU free).
-4. **Hitsounds are over-applied** (draft 0.67 vs real 0.33): raise the accent
-   decode threshold in `signal.decode_signal._hit_sound` (currently `> 0`; try a
-   positive threshold) — verify against `reference_stats.json`.
-5. Package a sample (`src/package_map.py`, prefix `[AI-v3]`) for the user to test.
-6. Write v3 heavy results into `RESULTS.md` + memory.
+(The v3-heavy run is already evaluated/packaged — this is for the in-progress
+full-data v4 run on `std-v3-all`.)
+
+1. Check `runs/<id>/metrics.csv` — no divergence (watch `avg_loss 0.[3-9]`), best loss.
+2. `python -m src.evaluate --audio <real audio.mp3> --ckpt runs/<id>/ckpt/best.pt --srs 2,3,4,5,6`
+   — confirm SR tracks target and compare metrics to v3-heavy2 (expect tighter
+   SR calibration + higher stream ratio from the larger data).
+3. Package a sample (`src/package_map.py`, prefix `[AI-v4]`) for the user to test.
+4. Write results into `RESULTS.md` + memory; update §5 above.
+5. Then pick up the v4 work (RESEARCH §10.1): cheap wins first — hitsound-threshold
+   tune (§10.1.C), SR-offset bake (§10.1.B), density/break control (§10.1.D) —
+   then the re-preprocess batch (style conditioning §10.1.E + slider channels §10.1.F).
 
 ## 7. Known issues / next — see RESEARCH §10 for the full v4/v5 plan
 
