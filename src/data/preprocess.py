@@ -1,6 +1,6 @@
 """Crawl the osu! Songs library into a deduped, manifest-indexed dataset.
 
-Layout (see STORAGE.md):
+Layout (see README.md "Data & run layout"):
   <out>/mels/<audio_id>.npy    log-mel per *audio file* (shared by difficulties)
   <out>/items/<item_id>.npz    signal (float16) per difficulty
   <out>/manifest.json          index: every item + metadata for filtering/stats
