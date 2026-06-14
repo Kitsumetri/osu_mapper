@@ -77,11 +77,14 @@ python -m src.corpus_stats --songs "C:/osu!/Songs"   # rebuild reference_stats.j
 
 ## 5. Current state (2026-06-14)
 
-- **Heavy v3 COMPLETE (best model)**: `runs/20260614-021054-std-v3-heavy2/ckpt/best.pt`
-  — base 128, 6001 maps, 100 epochs, loss **0.0056**, no divergence. SR
-  conditioning near-calibrated (target 3→2.78, 5→5.07), 13–17/19 metrics in real
-  range, kiai+hitsounds+curved sliders work. Sample packaged as `[AI-v3]`.
-  (The base-160 attempt `_diverged`/deleted — see §8.)
+- **Best model = `runs/20260614-021054-std-v3-heavy2/ckpt/best.pt`** (base 128,
+  6001 maps, loss 0.0056). SR conditioning calibrated (in-game SR ≈ target ±0.5),
+  kiai+hitsounds+curved sliders. Decode fixes from play feedback shipped: slider
+  ends snapped to ¼-grid (55%→0%), bezier RDP-simplified (≤4 pts). Best sample =
+  `[AI-v3b]` folder.
+- **RUNNING: full-library v4 preprocess** `data/processed/std-v3-all` (~28k maps,
+  curated `--max-sr 12`). When done → **full-data train** (base 128, **batch 32**,
+  more epochs; VRAM was only ~half used). See RESEARCH §10.1.A.
 - **Reference** `artifacts/reference_stats.json`: 31,362 maps, bucketed by SR,
   includes kiai/hitsound metrics.
 - **v3 draft** (1500 maps) already proved conditioning works: target SR 2/4/6 →
@@ -101,16 +104,21 @@ python -m src.corpus_stats --songs "C:/osu!/Songs"   # rebuild reference_stats.j
 5. Package a sample (`src/package_map.py`, prefix `[AI-v3]`) for the user to test.
 6. Write v3 heavy results into `RESULTS.md` + memory.
 
-## 7. Known issues / next (priority order)
+## 7. Known issues / next — see RESEARCH §10 for the full v4/v5 plan
 
-- **SR offset**: model generates ~1.5–2★ harder than requested (draft). `--match-sr`
-  corrects via feedback; after eval, bake the offset into `target_context` (§10.2).
-- **Hitsound over-application** (see §6.4 above).
-- **Sliders**: curved now (good) but shape rides on the noisy cursor channel;
-  proper slider control-point channels = a v4 item (RESEARCH §10.4).
-- **v4 features** (need a re-preprocess+retrain, so batch): style/mapper
-  conditioning (§10.1), slider-shape channels (§10.4). Inference-only (no
-  retrain): multi-section BPM timing (§10.3), SR calibration baking (§10.2).
+From play feedback (mostly model/conditioning, not decode):
+- **No breaks** — model is too dense (no gaps >4 s). Density/break control (v4
+  §10.1.D): condition density harder, or suppress onsets in low-mel-energy
+  sections, or write `[Events]` breaks for big gaps.
+- **Kiai lags the drop ~10–12 s, ~1/3 coverage** — channel alignment; more data +
+  downbeat-snap kiai edges (v4).
+- **Odd circle placement in spots** — pattern quality; flow/DS modelling (v5 §10.2).
+- **Streams slightly low, SR drift at extremes** — undertrained tails → more data (v4 §10.1.A).
+- **Hitsounds slightly high** (~0.5 vs real 0.33) → raise accent decode threshold (cheap, v4 §10.1.C).
+- **SR offset** — `--match-sr` corrects at inference; bake into `target_context` after eval (§10.1.B).
+
+v4 representation items (batch into one re-preprocess+retrain): **style/mapper
+conditioning** (§10.1.E), **slider-shape channels** (§10.1.F).
 
 ## 8. Hard-won lessons (don't re-learn these)
 

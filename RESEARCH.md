@@ -390,48 +390,69 @@ clap/finish to the nearest object.
 3. Add decode post-processing for kiai/accents; set output difficulty params
    from the request; wire the rosu SR verification loop.
 
-## 10. v4 candidate features (design / next)
+## 10. Roadmap: v3 status → v4 → v5
 
-v3 (10 channels + difficulty conditioning + CFG) is training. Candidate next
-steps, with the constraint that **anything changing the signal channels or the
-context-vector dimension requires a re-preprocess + retrain** (so batch them).
+### 10.0 v3 status (shipped)
+10-channel signal + difficulty conditioning + CFG; heavy model
+(`std-v3-heavy2`, base 128, loss 0.0056) generates difficulty-controllable maps
+(in-game SR ≈ target ±0.5), kiai, hitsounds, curved sliders. **Decode fixes from
+play feedback**: slider ends snapped to the ¼-grid (55%→0% off-grid), bezier
+control points simplified via RDP (6–8→≤4), slider time-overlap clamp,
+beat-snap, dangling-end trim, `--match-sr` calibration loop.
 
-### 10.1 Style / mapper conditioning (next big lever)
-The manifest already stores `creator`. Extend the context vector with a **style
-signal** so generation can target "Sotarks-like 1-2 farm" vs "tech":
-- *Cheap*: a coarse **style class** (farm-aim / stream / tech / alt) derived by
-  clustering maps on pattern stats (stream %, jump %, SV variance, reversal
-  ratio — all already in `metrics.py`); feed as a one-hot appended to `c`.
-- *Richer*: a learned **mapper embedding** keyed by `creator` (top-N creators by
-  map count, rest → "other"). Needs many maps per creator → full-library data.
-- Same CFG machinery; just a wider `ctx_dim`. Verify with the existing
-  pattern-stat metrics (does "tech" raise SV/cutstream stats?).
+**Still open (from play feedback) — mostly model/conditioning, not decode:**
+| # | feedback | nature | plan |
+|---|----------|--------|------|
+| 1 | no breaks (too dense) | model leaves no gaps | density/break control — v4 §10.1.D |
+| 2 | kiai lags the drop ~10–12 s, 1/3 coverage | kiai channel alignment | more data + downbeat-snap kiai edges — v4 |
+| 6 | some circle placement odd | pattern quality | flow/DS modelling — v5 §10.2 |
+| — | streams slightly low, SR drift at extremes | undertrained tails | more data (v4) + bake SR-offset (§10.1.B) |
+| — | hitsounds slightly high (~0.5 vs 0.33) | accent threshold | raise `_hit_sound` threshold (cheap) |
 
-### 10.2 SR/density calibration (cheap, post-v3-eval)
-The draft showed a systematic SR offset; `--match-sr` corrects it at inference.
-After the heavy run, **measure the offset curve** (target vs achieved over the SR
-sweep with `evaluate.py`) and bake a correction into `target_context` so a single
-pass hits the target. Also revisit the `density = 0.8*sr` heuristic against §8.
+### 10.1 v4 — scale + control (next; some need a re-preprocess)
 
-### 10.3 Multi-section BPM timing (decode-only, no retrain)
-26% of maps change BPM. Replace the single estimated timing point with a
-**tempo-over-time** track (librosa `tempo(aggregate=None)` / a downbeat tracker)
-→ emit several uninherited timing points, and snap onsets per section. Improves
-the variable-BPM desync; purely output-side, so no retrain.
+The current full-library preprocess (`std-v3-all`, ~28k maps, curated SR≤12)
+feeds this. Batch the representation-changing items into one re-preprocess+retrain.
 
-### 10.4 Proper slider control-point channels (representation, batch with 10.1)
-Current curved sliders ride on the shared cursor channel (noisy → the curve
-threshold is a blunt instrument). Add **dedicated K-anchor offset channels** at
-the slider head so shape is a first-class, denoised target.
+- **A. Scale (running)** — train on the full library (≈28k vs 6k), base 128,
+  **batch 32** (VRAM was only ~half used), more epochs. Biggest single lever;
+  expected to lift streams, calibrate SR tails, sharpen patterns. *No repr change.*
+- **B. SR-offset bake (cheap, post-eval)** — measure target-vs-achieved over an
+  `evaluate.py` sweep; fit a correction into `target_context` so one pass hits the
+  target (today `--match-sr` iterates). Revisit `density≈0.8·sr` vs §8.
+- **C. Hitsound + accent threshold (cheap, decode)** — raise the accent decode
+  threshold so hitsound usage matches real ~0.33 (now ~0.5).
+- **D. Density / breaks control** — the model fills everything (no gaps → no
+  breaks). Options: (i) condition density more strongly / separately so quiet
+  target → sparser; (ii) suppress onsets where the mel energy is low
+  (intro/break/outro detection); (iii) write explicit `[Events]` break periods
+  for gaps >~3.5 s. (i)+(ii) are the real fixes; (iii) is cosmetic.
+- **E. Style / mapper conditioning** *(repr: wider ctx)* — append a coarse style
+  class (farm/stream/tech/alt, clustered from `metrics.py` pattern stats) or a
+  learned `creator` embedding to `c`, with the same CFG. Targets "Sotarks 1-2
+  farm" vs "tech". Manifest already stores `creator`.
+- **F. Slider-shape channels** *(repr: +channels)* — move slider shape off the
+  shared, noisy cursor channel into **dedicated K-anchor offset channels** at the
+  slider head, so curves are a first-class denoised target (RDP becomes a clean-up,
+  not a crutch).
 
-### 10.5 Spinner/stream realism polish
-- Spinners are decoded at fixed centre (256,192); model the spinner end position.
-- Stream shaping: the model's streams are spacing-uniform; flow/DS coupling
-  (§3.A) would make them curve/zig-zag like real streams.
+*v4 batch*: one re-preprocess adding (E style label + F slider channels), retrain
+with the wider context at scale; B/C/D-ii/D-iii are inference-side, ship anytime.
 
-**Suggested v4 batch**: re-preprocess once with (10.1 style class in manifest +
-10.4 slider-shape channels), retrain with the wider context, and add 10.2/10.3
-as inference-side wins that need no retrain.
+### 10.2 v5 — pattern realism & timing fidelity
+
+- **Flow / distance-snap modelling** (§3.A) — the deepest fix for "clusters" and
+  odd circle placement (#6): model Δposition + flow angle so spacing tracks the
+  beat gap and streams curve/zig-zag like real maps, instead of independent x/y.
+  Likely needs an autoregressive or relative-position representation.
+- **Multi-section BPM timing** (decode) — tempo-over-time / downbeat tracker →
+  multiple uninherited points + per-section snap (fixes the 26% variable-BPM
+  desync; also tightens kiai/break edges to downbeats).
+- **Kiai/break as a learned segmentation** — a small mel→{kiai,break} head whose
+  output both writes timing and feeds back as conditioning.
+- **Capacity** — only revisit base ≥160 / latent diffusion if bf16 stability is
+  solved (QK-norm wasn't enough at 160; try lower LR/fp32-attention/EMA-warmup).
+- **Spinners** — model spinner end position (currently fixed centre).
 
 ## References
 - [Mapping techniques (Basics)](https://osu.ppy.sh/wiki/en/Mapping_Techniques/Basics)

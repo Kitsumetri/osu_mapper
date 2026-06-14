@@ -16,8 +16,8 @@ file.
 
 ```
 audio.mp3 ──► log-mel (64×T) ──┐
-                               ├─►  1D U-Net (DDIM denoise)  ──►  signal (6×T)  ──► decode ──► .osu
-   noise (6×T) ────────────────┘            ▲ conditioned on mel
+                               ├─►  1D U-Net (DDIM denoise)  ──►  signal (10×T)  ──► decode ──► .osu
+   noise (10×T) ───────────────┘     ▲ conditioned on mel + difficulty (SR/AR/OD/HP/CS/density)
 ```
 
 ### Signal representation (`src/data/signal.py`)
@@ -85,7 +85,7 @@ features: bf16, EMA, cosine LR + warmup, gradient accumulation, self-attention
 U-Net. See `STORAGE.md` for the data/runs/artifacts layout.
 
 > **Why train from scratch (not a pretrained model)?** The diffusion target is a
-> bespoke 6-channel beatmap "signal" with no pretrained equivalent on HF/torch.
+> bespoke 10-channel beatmap "signal" with no pretrained equivalent on HF/torch.
 > A pretrained *audio* encoder (e.g. for the mel conditioning) could help later,
 > but the denoiser itself must be trained for this representation.
 
@@ -115,7 +115,7 @@ main.py                  CLI dispatcher (preprocess | train | generate)
 ## Development
 
 ```bash
-pytest                 # 45 hermetic tests, ~6 s
+pytest                 # 81 hermetic tests, ~6 s
 ruff check .           # lint
 ruff format .          # format
 ```
@@ -135,9 +135,15 @@ live in `pyproject.toml` (`E,F,I,UP,B,SIM`, 100-col).
   slider's duration from `pixel_length / slider_velocity`, so `write_osu` clamps
   each slider's length to fit the gap before the next object (otherwise ~19% of
   generated objects overlapped in time).
-- **bf16 + attention can diverge.** Plain dot-product attention blew up the
-  scaled run at epoch 21; fixed with **QK-normalisation + a learnable temperature
-  + zero-init output projection**.
+- **bf16 + attention can diverge.** Fixed plain dot-product attention with
+  **QK-normalisation + learnable temperature + zero-init output projection** — but
+  even then **base 160 diverged twice** (sudden loss spike, ~e12–21). **base 128
+  is the stable default** (lr 1.2e-4, grad-clip 0.3); `best.pt` survives a late
+  spike. Watch the loss; monitor on `avg_loss 0.[3-9]`.
+- **Slider ends must be snapped too.** Beat-snap only moves onsets; a slider's
+  duration (= length/velocity) lands off-grid → `postprocess.snap_slider_ends`
+  snaps it (55%→0% off-grid). `package_map` must keep the *generated*
+  SliderMultiplier or it rescales durations and un-snaps them.
 - The original prototype's `uninherited = bool(str)` bug made every timing point
   "uninherited"; fixed and covered by a regression test.
 - An unanchored `data/` gitignore rule once hid the whole `src/data/` package —
@@ -153,34 +159,28 @@ Done:
       signal + metadata for difficulty/style/kiai conditioning)
 - [x] Conditional diffusion U-Net + DDPM/DDIM sampling
 - [x] End-to-end `audio → .osu` generation + playable-folder packaging
-- [x] Hermetic pytest suite (45 tests) + ruff + uv
+- [x] Hermetic pytest suite (81 tests) + ruff + uv
 - [x] Timing estimation v1 (`data/timing.py`: BPM + offset via librosa)
 - [x] Curved Bezier sliders (encode slider shape into the cursor signal, decode
       a multi-point Bezier from the cursor path)
 - [x] Eval metrics (`src/metrics.py`: density, stream/jump, spacing, on-grid)
-- [x] Scaled, stable training: 97M-param attention U-Net, bf16, EMA, cosine LR,
-      `runs/` logging; QK-norm fixes attention divergence
+- [x] Stable training: attention U-Net (base 128), bf16, EMA, cosine LR, CFG,
+      `runs/` logging; QK-norm + base-128 fix attention divergence
+- [x] **v3 (10-channel)**: kiai + whistle/finish/clap channels; **difficulty
+      conditioning** (SR context vector + classifier-free guidance) — in-game SR
+      ≈ target ±0.5; kiai + hitsounds + curved sliders all generate
+- [x] Rhythm: bounded ¼-grid beat-snap + **slider-end snapping** (slider ends
+      55%→0% off-grid) + bezier **RDP** simplification (≤4 control pts)
+- [x] Eval harness: `metrics.py` (+ kiai/hitsound), `corpus_stats.py` (SR-bucketed
+      reference over 31k maps), `evaluate.py` (SR sweep), `--match-sr` calibration
 
-Done (cont.):
+Next — see `RESEARCH.md §10` for the full **v4 / v5** plan:
 
-- [x] Rhythm snapping v1 (`postprocess.py`: bounded 1/4-grid beat-snap;
-      on-¼-grid 0.70 → 0.82 on the sample). Triplet/per-section snapping still
-      open.
-
-Next (roughly in priority order):
-
-- [ ] **Difficulty conditioning**: condition on AR/OD/HP/CS + density so one
-      model targets a chosen difficulty (manifest already stores these).
-- [ ] **Style / mapper conditioning**: condition on `Creator` or a derived style
-      class (farm-aim / stream / tech / alt) — see `RESEARCH.md §5`.
-- [ ] **Kiai channel**: 7th signal channel `kiai_hold` to ramp density in
-      choruses (`RESEARCH.md §7`).
-- [ ] **Variable-BPM / multi-section timing** on output (26% of maps); downbeat
-      tracking for better timing accuracy (`RESEARCH.md §6`).
-- [ ] **Scale data** to the full library (31k+ difficulties).
-- [ ] **Hitsounds** (whistle/finish/clap accent channel) — lowest priority.
-
-See `RESEARCH.md` for the detailed plan behind each item.
+- **v4 (scaling + control)**: train on the full library (~28k maps, running) at
+  bigger batch; density/**break** control; style/mapper conditioning; dedicated
+  slider-shape channels; bake the SR-offset correction; hitsound-threshold tune.
+- **v5 (pattern realism)**: flow / distance-snap modelling (real streams/jumps,
+  fixes odd placement); multi-section BPM timing; learned kiai/break segmentation.
 
 ## Prior art / credits
 

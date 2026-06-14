@@ -371,10 +371,12 @@ spinner.
 
 ### 8.2 Slider reconstruction and duration
 
-For a slider held over $[i_0, i_1]$, the cursor path is sampled at up to $K{=}6$
+For a slider held over $[i_0, i_1]$, the cursor path is sampled at up to $K{=}8$
 anchors $\{(x_k,y_k)\}$ and emitted as a **Bézier** control polygon
 ($\texttt{B}\,|\,x_1{:}y_1|\dots$); near-straight paths fall back to linear. The
-written **pixel length** is the polyline length
+anchors are simplified with **Ramer–Douglas–Peucker** ($\varepsilon{=}18$ px) so
+simple shapes (waves, arcs) use few control points (≤4) instead of every sampled
+frame. The written **pixel length** is the polyline length
 $\ell = \sum_k \lVert p_k - p_{k-1}\rVert$.
 
 Crucially, osu! derives a slider's *duration* from its length, slider velocity
@@ -418,6 +420,12 @@ applied **only if** $|g(\tau)-\tau|\le \delta_\text{max}$ (a bound of a few tens
 of ms). Bounding the move means a wrong BPM estimate cannot drag the whole map
 onto a bad grid; durations are preserved by shifting $t_\text{end}$ by the same
 delta.
+
+**Slider-end snapping.** Snapping onsets leaves slider *ends* off-grid (their
+duration comes from §8.2). So each slider's duration is rounded to the nearest
+$1/d$-beat multiple $k\,\iota$ ($k\ge 1$, capped to fit the gap to the next
+object) and its **length recomputed** $\ell = (k\iota/\beta_\text{ms})\,v$. This
+moved slider ends from ~55% off the ¼-grid to ~0%.
 
 ---
 
