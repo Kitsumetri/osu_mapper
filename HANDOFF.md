@@ -91,6 +91,18 @@ python -m src.corpus_stats --songs "C:/osu!/Songs"   # rebuild reference_stats.j
   — the user pushes** (HTTPS needs their browser auth; their SSH key isn't on
   GitHub). Commit locally with descriptive messages.
 
+## 5b. Open TODOs (the live task list is session-scoped — these are the durable copy)
+
+1. **Full-data train** on `std-v3-all` (in progress / next) — §6 below.
+2. **Cheap post-train wins** (no retrain): hitsound-threshold tune (RESEARCH
+   §10.1.C), SR-offset bake into `target_context` (§10.1.B), density/break
+   control (§10.1.D).
+3. **v4 re-preprocess batch**: style/mapper conditioning (§10.1.E) + dedicated
+   slider-shape channels (§10.1.F) → retrain.
+4. **v5**: flow/distance-snap pattern modelling, multi-section BPM timing, learned
+   kiai/break segmentation (RESEARCH §10.2).
+5. Optional: parallelise `corpus_stats` like `preprocess` if re-run often.
+
 ## 6. When the full-data run finishes — do this
 
 (The v3-heavy run is already evaluated/packaged — this is for the in-progress
