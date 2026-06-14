@@ -9,21 +9,39 @@ triplet rhythms).
 """
 from __future__ import annotations
 
-from .parsing.beatmap import HitObject, TimingPoint
+from math import hypot
+
+from .parsing.beatmap import PLAYFIELD_H, PLAYFIELD_W, HitObject, TimingPoint
 
 
-def trim_isolated_ends(objects: list[HitObject], max_gap_ms: float = 3000.0) -> int:
+def trim_isolated_ends(objects: list[HitObject], max_gap_ms: float = 3000.0,
+                       trail_gap_ms: float | None = None,
+                       spinner_tail_ms: float = 1200.0) -> int:
     """Drop leading/trailing objects separated from the body by a huge silent gap.
 
     Fixes the "one lone note seconds after the song ends" artefact: if the last
-    object starts more than ``max_gap_ms`` after the previous one finishes, it is
-    almost certainly not musical. Returns the number of objects removed.
+    object starts more than ``trail_gap_ms`` after the previous one finishes, it
+    is almost certainly not musical. Trailing notes are trimmed more aggressively
+    than leading ones (``trail_gap_ms`` defaults below ``max_gap_ms``) because a
+    lone outro note the auto-player still "hits" but a human never sees coming is
+    the common play-feedback artefact (fb #7).
+
+    Also drops a lone trailing *circle* that lands within ``spinner_tail_ms`` after
+    the final spinner: that's a phantom spin-down onset the auto-player can't hit
+    (recurring fb). Only the very last object is touched, so a real circle after a
+    spinner mid-map is untouched. Returns the number removed.
     """
     if len(objects) < 3:
         return 0
+    if trail_gap_ms is None:
+        trail_gap_ms = min(max_gap_ms, 2200.0)
     objs = sorted(objects, key=lambda o: o.time)
     removed = 0
-    while len(objs) >= 2 and objs[-1].time - objs[-2].end_time > max_gap_ms:
+    while len(objs) >= 2 and objs[-1].time - objs[-2].end_time > trail_gap_ms:
+        objs.pop()
+        removed += 1
+    if (len(objs) >= 2 and objs[-1].is_circle and objs[-2].is_spinner
+            and 0 <= objs[-1].time - objs[-2].end_time < spinner_tail_ms):
         objs.pop()
         removed += 1
     while len(objs) >= 2 and objs[1].time - objs[0].end_time > max_gap_ms:
@@ -31,6 +49,92 @@ def trim_isolated_ends(objects: list[HitObject], max_gap_ms: float = 3000.0) -> 
         removed += 1
     objects[:] = objs
     return removed
+
+
+def _clamp(v: float, lo: float, hi: float) -> int:
+    return int(round(min(max(v, lo), hi)))
+
+
+def clamp_slider_endpoints(objects: list[HitObject],
+                           w: int = PLAYFIELD_W, h: int = PLAYFIELD_H) -> int:
+    """Keep slider bodies inside the playfield (fb #1: sliders shooting off-screen).
+
+    A slider's pixel ``length`` is independent of its control-point geometry: when
+    ``length`` exceeds the control polygon's path length, osu! *extrapolates* the
+    path beyond the last anchor along the final segment's direction. After
+    ``snap_slider_ends`` stretches a slider's length to snap its duration, that
+    extrapolated tail can fly far outside the 512x384 playfield.
+
+    Two guards, both cheap: (1) clamp every anchor (head + control points) into
+    the playfield; (2) cap ``length`` so any extrapolation past the last anchor
+    stays in-bounds. When the length is trimmed, ``end_time`` is scaled with it
+    (duration is proportional to length) so downstream gaps stay consistent.
+    Returns the number of sliders adjusted.
+    """
+    changed = 0
+    for o in objects:
+        if not o.is_slider or not o.curve_points or o.length <= 0:
+            continue
+        before = (o.x, o.y, tuple(o.curve_points), o.length)
+        o.x, o.y = _clamp(o.x, 0, w), _clamp(o.y, 0, h)
+        o.curve_points = [(_clamp(cx, 0, w), _clamp(cy, 0, h)) for cx, cy in o.curve_points]
+
+        anchors = [(o.x, o.y), *o.curve_points]
+        poly_len = sum(hypot(b[0] - a[0], b[1] - a[1])
+                       for a, b in zip(anchors, anchors[1:]))
+        if o.length > poly_len + 0.5:
+            # extrapolation distance allowed before the tail leaves the playfield
+            last, prev = anchors[-1], anchors[-2]
+            dx, dy = last[0] - prev[0], last[1] - prev[1]
+            norm = hypot(dx, dy)
+            if norm < 1e-6:
+                max_extra = 0.0
+            else:
+                ux, uy = dx / norm, dy / norm
+                bounds = [norm * 10]  # generous default if a direction is free
+                if ux > 1e-6:
+                    bounds.append((w - last[0]) / ux)
+                elif ux < -1e-6:
+                    bounds.append((0 - last[0]) / ux)
+                if uy > 1e-6:
+                    bounds.append((h - last[1]) / uy)
+                elif uy < -1e-6:
+                    bounds.append((0 - last[1]) / uy)
+                max_extra = max(0.0, min(bounds))
+            new_len = poly_len + min(o.length - poly_len, max_extra)
+            if new_len < o.length - 0.5:
+                dur = o.end_time - o.time
+                o.end_time = o.time + int(round(dur * new_len / o.length))
+                o.length = max(10.0, new_len)
+        if (o.x, o.y, tuple(o.curve_points), o.length) != before:
+            changed += 1
+    return changed
+
+
+def compute_breaks(objects: list[HitObject], min_gap_ms: float = 3500.0,
+                   lead_out_ms: float = 200.0, lead_in_ms: float = 400.0,
+                   min_len_ms: float = 800.0) -> list[tuple[int, int]]:
+    """Find break periods for big silent gaps (>= ``min_gap_ms``) between objects.
+
+    Returns ``(start_ms, end_ms)`` pairs sitting inside each gap, padded away from
+    the surrounding objects (``lead_out_ms`` after the previous end, ``lead_in_ms``
+    before the next start) and dropped if shorter than ``min_len_ms``. These are
+    written as ``[Events]`` break periods so long gaps render as proper breaks
+    rather than dead air. Note this only *marks* existing gaps; it does not make a
+    dense map sparser (that is a model-side fix).
+    """
+    if len(objects) < 2:
+        return []
+    objs = sorted(objects, key=lambda o: o.time)
+    breaks: list[tuple[int, int]] = []
+    for a, b in zip(objs, objs[1:]):
+        if b.time - a.end_time < min_gap_ms:
+            continue
+        start = int(round(a.end_time + lead_out_ms))
+        end = int(round(b.time - lead_in_ms))
+        if end - start >= min_len_ms:
+            breaks.append((start, end))
+    return breaks
 
 
 def snap_slider_ends(objects: list[HitObject], tp: TimingPoint,
@@ -89,8 +193,10 @@ def snap_to_grid(objects: list[HitObject], tp: TimingPoint,
     offset = tp.time
     intervals = [beat / d for d in divisors]
     if max_snap_ms is None:
-        # at most ~45 ms, and never more than ~40% of the finest subdivision
-        max_snap_ms = min(45.0, 0.4 * min(intervals))
+        # at most ~60 ms, and never more than ~50% of the finest subdivision.
+        # Loosened from 45 ms / 40% (fb #5): more circles land cleanly on the 1/4
+        # grid. Still bounded so a wrong BPM estimate can't drag the whole map.
+        max_snap_ms = min(60.0, 0.5 * min(intervals))
 
     moved = 0
     for o in objects:

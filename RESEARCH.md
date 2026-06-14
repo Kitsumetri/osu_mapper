@@ -403,11 +403,11 @@ beat-snap, dangling-end trim, `--match-sr` calibration loop.
 **Still open (from play feedback) — mostly model/conditioning, not decode:**
 | # | feedback | nature | plan |
 |---|----------|--------|------|
-| 1 | no breaks (too dense) | model leaves no gaps | density/break control — v4 §10.1.D |
+| 1 | no breaks (too dense) | model leaves no gaps | `[Events]` breaks shipped (§10.1.D-iii) but only mark existing gaps; real fix is density conditioning (§10.1.D-i/ii) |
 | 2 | kiai lags the drop ~10–12 s, 1/3 coverage | kiai channel alignment | more data + downbeat-snap kiai edges — v4 |
 | 6 | some circle placement odd | pattern quality | flow/DS modelling — v5 §10.2 |
 | — | streams slightly low, SR drift at extremes | undertrained tails | more data (v4) + bake SR-offset (§10.1.B) |
-| — | hitsounds slightly high (~0.5 vs 0.33) | accent threshold | raise `_hit_sound` threshold (cheap) |
+| — | hitsounds slightly high (~0.5 vs 0.33) | accent threshold | ✅ DONE — `accent_threshold=0.85` → ~0.33 (§10.1.C) |
 
 ### 10.1 v4 — scale + control (next; some need a re-preprocess)
 
@@ -420,21 +420,31 @@ feeds this. Batch the representation-changing items into one re-preprocess+retra
 - **B. SR-offset bake (cheap, post-eval)** — measure target-vs-achieved over an
   `evaluate.py` sweep; fit a correction into `target_context` so one pass hits the
   target (today `--match-sr` iterates). Revisit `density≈0.8·sr` vs §8.
-- **C. Hitsound + accent threshold (cheap, decode)** — raise the accent decode
-  threshold so hitsound usage matches real ~0.33 (now ~0.5).
+- **C. Hitsound + accent threshold (cheap, decode)** — ✅ **DONE (2026-06-14)**:
+  `decode_signal(accent_threshold=0.85)` brings hitsound usage to ~0.33 (real),
+  from ~0.52 at threshold 0. Calibrated by sweeping on real generated output —
+  the accent channels saturate near +1, so only a high cut thins them.
 - **D. Density / breaks control** — the model fills everything (no gaps → no
   breaks). Options: (i) condition density more strongly / separately so quiet
   target → sparser; (ii) suppress onsets where the mel energy is low
   (intro/break/outro detection); (iii) write explicit `[Events]` break periods
-  for gaps >~3.5 s. (i)+(ii) are the real fixes; (iii) is cosmetic.
+  for gaps >~3.5 s. (i)+(ii) are the real fixes; (iii) is cosmetic. **(iii) DONE
+  (2026-06-14)**: `postprocess.compute_breaks` + `write_osu(breaks=…)`. But (iii)
+  only marks gaps that already exist — dense songs still produce 0 breaks, so
+  (i)/(ii) remain the open root-cause fix.
 - **E. Style / mapper conditioning** *(repr: wider ctx)* — append a coarse style
   class (farm/stream/tech/alt, clustered from `metrics.py` pattern stats) or a
   learned `creator` embedding to `c`, with the same CFG. Targets "Sotarks 1-2
   farm" vs "tech". Manifest already stores `creator`.
-- **F. Slider-shape channels** *(repr: +channels)* — move slider shape off the
-  shared, noisy cursor channel into **dedicated K-anchor offset channels** at the
-  slider head, so curves are a first-class denoised target (RDP becomes a clean-up,
-  not a crutch).
+- **F. Slider-shape + repeats channels** *(repr: +channels)* — move slider shape
+  off the shared, noisy cursor channel into **dedicated K-anchor offset channels**
+  at the slider head, so curves are a first-class denoised target (RDP becomes a
+  clean-up, not a crutch). **Also encode `slides` (repeat count)**: today the
+  representation loses it — a reverse slider (`slides≥2`, ~8% of real sliders)
+  is encoded as a *slow forward* slider (hold box over the full out-and-back
+  duration + forward-only cursor trace), so the decoder always emits `slides=1`
+  and we never generate reverse sliders. Add a small per-slider-head repeat
+  signal (e.g. a channel whose value encodes slides 1/2/3) and decode it.
 
 *v4 batch*: one re-preprocess adding (E style label + F slider channels), retrain
 with the wider context at scale; B/C/D-ii/D-iii are inference-side, ship anytime.
@@ -453,6 +463,23 @@ with the wider context at scale; B/C/D-ii/D-iii are inference-side, ship anytime
 - **Capacity** — only revisit base ≥160 / latent diffusion if bf16 stability is
   solved (QK-norm wasn't enough at 160; try lower LR/fp32-attention/EMA-warmup).
 - **Spinners** — model spinner end position (currently fixed centre).
+- **Architecture (2026 survey)** — field moved U-Net→**DiT** (pure transformer,
+  adaLN-zero conditioning, RoPE, QK-norm). We already have MHSA + QK-norm; keep
+  the U-Net **long skip connections** (ablations show they're the critical part;
+  even U-ViT/DiT add them). Full DiT shines at large scale we don't have, and the
+  2026 consensus is "data + training > arch tricks" (matches our ranked-data win).
+  *Contained upgrade worth trying:* **adaLN-zero conditioning** to replace the
+  additive FiLM time+ctx path (`unet.py`); RoPE in attention is a smaller second.
+- **Attention compute / FlashAttention** *(perf, conditioned)* — FA3 is Hopper-only
+  (our 4070 Ti is Ada sm_89 → never). FA2 *is* Ada-compatible but **absent from the
+  Windows torch 2.6 wheel** ("not compiled with flash attention"); SDPA already
+  uses the fused **cuDNN/memory-efficient** backend, so we're not on the slow math
+  path. Building a `flash-attn` wheel (against the existing torch, no torch upgrade)
+  would give only a **single-digit % end-to-end** gain for the current *conv* U-Net
+  (attention is a minority of FLOPs, runs only at coarse levels). **Only worth it
+  if v5 goes DiT/attention-heavy** (then attention dominates and FA2 matters). Free
+  now: pin `sdpa_kernel([CUDNN_ATTENTION, EFFICIENT_ATTENTION])` to force the best
+  fused backend.
 
 ## References
 - [Mapping techniques (Basics)](https://osu.ppy.sh/wiki/en/Mapping_Techniques/Basics)

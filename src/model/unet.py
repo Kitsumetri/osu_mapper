@@ -113,6 +113,7 @@ class UNet1d(nn.Module):
         t_dim: int = 256,
         attn: bool = True,
         ctx_dim: int = 0,
+        attn_levels: int = 2,
     ):
         super().__init__()
         self.sig_channels = sig_channels
@@ -136,8 +137,10 @@ class UNet1d(nn.Module):
         skip_chs = [base]
         for i, ch in enumerate(chs):
             self.downs.append(ResBlock1d(prev, ch, t_dim))
-            # attention only at the two deepest (coarsest) levels to bound cost
-            self.down_attn.append(AttnBlock1d(ch) if attn and i >= len(chs) - 2 else nn.Identity())
+            # attention at the ``attn_levels`` deepest (coarsest) levels to bound
+            # cost; raise it to give the model longer-range pattern context.
+            use_attn = attn and i >= len(chs) - attn_levels
+            self.down_attn.append(AttnBlock1d(ch) if use_attn else nn.Identity())
             skip_chs.append(ch)
             self.down_samps.append(Down(ch))
             prev = ch

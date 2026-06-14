@@ -1,5 +1,7 @@
 # osu_mapper — audio → osu! beatmap generation
 
+> **Continuing this project? Start with [`NEW_AGENT_PROMPT.md`](NEW_AGENT_PROMPT.md) and [`HANDOFF.md`](HANDOFF.md).**
+
 A diffusion-based pipeline that learns to generate **osu!standard** beatmaps
 from raw audio, trained on a local osu! Songs library.
 
@@ -67,12 +69,13 @@ pip install -r requirements.txt
 ## Quickstart
 
 ```bash
-# 1. preprocess into a deduped, manifest-indexed dataset (see STORAGE.md)
+# 1. preprocess into a deduped, manifest-indexed dataset (see "Data & run layout")
 python main.py preprocess --songs "C:/osu!/Songs" --out data/processed/std-v1 --limit 3000
 
-# 2. train the diffusion model (logs + checkpoints under runs/<id>/)
-python main.py train --data data/processed/std-v1 --tag std-v1-base160 \
-    --epochs 120 --batch 12 --crop 3072 --base 160
+# 2. train the diffusion model (logs + checkpoints under runs/<id>/).
+#    base 128 is the stable default — base 160 + bf16 diverges (see gotchas).
+python main.py train --data data/processed/std-v3-all --tag mymodel \
+    --epochs 50 --batch 32 --crop 3072
 
 # 3. generate a .osu at a target star rating (DDIM + classifier-free guidance,
 #    EMA weights, kiai + hitsounds decoded, beat-snapped)
@@ -82,7 +85,7 @@ python main.py generate --audio song.mp3 --ckpt runs/<id>/ckpt/best.pt \
 
 Each stage is also runnable directly, e.g. `python -m src.train ...`. Training
 features: bf16, EMA, cosine LR + warmup, gradient accumulation, self-attention
-U-Net. See `STORAGE.md` for the data/runs/artifacts layout.
+U-Net, train/val split, and per-run logging. See "Data & run layout" below.
 
 > **Why train from scratch (not a pretrained model)?** The diffusion target is a
 > bespoke 10-channel beatmap "signal" with no pretrained equivalent on HF/torch.
@@ -112,10 +115,35 @@ tests/                   hermetic pytest suite (no dataset/GPU needed)
 main.py                  CLI dispatcher (preprocess | train | generate)
 ```
 
+### Data & run layout
+
+Everything heavy is git-ignored (root-anchored `/data/`, `/runs/`, `/artifacts/`);
+only code + small configs are tracked.
+
+```
+data/processed/<tag>/          # one preprocessing run
+  mels/<audio_id>.npy          # log-mel per *audio file* (deduped across difficulties)
+  items/<item_id>.npz          # signal per difficulty
+  manifest.json                # index: every item + metadata (creator, cs/ar/od/hp,
+                               #   bpm, has_kiai, star_rating, frames, ...)
+runs/<run_id>/                 # one training run (run_id = YYYYmmdd-HHMMSS-tag)
+  config.json                  # full args + git commit + dataset size + n_params
+  metrics.csv                  # epoch, avg_loss, val_loss, lr, sec
+  train.log                    # full stdout/stderr transcript (prints, warnings)
+  ckpt/{last,best,epoch_N}.pt  # {model, ema, opt, gstep, best, args, epoch, git_commit}
+artifacts/                     # exported, shareable outputs (generated/packaged maps)
+```
+
+- **Mel dedup**: a song's many difficulties share one audio, so the mel is stored
+  once per `audio_id` (~4–5× fewer big arrays at full-library scale).
+- **Manifest** lets training filter/sample and compute stats without opening every
+  shard. **`best.pt`** keeps the lowest val loss (EMA weights are used at inference).
+- Reproduce a run from `runs/<id>/config.json` (pins git commit + args).
+
 ## Development
 
 ```bash
-pytest                 # 81 hermetic tests, ~6 s
+pytest                 # 92 hermetic tests, ~6 s
 ruff check .           # lint
 ruff format .          # format
 ```
@@ -159,7 +187,7 @@ Done:
       signal + metadata for difficulty/style/kiai conditioning)
 - [x] Conditional diffusion U-Net + DDPM/DDIM sampling
 - [x] End-to-end `audio → .osu` generation + playable-folder packaging
-- [x] Hermetic pytest suite (81 tests) + ruff + uv
+- [x] Hermetic pytest suite (92 tests) + ruff + uv
 - [x] Timing estimation v1 (`data/timing.py`: BPM + offset via librosa)
 - [x] Curved Bezier sliders (encode slider shape into the cursor signal, decode
       a multi-point Bezier from the cursor path)
@@ -174,13 +202,11 @@ Done:
 - [x] Eval harness: `metrics.py` (+ kiai/hitsound), `corpus_stats.py` (SR-bucketed
       reference over 31k maps), `evaluate.py` (SR sweep), `--match-sr` calibration
 
-Next — see `RESEARCH.md §10` for the full **v4 / v5** plan:
-
-- **v4 (scaling + control)**: train on the full library (~28k maps, running) at
-  bigger batch; density/**break** control; style/mapper conditioning; dedicated
-  slider-shape channels; bake the SR-offset correction; hitsound-threshold tune.
-- **v5 (pattern realism)**: flow / distance-snap modelling (real streams/jumps,
-  fixes odd placement); multi-section BPM timing; learned kiai/break segmentation.
+Next — see `RESEARCH.md §10` for the full **v4 / v5** plan and `RESULTS.md` for
+run history. In short: v4 shipped (full-library + difficulty conditioning + decode
+fixes); current work trains on **ranked-only data** with more context + flip
+augmentation; v5 tackles the representation wins (slider-shape/repeat channels,
+style conditioning, flow/distance-snap modelling, multi-section BPM timing).
 
 ## Prior art / credits
 

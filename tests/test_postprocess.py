@@ -46,6 +46,73 @@ def test_trim_keeps_dense_tail():
     assert trim_isolated_ends(objs, max_gap_ms=3000) == 0
 
 
+def test_trim_trailing_more_aggressive_than_leading():
+    from src.postprocess import trim_isolated_ends
+    # a 2.5s trailing gap is trimmed (trail default 2200) but a 2.5s leading gap
+    # is kept (lead default 3000).
+    objs = _circles([0, 200, 400, 600]) + _circles([3100])  # 2500ms after 600
+    assert trim_isolated_ends(objs) == 1
+    assert max(o.time for o in objs) == 600
+    objs2 = _circles([0]) + _circles([2500, 2700, 2900, 3100])  # 2500ms lead gap
+    assert trim_isolated_ends(objs2) == 0
+
+
+def test_trim_drops_circle_after_trailing_spinner():
+    from src.parsing.beatmap import TYPE_SPINNER, HitObject
+    from src.postprocess import trim_isolated_ends
+    objs = _circles([0, 200, 400])
+    objs.append(HitObject(x=256, y=192, time=600, type=TYPE_SPINNER, end_time=2000))
+    objs.append(HitObject(x=100, y=100, time=2300, type=TYPE_CIRCLE, end_time=2300))  # +300ms
+    removed = trim_isolated_ends(objs)
+    assert removed == 1
+    assert not objs[-1].is_circle or objs[-1].is_spinner  # last object is the spinner
+    assert objs[-1].is_spinner
+
+
+def test_trim_keeps_circle_well_after_spinner():
+    from src.parsing.beatmap import TYPE_SPINNER, HitObject
+    from src.postprocess import trim_isolated_ends
+    objs = _circles([0, 200, 400])
+    objs.append(HitObject(x=256, y=192, time=600, type=TYPE_SPINNER, end_time=2000))
+    objs.append(HitObject(x=100, y=100, time=3500, type=TYPE_CIRCLE, end_time=3500))  # 1.5s after
+    # 1500ms > spinner_tail default (1200) but < trail (2200) -> kept
+    assert trim_isolated_ends(objs) == 0
+
+
+def test_clamp_slider_endpoint_caps_overlong_length():
+    from src.parsing.beatmap import TYPE_SLIDER
+    from src.postprocess import clamp_slider_endpoints
+    # head near the right edge, single anchor 20px to the right; a 400px length
+    # would extrapolate ~380px past the edge -> must be capped so the tail stays
+    # inside the 512-wide playfield.
+    s = HitObject(x=490, y=192, time=0, type=TYPE_SLIDER, end_time=400,
+                  curve_type="L", curve_points=[(510, 192)], length=400.0)
+    assert clamp_slider_endpoints([s]) == 1
+    # poly_len 20 + max extra to the right edge (512-510=2) = 22
+    assert s.length <= 22.5
+    assert s.end_time < 400          # duration scaled down with the length
+
+
+def test_clamp_slider_leaves_in_bounds_slider():
+    from src.parsing.beatmap import TYPE_SLIDER
+    from src.postprocess import clamp_slider_endpoints
+    s = HitObject(x=100, y=100, time=0, type=TYPE_SLIDER, end_time=200,
+                  curve_type="L", curve_points=[(180, 100)], length=80.0)
+    assert clamp_slider_endpoints([s]) == 0
+    assert s.length == 80.0
+
+
+def test_compute_breaks_marks_big_gaps_only():
+    from src.postprocess import compute_breaks
+    objs = _circles([0, 200, 400]) + _circles([6000, 6200, 6400])  # ~5.6s gap
+    breaks = compute_breaks(objs)
+    assert len(breaks) == 1
+    start, end = breaks[0]
+    assert start > 400 and end < 6000        # padded inside the gap
+    # a map with no big gaps yields no breaks
+    assert compute_breaks(_circles([0, 200, 400, 600])) == []
+
+
 def test_snap_slider_ends_to_grid():
     from src.parsing.beatmap import TYPE_SLIDER
     from src.postprocess import snap_slider_ends

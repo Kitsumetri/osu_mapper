@@ -1,6 +1,6 @@
 """Crawl the osu! Songs library into a deduped, manifest-indexed dataset.
 
-Layout (see STORAGE.md):
+Layout (see README.md "Data & run layout"):
   <out>/mels/<audio_id>.npy    log-mel per *audio file* (shared by difficulties)
   <out>/items/<item_id>.npz    signal (float16) per difficulty
   <out>/manifest.json          index: every item + metadata for filtering/stats
@@ -28,6 +28,7 @@ from ..config import AUDIO
 from ..difficulty import star_rating
 from ..parsing.beatmap import parse_beatmap
 from .audio import audio_to_mel
+from .osu_db import ranked_osu_paths
 from .signal import encode_beatmap
 
 
@@ -113,7 +114,8 @@ def _process_set(args):
 
 def process_library(songs_dir: Path, out_dir: Path, limit: int | None = None,
                     min_objects: int = 50, max_seconds: float = 240.0,
-                    max_sr: float = 12.0, workers: int | None = None):
+                    max_sr: float = 12.0, workers: int | None = None,
+                    ranked_only: bool = False, osu_db: str | Path | None = None):
     mels_dir = out_dir / "mels"
     items_dir = out_dir / "items"
     mels_dir.mkdir(parents=True, exist_ok=True)
@@ -121,6 +123,21 @@ def process_library(songs_dir: Path, out_dir: Path, limit: int | None = None,
     workers = workers if workers is not None else max(1, (os.cpu_count() or 2) - 1)
 
     sets = list(find_sets(songs_dir))
+    if ranked_only:
+        # join osu!.db ranked status onto the library; keep only ranked/approved/
+        # loved .osu files (community-vetted: complete hitsounds, kiai, timing).
+        db_path = Path(osu_db) if osu_db else songs_dir.parent / "osu!.db"
+        ranked = ranked_osu_paths(songs_dir, db_path)
+        kept_sets = []
+        for sd, ops in sets:
+            ops_r = [op for op in ops if op.resolve() in ranked]
+            if ops_r:
+                kept_sets.append((sd, ops_r))
+        n_osu = sum(len(ops) for _, ops in sets)
+        n_kept = sum(len(ops) for _, ops in kept_sets)
+        print(f"ranked filter: {len(ranked)} ranked std maps in db; "
+              f"kept {n_kept}/{n_osu} .osu across {len(kept_sets)}/{len(sets)} sets")
+        sets = kept_sets
     tasks = [(sd, ops, mels_dir, items_dir, min_objects, max_seconds, max_sr)
              for sd, ops in sets]
 
@@ -167,9 +184,14 @@ def main():
                     help="skip maps with star rating above this (junk/joke maps)")
     ap.add_argument("--workers", type=int, default=None,
                     help="parallel worker processes (default: cpu_count-1)")
+    ap.add_argument("--ranked-only", action="store_true",
+                    help="keep only ranked/approved/loved maps (joins osu!.db)")
+    ap.add_argument("--osu-db", default=None,
+                    help="path to osu!.db (default: <songs>/../osu!.db)")
     args = ap.parse_args()
     process_library(Path(args.songs), Path(args.out), args.limit,
-                    args.min_objects, args.max_seconds, args.max_sr, args.workers)
+                    args.min_objects, args.max_seconds, args.max_sr, args.workers,
+                    ranked_only=args.ranked_only, osu_db=args.osu_db)
 
 
 if __name__ == "__main__":

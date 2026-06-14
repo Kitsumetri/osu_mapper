@@ -19,7 +19,13 @@ from .data.timing import estimate_timing_point
 from .model.diffusion import GaussianDiffusion
 from .model.unet import UNet1d
 from .parsing.beatmap import Beatmap, TimingPoint, write_osu
-from .postprocess import snap_slider_ends, snap_to_grid, trim_isolated_ends
+from .postprocess import (
+    clamp_slider_endpoints,
+    compute_breaks,
+    snap_slider_ends,
+    snap_to_grid,
+    trim_isolated_ends,
+)
 
 
 def generate(audio_path, ckpt_path, out_path, steps=100, base=64, use_ema=True,
@@ -29,9 +35,10 @@ def generate(audio_path, ckpt_path, out_path, steps=100, base=64, use_ema=True,
     cargs = ckpt.get("args", {})
     base = cargs.get("base", base)
     attn = cargs.get("attn", False)        # old checkpoints had no attention
+    attn_levels = cargs.get("attn_levels", 2)  # old ckpts: 2 deepest levels
     ctx_dim = CONTEXT_DIM if ("cfg_drop" in cargs or "ctx_dim" in cargs) else 0
     model = UNet1d(N_SIGNAL_CHANNELS, AUDIO.n_mels, base=base, attn=attn,
-                   ctx_dim=ctx_dim).to(device)
+                   ctx_dim=ctx_dim, attn_levels=attn_levels).to(device)
     weights = ckpt["ema"] if (use_ema and ckpt.get("ema")) else ckpt["model"]
     model.load_state_dict(weights)
     model.eval()
@@ -63,12 +70,16 @@ def generate(audio_path, ckpt_path, out_path, steps=100, base=64, use_ema=True,
         if snap:
             snap_to_grid(objects, tp)                       # snap onsets to grid
             snap_slider_ends(objects, tp, bm.slider_multiplier)  # snap slider ends
+        # keep slider tails inside the playfield (must run after length-changing
+        # snap_slider_ends, before breaks/write which read end_time gaps)
+        clamp_slider_endpoints(objects)
+        breaks = compute_breaks(objects)
         timing = [tp]
         for ks, ke in decode_kiai(sig):
             timing.append(TimingPoint(ks, -100.0, tp.meter, False, effects=1))
             timing.append(TimingPoint(ke, -100.0, tp.meter, False, effects=0))
         timing.sort(key=lambda t: t.time)
-        write_osu(bm, objects, out_path, timing_points=timing)
+        write_osu(bm, objects, out_path, timing_points=timing, breaks=breaks)
         return objects
 
     if match_sr and sr is not None and ctx_dim:

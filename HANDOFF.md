@@ -2,7 +2,7 @@
 
 Full working context for a fresh agent session. Read this first, then
 `README.md` (usage), `TECH_REPORT.md` (the math), `RESEARCH.md` (design + plans),
-`RESULTS.md` (run history), `STORAGE.md` (data/run layout).
+`RESULTS.md` (run history). Data/run layout is in `README.md` ("Data & run layout").
 
 ## 1. What this project is
 
@@ -57,7 +57,7 @@ audio.mp3 ─► log-mel (64×T) ──────────────┐
 | `src/corpus_stats.py` | reference distributions over the library (by SR) |
 | `src/evaluate.py` | SR-sweep eval (achieved vs target + metrics) |
 | `src/package_map.py` | build a playable Songs folder from a generated map |
-| `tests/` | 66 hermetic tests (no dataset/GPU) |
+| `tests/` | 86 hermetic tests (no dataset/GPU) |
 | `runs/<id>/` | training runs (config.json, metrics.csv, ckpt/) — gitignored |
 | `data/processed/<tag>/` | preprocessed datasets — gitignored |
 | `artifacts/` | generated maps, reference_stats.json — gitignored |
@@ -65,7 +65,7 @@ audio.mp3 ─► log-mel (64×T) ──────────────┐
 ## 4. How to run
 
 ```bash
-pytest                                   # 66 tests, ~6 s
+pytest                                   # 86 tests, ~6 s
 ruff check . && ruff format .
 python -m src.data.preprocess --songs "C:/osu!/Songs" --out data/processed/std-v3-full --limit 6000
 python -m src.train --data data/processed/std-v3-full --tag std-v3-heavy --base 160 --crop 3072 --epochs 150
@@ -75,34 +75,98 @@ python -m src.metrics --osu out.osu --ref-stats artifacts/reference_stats.json
 python -m src.corpus_stats --songs "C:/osu!/Songs"   # rebuild reference_stats.json (all maps)
 ```
 
+## 4b. NEXT SESSION — v5 ranked-data + context experiment (prep DONE, train SCHEDULED)
+
+User direction (2026-06-14): train on **ranked maps only** (quality), give the
+model **more context** (attention/crop), then draft→debug→full train. They asked
+to start the heavy work **~1 h later** (machine in use) — a wakeup is scheduled.
+
+**Prep committed this session (no training run yet):**
+- `src/data/osu_db.py` — parses `osu!.db` (validated: consumes the real 32 MB DB
+  to the exact byte). `ranked_osu_paths(songs, db)` → **23,825 ranked/approved/
+  loved std maps on disk** (vs the v4 set which included 4.3k graveyard + 1.2k
+  unsubmitted). 3 hermetic tests (synthetic DB).
+- `preprocess --ranked-only [--osu-db PATH]` — joins osu!.db, keeps only
+  ranked/approved/loved. Default db path `<songs>/../osu!.db`.
+- `train --resume runs/<id>/ckpt/last.pt` — saves optimizer+gstep+best, appends
+  metrics, continues the LR schedule in place. **Crash-resilient** (machine slept
+  mid-train twice). Old checkpoints lack opt state (resume still works, opt warm-starts).
+- `UNet1d(attn_levels=N)` + `train --attn-levels N` — self-attention at the N
+  deepest levels (default 2; **3 = finer-resolution pattern context**). `generate`
+  reads it from ckpt args (old ckpts → 2, back-compat verified).
+- Decode: `trim_isolated_ends` now drops a lone trailing **circle right after the
+  final spinner** (phantom spin-down onset, recurring fb "auto can't hit it").
+
+**Execution steps (run after the wakeup fires):**
+1. Draft preprocess (subset): `python -m src.data.preprocess --songs "C:/osu!/Songs" --out data/processed/ranked-draft --ranked-only --limit 2500 --workers 16`
+2. Draft train (~12 ep, more context): `python -m src.train --data data/processed/ranked-draft --tag ranked-draft --base 128 --crop 4096 --attn-levels 3 --batch 16 --epochs 12 --save-every 4` — **watch divergence** (`avg_loss 0.[3-9]`) and VRAM (drop `--batch` to 12 / `--crop` to 3072 if OOM). Generate a sample; eyeball streams/sliders.
+3. If stable → full ranked preprocess: same cmd, `--out data/processed/ranked-full`, no `--limit`.
+4. Full train: `... --data data/processed/ranked-full --tag ranked-full --base 128 --crop 4096 --attn-levels 3 --batch 16 --epochs 60 --save-every 5` (use `--resume .../last.pt` after any sleep/crash).
+5. Eval (`evaluate.py` SR sweep), package `[AI-v5]`, update RESULTS + memory + §5.
+
+**Design notes:** hop length is deliberately NOT increased — coarser hop = worse
+stream timing precision (the opposite of the fix). More context comes from larger
+`--crop` + `attn_levels`. base stays 128 (160+bf16 diverges, §8). The straight-
+slider issue (60-80% are lines) is mostly a **representation** gap — dedicated
+slider-shape channels (RESEARCH §10.1.F); ranked data + more training helps only
+partially. That's the next re-preprocess batch, not this one.
+
 ## 5. Current state (2026-06-14)
 
-- **Best model = `runs/20260614-021054-std-v3-heavy2/ckpt/best.pt`** (base 128,
-  6001 maps, loss 0.0056). SR conditioning calibrated (in-game SR ≈ target ±0.5),
-  kiai+hitsounds+curved sliders. Decode fixes from play feedback shipped: slider
-  ends snapped to ¼-grid (55%→0%), bezier RDP-simplified (≤4 pts). Best sample =
-  `[AI-v3b]` folder.
-- **RUNNING: full-library v4 preprocess** `data/processed/std-v3-all` (~28k maps,
-  curated `--max-sr 12`). When done → **full-data train** (base 128, **batch 32**,
-  more epochs; VRAM was only ~half used). See RESEARCH §10.1.A.
-- **Reference** `artifacts/reference_stats.json`: 31,362 maps, bucketed by SR,
-  includes kiai/hitsound metrics.
-- **v3 draft** (1500 maps) already proved conditioning works: target SR 2/4/6 →
-  monotonic achieved SR; kiai + hitsounds generate.
-- Git: `feat/diffusion-pipeline`, ~8 commits unpushed (**I cannot push — the user
-  pushes**; HTTPS needs their browser auth, their SSH key isn't on GitHub).
+- **Released v4 model = `runs/20260614-110223-std-v4-full/ckpt/best.pt`** (base 128,
+  31,270 curated maps, epoch 15, loss 0.0077; undertrained but strong). Difficulty
+  conditioning + CFG + `--match-sr`. All v4 decode/post-process wins shipped
+  (slider clamp, hitsound 0.85, trailing-spinner trim, looser snap, `[Events]`
+  breaks). See RESULTS.md for full history.
+- **RUNNING: the final v4/v5 "ranked" train** — trained on **ranked-only data**
+  (`data/processed/ranked-full`, ~23.8k ranked/approved/loved maps via the
+  `osu!.db` filter) with **more context** (`--crop 4096 --attn-levels 3`) + **h/v
+  flip augmentation** + train/val split + `train.log`. A 12-epoch draft on the
+  ranked subset was clean (loss 0.53→0.022, no divergence, fits VRAM). See §4b.
+- **Reference** `artifacts/reference_stats.json`: 31,362 maps, bucketed by SR.
+- **Git**: v3 merged to `main`; active branch `feat/v4-fulldata`. **I cannot push
+  — the user pushes**. Commit locally with descriptive messages.
 
-## 6. When the heavy run finishes — do this
+## 5b. Open TODOs (the live task list is session-scoped — these are the durable copy)
 
-1. Check `runs/.../metrics.csv` (no divergence; best loss).
-2. `python -m src.evaluate --audio <a real audio.mp3> --ckpt runs/.../ckpt/best.pt --srs 2,3,4,5,6`
-   — confirm achieved SR tracks target; note the **SR offset**.
-3. **Validate `--match-sr`** at runtime (deferred during training to keep GPU free).
-4. **Hitsounds are over-applied** (draft 0.67 vs real 0.33): raise the accent
-   decode threshold in `signal.decode_signal._hit_sound` (currently `> 0`; try a
-   positive threshold) — verify against `reference_stats.json`.
-5. Package a sample (`src/package_map.py`, prefix `[AI-v3]`) for the user to test.
-6. Write v3 heavy results into `RESULTS.md` + memory.
+1. **Ranked train** (the final v4/v5 run) — in progress; see §4b + §6.
+2. **Cheap post-train wins** (no retrain, decode/postprocess):
+   - ✅ **DONE (2026-06-14)** — clamp slider tails to the playfield
+     (`postprocess.clamp_slider_endpoints`, fb #1); tighten trailing trim
+     (`trim_isolated_ends` trailing 2.2 s < leading 3.0 s, fb #7); loosen onset
+     snap (`snap_to_grid` 60 ms/50 %, fb #5); hitsound-threshold tune
+     (`decode_signal(accent_threshold=0.85)` → 0.33 usage, §10.1.C); `[Events]`
+     breaks (`compute_breaks` + `write_osu(breaks=…)`, §10.1.D-iii). See
+     RESULTS.md "v4 decode/post-process wins". *Not yet validated in-game by the
+     user — package a fresh sample for them to test.*
+   - **Still open**: SR-offset bake into `target_context` (§10.1.B, needs an
+     `evaluate.py` sweep); real density/break control is **model-side** (§10.1.D-i/ii)
+     — the `[Events]` writer only marks existing gaps, it doesn't make a dense map
+     sparser (dense songs still produce 0 breaks).
+3. **v4 re-preprocess batch**: style/mapper conditioning (§10.1.E) + dedicated
+   slider-shape channels (§10.1.F) → retrain.
+4. **v5**: flow/distance-snap pattern modelling, multi-section BPM timing, learned
+   kiai/break segmentation (RESEARCH §10.2). **Arch (2026 survey)**: keep MHSA+QK-norm
+   + U-Net long skips; try **adaLN-zero** conditioning (contained DiT win). **Perf**:
+   FlashAttention-2 build only worth it *if* v5 goes DiT/attention-heavy (FA3 is
+   Hopper-only; our Ada GPU + Windows wheel already uses fused cuDNN SDPA, so the
+   gain is single-digit % for the conv U-Net). See RESEARCH §10.2.
+5. Optional: parallelise `corpus_stats` like `preprocess` if re-run often.
+
+## 6. When the ranked train finishes — do this
+
+1. Check `runs/<id>/metrics.csv` (now has `val_loss`) + `train.log` — no divergence
+   (watch `avg_loss 0.[3-9]`); note best val loss. If killed by sleep, resume:
+   `python -m src.train --resume runs/<id>/ckpt/last.pt` (continues in place).
+2. `python -m src.evaluate --audio <real audio.mp3> --ckpt runs/<id>/ckpt/best.pt --srs 2,3,4,5,6`
+   — confirm SR tracks target; compare metrics to the v4 release (expect cleaner
+   patterns/streams from ranked data + flip aug + more context).
+3. Package a sample (`src/package_map.py`, prefix `[AI-v5]`) for the user to test.
+4. Write results into `RESULTS.md` + memory; update §5 above.
+5. Then the v5 representation batch (RESEARCH §10.1.E/F): slider-shape + repeat
+   channels (the real fix for straight/reverse sliders) + style/mapper conditioning.
+   See [[reference-mapperatorinator]] for the validated approach + cheap-vs-heavy
+   triage.
 
 ## 7. Known issues / next — see RESEARCH §10 for the full v4/v5 plan
 

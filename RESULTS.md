@@ -1,6 +1,72 @@
 # Results
 
 Status of training runs and generated-map quality. Metrics use `src/metrics.py`.
+**Current release: v4** (`runs/20260614-110223-std-v4-full/ckpt/best.pt`).
+
+## v5 ranked train (IN PROGRESS — 2026-06-14)
+
+Training the final v4/v5 model on **ranked-only data**: `osu!.db` ranked filter →
+~23.8k ranked/approved/loved std maps (`data/processed/ranked-full`), with **more
+context** (`--crop 4096 --attn-levels 3`), **h/v flip augmentation**, train/val
+split (`val_loss` in metrics.csv), and a per-run `train.log`. Motivation: the v4
+play feedback (straight sliders, weak streams, sparse pattern vocabulary, junk in
+the unranked data). Draft (12 ep on the ranked subset) was clean: loss 0.53→0.022,
+no divergence, crop4096+attn3+batch16 fits the 4070 Ti. Full run: 60 epochs,
+`--save-every 5`, resumable. Results + sample to be filled in when it finishes.
+
+Heavier representation wins (slider-shape/repeat channels, style conditioning)
+were triaged to v5 proper — see RESEARCH §10.1.E/F and the Mapperatorinator
+analysis. The single cheap+high-probability adoption (flip aug) is in this run.
+
+## v4 full-data (release)
+
+Trained on the **entire curated library** (31,270 std maps ≤12★, parallel
+preprocess) at base 128 / batch 32. The run was **killed by an OS/sleep event at
+epoch 16** (no traceback, 0 procs — not a code bug); `best.pt` = **epoch 15,
+loss 0.0077**, which is already a strong model.
+
+SR sweep (`evaluate.py`): conditioning monotonic; metric-realism **improved over
+v3** (16–17/19 metrics in the real p10–p90 band; streams now match real, e.g.
+SR6 stream 0.34 ≈ real 0.31). SR calibration is looser than v3-heavy2 (only 15
+epochs) — `--match-sr` corrects it at inference (target 5→4.86, 6→6.02 in 2–3
+iters). Curated data (≤12★) removes the joke-map outliers.
+
+Packaged samples: `[AI-v4]` (4.86★), `[AI-v4-6star]` (6.02★).
+
+**Play feedback (v4)** — better than v3, ≈ v3b. Open items (all in
+RESEARCH §10 / HANDOFF): slider endpoints sometimes off-playfield; **no
+reverse sliders** (representation gap); kiai #1 short/mis-timed (alignment);
+streams sometimes poor; some onsets slightly off-¼ (beyond snap tolerance); curve
+shape sometimes bad; trailing unhittable last note recurs; no breaks (too dense).
+
+**To finish v4 properly**: resume/retrain to ~50 epochs (add `--resume`; the run
+died undertrained) for tighter SR calibration + cleaner curves.
+
+### v4 decode/post-process wins (2026-06-14, no retrain)
+
+Cheap play-feedback fixes on the same `best.pt` (validated on a real generation,
+Thaehan - Kawaii @ 4.5★, 100 DDIM steps):
+
+- **Slider tails clamped to playfield** (fb #1) — `clamp_slider_endpoints` caps a
+  slider's pixel length so osu!'s extrapolation past the last anchor can't shoot
+  the tail off-screen (anchors clamped too; `end_time` scaled with length).
+  Result: **0 / 116 off-field slider tails** (sliders previously escaped the
+  512x384 field after `snap_slider_ends` stretched their length).
+- **Hitsound usage calibrated** (10.1.C) — accent channels saturate near +1, so
+  the old threshold 0 over-fired (~0.52). Swept on real output: threshold **0.85
+  -> 0.33 hitsound fraction** (matches real ~0.33); 0.0-0.6 all stay ~0.52. New
+  `decode_signal(accent_threshold=0.85)` default.
+- **Trailing trim tightened** (fb #7) — `trim_isolated_ends` now trims trailing
+  lone notes at a smaller gap (2.2 s) than leading ones (3.0 s), catching outro
+  notes the old 3 s threshold missed.
+- **Onset snap loosened** (fb #5) — `snap_to_grid` bound raised 45 ms/40% ->
+  60 ms/50% of the subdivision, so more circles land cleanly on 1/4 (still bounded
+  so a wrong BPM can't drag the whole map).
+- **`[Events]` breaks** (10.1.D-iii) — `compute_breaks` writes break periods for
+  gaps >=3.5 s. *Cosmetic / honest limit*: it only marks gaps that already exist;
+  the dense v4 model leaves none on busy songs (0 breaks on Kawaii), so this helps
+  intros/outros and sparse maps, not the "too dense" root cause (that's model-side
+  — density conditioning, 10.1.D-i/ii).
 
 ## v1 baseline (complete)
 

@@ -251,7 +251,8 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
                   min_gap_frames: int = 2,
                   min_spinner_frames: int = 26,
                   spinner_min_mean: float = 0.3,
-                  min_slider_frames: int = 4) -> list[HitObject]:
+                  min_slider_frames: int = 4,
+                  accent_threshold: float = 0.85) -> list[HitObject]:
     """Decode a generated signal back into discrete hit objects.
 
     Strategy: peak-pick the onset channel for object times; read cursor
@@ -271,10 +272,15 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
     n = sig.shape[1]
 
     def _hit_sound(p: int) -> int:
+        # Accent channels saturate near +1 on a hitsound, baseline -1; the model
+        # outputs them confidently, so only a high threshold thins them out. 0.85
+        # was calibrated on real generated output to ~0.33 hitsound usage (matches
+        # real maps); 0.0-0.6 all leave it ~0.52 over-firing. See RESEARCH 10.1.C.
         if not has_accents:
             return 0
-        return ((2 if whistle[p] > 0 else 0) | (4 if finish[p] > 0 else 0)
-                | (8 if clap[p] > 0 else 0))
+        return ((2 if whistle[p] > accent_threshold else 0)
+                | (4 if finish[p] > accent_threshold else 0)
+                | (8 if clap[p] > accent_threshold else 0))
 
     objects: list[HitObject] = []
 
