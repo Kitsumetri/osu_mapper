@@ -3,7 +3,22 @@
 Status of training runs and generated-map quality. Metrics use `src/metrics.py`.
 **Current release: v4** (`runs/20260614-110223-std-v4-full/ckpt/best.pt`).
 
-## v4 full-data (current release)
+## v5 ranked train (IN PROGRESS — 2026-06-14)
+
+Training the final v4/v5 model on **ranked-only data**: `osu!.db` ranked filter →
+~23.8k ranked/approved/loved std maps (`data/processed/ranked-full`), with **more
+context** (`--crop 4096 --attn-levels 3`), **h/v flip augmentation**, train/val
+split (`val_loss` in metrics.csv), and a per-run `train.log`. Motivation: the v4
+play feedback (straight sliders, weak streams, sparse pattern vocabulary, junk in
+the unranked data). Draft (12 ep on the ranked subset) was clean: loss 0.53→0.022,
+no divergence, crop4096+attn3+batch16 fits the 4070 Ti. Full run: 60 epochs,
+`--save-every 5`, resumable. Results + sample to be filled in when it finishes.
+
+Heavier representation wins (slider-shape/repeat channels, style conditioning)
+were triaged to v5 proper — see RESEARCH §10.1.E/F and the Mapperatorinator
+analysis. The single cheap+high-probability adoption (flip aug) is in this run.
+
+## v4 full-data (release)
 
 Trained on the **entire curated library** (31,270 std maps ≤12★, parallel
 preprocess) at base 128 / batch 32. The run was **killed by an OS/sleep event at

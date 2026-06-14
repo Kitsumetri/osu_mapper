@@ -2,7 +2,7 @@
 
 Full working context for a fresh agent session. Read this first, then
 `README.md` (usage), `TECH_REPORT.md` (the math), `RESEARCH.md` (design + plans),
-`RESULTS.md` (run history), `STORAGE.md` (data/run layout).
+`RESULTS.md` (run history). Data/run layout is in `README.md` ("Data & run layout").
 
 ## 1. What this project is
 
@@ -113,23 +113,23 @@ partially. That's the next re-preprocess batch, not this one.
 
 ## 5. Current state (2026-06-14)
 
-- **Best model = `runs/20260614-021054-std-v3-heavy2/ckpt/best.pt`** (base 128,
-  6001 maps, loss 0.0056). SR conditioning calibrated (in-game SR ≈ target ±0.5),
-  kiai+hitsounds+curved sliders. Decode fixes from play feedback shipped: slider
-  ends snapped to ¼-grid (55%→0%), bezier RDP-simplified (≤4 pts). Best sample =
-  `[AI-v3b]` folder.
-- **RUNNING: full-library v4 preprocess** `data/processed/std-v3-all` (~28k maps,
-  curated `--max-sr 12`). When done → **full-data train** (base 128, **batch 32**,
-  more epochs; VRAM was only ~half used). See RESEARCH §10.1.A.
-- **Reference** `artifacts/reference_stats.json`: 31,362 maps, bucketed by SR,
-  includes kiai/hitsound metrics.
+- **Released v4 model = `runs/20260614-110223-std-v4-full/ckpt/best.pt`** (base 128,
+  31,270 curated maps, epoch 15, loss 0.0077; undertrained but strong). Difficulty
+  conditioning + CFG + `--match-sr`. All v4 decode/post-process wins shipped
+  (slider clamp, hitsound 0.85, trailing-spinner trim, looser snap, `[Events]`
+  breaks). See RESULTS.md for full history.
+- **RUNNING: the final v4/v5 "ranked" train** — trained on **ranked-only data**
+  (`data/processed/ranked-full`, ~23.8k ranked/approved/loved maps via the
+  `osu!.db` filter) with **more context** (`--crop 4096 --attn-levels 3`) + **h/v
+  flip augmentation** + train/val split + `train.log`. A 12-epoch draft on the
+  ranked subset was clean (loss 0.53→0.022, no divergence, fits VRAM). See §4b.
+- **Reference** `artifacts/reference_stats.json`: 31,362 maps, bucketed by SR.
 - **Git**: v3 merged to `main`; active branch `feat/v4-fulldata`. **I cannot push
-  — the user pushes** (HTTPS needs their browser auth; their SSH key isn't on
-  GitHub). Commit locally with descriptive messages.
+  — the user pushes**. Commit locally with descriptive messages.
 
 ## 5b. Open TODOs (the live task list is session-scoped — these are the durable copy)
 
-1. **Full-data train** on `std-v3-all` (in progress / next) — §6 below.
+1. **Ranked train** (the final v4/v5 run) — in progress; see §4b + §6.
 2. **Cheap post-train wins** (no retrain, decode/postprocess):
    - ✅ **DONE (2026-06-14)** — clamp slider tails to the playfield
      (`postprocess.clamp_slider_endpoints`, fb #1); tighten trailing trim
@@ -149,20 +149,20 @@ partially. That's the next re-preprocess batch, not this one.
    kiai/break segmentation (RESEARCH §10.2).
 5. Optional: parallelise `corpus_stats` like `preprocess` if re-run often.
 
-## 6. When the full-data run finishes — do this
+## 6. When the ranked train finishes — do this
 
-(The v3-heavy run is already evaluated/packaged — this is for the in-progress
-full-data v4 run on `std-v3-all`.)
-
-1. Check `runs/<id>/metrics.csv` — no divergence (watch `avg_loss 0.[3-9]`), best loss.
+1. Check `runs/<id>/metrics.csv` (now has `val_loss`) + `train.log` — no divergence
+   (watch `avg_loss 0.[3-9]`); note best val loss. If killed by sleep, resume:
+   `python -m src.train --resume runs/<id>/ckpt/last.pt` (continues in place).
 2. `python -m src.evaluate --audio <real audio.mp3> --ckpt runs/<id>/ckpt/best.pt --srs 2,3,4,5,6`
-   — confirm SR tracks target and compare metrics to v3-heavy2 (expect tighter
-   SR calibration + higher stream ratio from the larger data).
-3. Package a sample (`src/package_map.py`, prefix `[AI-v4]`) for the user to test.
+   — confirm SR tracks target; compare metrics to the v4 release (expect cleaner
+   patterns/streams from ranked data + flip aug + more context).
+3. Package a sample (`src/package_map.py`, prefix `[AI-v5]`) for the user to test.
 4. Write results into `RESULTS.md` + memory; update §5 above.
-5. Then pick up the v4 work (RESEARCH §10.1): cheap wins first — hitsound-threshold
-   tune (§10.1.C), SR-offset bake (§10.1.B), density/break control (§10.1.D) —
-   then the re-preprocess batch (style conditioning §10.1.E + slider channels §10.1.F).
+5. Then the v5 representation batch (RESEARCH §10.1.E/F): slider-shape + repeat
+   channels (the real fix for straight/reverse sliders) + style/mapper conditioning.
+   See [[reference-mapperatorinator]] for the validated approach + cheap-vs-heavy
+   triage.
 
 ## 7. Known issues / next — see RESEARCH §10 for the full v4/v5 plan
 
