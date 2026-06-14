@@ -146,7 +146,11 @@ partially. That's the next re-preprocess batch, not this one.
 3. **v4 re-preprocess batch**: style/mapper conditioning (§10.1.E) + dedicated
    slider-shape channels (§10.1.F) → retrain.
 4. **v5**: flow/distance-snap pattern modelling, multi-section BPM timing, learned
-   kiai/break segmentation (RESEARCH §10.2).
+   kiai/break segmentation (RESEARCH §10.2). **Arch (2026 survey)**: keep MHSA+QK-norm
+   + U-Net long skips; try **adaLN-zero** conditioning (contained DiT win). **Perf**:
+   FlashAttention-2 build only worth it *if* v5 goes DiT/attention-heavy (FA3 is
+   Hopper-only; our Ada GPU + Windows wheel already uses fused cuDNN SDPA, so the
+   gain is single-digit % for the conv U-Net). See RESEARCH §10.2.
 5. Optional: parallelise `corpus_stats` like `preprocess` if re-run often.
 
 ## 6. When the ranked train finishes — do this

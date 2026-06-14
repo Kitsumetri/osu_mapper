@@ -463,6 +463,23 @@ with the wider context at scale; B/C/D-ii/D-iii are inference-side, ship anytime
 - **Capacity** — only revisit base ≥160 / latent diffusion if bf16 stability is
   solved (QK-norm wasn't enough at 160; try lower LR/fp32-attention/EMA-warmup).
 - **Spinners** — model spinner end position (currently fixed centre).
+- **Architecture (2026 survey)** — field moved U-Net→**DiT** (pure transformer,
+  adaLN-zero conditioning, RoPE, QK-norm). We already have MHSA + QK-norm; keep
+  the U-Net **long skip connections** (ablations show they're the critical part;
+  even U-ViT/DiT add them). Full DiT shines at large scale we don't have, and the
+  2026 consensus is "data + training > arch tricks" (matches our ranked-data win).
+  *Contained upgrade worth trying:* **adaLN-zero conditioning** to replace the
+  additive FiLM time+ctx path (`unet.py`); RoPE in attention is a smaller second.
+- **Attention compute / FlashAttention** *(perf, conditioned)* — FA3 is Hopper-only
+  (our 4070 Ti is Ada sm_89 → never). FA2 *is* Ada-compatible but **absent from the
+  Windows torch 2.6 wheel** ("not compiled with flash attention"); SDPA already
+  uses the fused **cuDNN/memory-efficient** backend, so we're not on the slow math
+  path. Building a `flash-attn` wheel (against the existing torch, no torch upgrade)
+  would give only a **single-digit % end-to-end** gain for the current *conv* U-Net
+  (attention is a minority of FLOPs, runs only at coarse levels). **Only worth it
+  if v5 goes DiT/attention-heavy** (then attention dominates and FA2 matters). Free
+  now: pin `sdpa_kernel([CUDNN_ATTENTION, EFFICIENT_ATTENTION])` to force the best
+  fused backend.
 
 ## References
 - [Mapping techniques (Basics)](https://osu.ppy.sh/wiki/en/Mapping_Techniques/Basics)
