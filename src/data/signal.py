@@ -35,6 +35,9 @@ from ..parsing.beatmap import (
 )
 
 ONSET_SIGMA_FRAMES = 1.2   # width of onset/new-combo bumps
+# decoded-slider path length within this ratio of the straight-line distance is
+# treated as a *straight* (linear) slider rather than a curved bezier.
+SLIDER_STRAIGHT_RATIO = 1.06
 
 
 def _gaussian_bump(signal: np.ndarray, center: float, sigma: float = ONSET_SIGMA_FRAMES):
@@ -283,6 +286,12 @@ def _slider_from_anchors(start, anchor_ch, p, end_frame):
         prev = (ax, ay)
     if not pts:  # all anchors collapsed to the head -> tiny linear slider
         return "L", [(int(np.clip(sx + 10, 0, PLAYFIELD_W)), sy)], 10.0
+    # straight-vs-curved: a near-collinear anchor polygon is a *line*, so emit a
+    # linear slider instead of a wasteful 3-point bezier (fb: a line built from
+    # curve points looks bad). Path within ~6% of the straight distance => straight.
+    straight = float(np.hypot(pts[-1][0] - sx, pts[-1][1] - sy))
+    if len(pts) >= 2 and length <= straight * SLIDER_STRAIGHT_RATIO:
+        return "L", [pts[-1]], max(10.0, straight)
     ctype = "B" if len(pts) >= 2 else "L"
     return ctype, pts, max(10.0, length)
 

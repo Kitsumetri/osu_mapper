@@ -144,6 +144,36 @@ def test_curved_slider_from_anchor_channels():
     assert len(s.curve_points) >= 2
 
 
+def test_collinear_anchors_decode_to_linear_slider():
+    """v5: near-collinear anchor channels should decode to a *linear* slider, not
+    a wasteful 3-point bezier (fb: a line built from curve points looks bad)."""
+    from src.config import CH_SLIDER_ANCHORS, CH_SLIDES
+
+    def _slider_sig(anchors):
+        n = 40
+        sig = np.full((N_SIGNAL_CHANNELS, n), -1.0, dtype=np.float32)
+        sig[4:6] = 0.0
+        sig[CH_SLIDER_ANCHORS:CH_SLIDES] = 0.0
+        sig[0, 5] = 1.0
+        sig[1, 5:40] = 1.0
+        sp = slice(5, 40)
+        for i, (dx, dy) in enumerate(anchors):
+            sig[CH_SLIDER_ANCHORS + 2 * i, sp] = dx
+            sig[CH_SLIDER_ANCHORS + 2 * i + 1, sp] = dy
+        return sig
+
+    # collinear anchors along the diagonal -> linear
+    lin = decode_signal(_slider_sig([(0.1, 0.1), (0.2, 0.2), (0.3, 0.3)]),
+                        onset_threshold=0.3, min_spinner_frames=100)
+    s = [o for o in lin if o.is_slider][0]
+    assert s.curve_type == "L"
+    # a zig-zag -> curved bezier
+    cur = decode_signal(_slider_sig([(0.3, -0.2), (0.1, 0.3), (0.4, 0.1)]),
+                        onset_threshold=0.3, min_spinner_frames=100)
+    s = [o for o in cur if o.is_slider][0]
+    assert s.curve_type == "B"
+
+
 def test_slider_shape_and_reverse_roundtrip():
     """encode->decode preserves a curved slider's shape and a reverse slider's
     repeat count (the two v5 representation fixes)."""

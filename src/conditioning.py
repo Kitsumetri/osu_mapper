@@ -28,8 +28,11 @@ def target_settings(sr: float) -> dict[str, float]:
     the model on these, and ``generate`` writes the same values into the ``.osu``
     so the file's AR/OD/CS/HP match what the model was asked to produce."""
     return {
-        "ar": min(10.0, 4.0 + 0.7 * sr),
-        "od": min(10.0, 3.0 + 0.8 * sr),
+        # AR tuned to modern player expectations (AR9 ~ median): SR<=3 -> 8.0-8.5,
+        # SR<=5 -> 8.5-9.0, SR>5 -> 9.0-10. Also matches real ranked AR (8-10) better
+        # than the old 4+0.7*sr, which conditioned on unrealistically low AR.
+        "ar": min(10.0, 7.75 + 0.25 * sr),
+        "od": min(10.0, 4.0 + 0.7 * sr),
         "hp": 5.0,
         "cs": 4.0,
         "density": max(0.8, 0.8 * sr),
