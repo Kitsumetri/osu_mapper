@@ -15,6 +15,14 @@ import torch
 from torch.utils.data import Dataset
 
 from ..conditioning import context_from_manifest
+from ..config import (
+    CH_CURX,
+    CH_CURY,
+    CH_SLIDER_ANCHORS,
+    CH_SLIDES,
+    N_SIGNAL_CHANNELS,
+    N_SLIDER_ANCHORS,
+)
 
 
 @lru_cache(maxsize=256)
@@ -55,17 +63,29 @@ class OsuSignalDataset(Dataset):
             mel, sig = mel[:, start:start + L], sig[:, start:start + L]
         else:
             pad = L - T
-            mel = np.pad(mel, ((0, 0), (0, pad)))
+            # pad mel with -1.0 = true silence (after audio.py's (dB+40)/40 norm);
+            # the np.pad default 0.0 is ~-40 dB (audible) -> teaches "audio -> empty map".
+            mel = np.pad(mel, ((0, 0), (0, pad)), constant_values=-1.0)
             sigpad = np.full((sig.shape[0], pad), -1.0, dtype=np.float32)
-            sigpad[4:6] = 0.0  # cursor centre
+            sigpad[CH_CURX:CH_CURY + 1] = 0.0  # cursor centre
+            if sig.shape[0] >= N_SIGNAL_CHANNELS:
+                sigpad[CH_SLIDER_ANCHORS:CH_SLIDES] = 0.0  # anchor offsets baseline 0
             sig = np.concatenate([sig, sigpad], axis=1)
         if self.augment:
-            # cursor channels are normalised so playfield centre is 0; negating
-            # mirrors positions about the centre. ch4=x (horizontal), ch5=y (vertical).
+            # cursor + slider-anchor channels are normalised so playfield centre is
+            # 0; negating mirrors positions about the centre. Flipping must hit the
+            # anchor dx/dy channels too, or slider geometry is corrupted.
             sig = sig.copy()
-            if np.random.rand() < 0.5:
-                sig[4] = -sig[4]
-            if np.random.rand() < 0.5:
-                sig[5] = -sig[5]
+            has_anchors = sig.shape[0] >= N_SIGNAL_CHANNELS
+            if np.random.rand() < 0.5:  # horizontal flip -> negate all x channels
+                sig[CH_CURX] = -sig[CH_CURX]
+                if has_anchors:
+                    for i in range(N_SLIDER_ANCHORS):
+                        sig[CH_SLIDER_ANCHORS + 2 * i] = -sig[CH_SLIDER_ANCHORS + 2 * i]
+            if np.random.rand() < 0.5:  # vertical flip -> negate all y channels
+                sig[CH_CURY] = -sig[CH_CURY]
+                if has_anchors:
+                    for i in range(N_SLIDER_ANCHORS):
+                        sig[CH_SLIDER_ANCHORS + 2 * i + 1] = -sig[CH_SLIDER_ANCHORS + 2 * i + 1]
         ctx = torch.tensor(context_from_manifest(it), dtype=torch.float32)
         return torch.from_numpy(sig), torch.from_numpy(mel), ctx

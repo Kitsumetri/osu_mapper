@@ -24,6 +24,15 @@ def test_does_not_snap_far_objects():
     assert objs[0].time == 50
 
 
+def test_snaps_eighth_notes_to_eighth_grid():
+    # 200 BPM -> beat 300ms, 1/8 = 37.5ms. A note near a 1/8 line (not a 1/4 line)
+    # must snap to 1/8, not be dragged to the nearest 1/4 line (the rhythm fix).
+    tp = TimingPoint(0, 300.0, 4, True)
+    objs = _circles([34])              # ~1/8 (37.5ms), 3.5ms off
+    snap_to_grid(objs, tp, divisors=(4, 8, 6))
+    assert objs[0].time == 38          # snapped to the 1/8 line, NOT 0 (the 1/4 line)
+
+
 def test_triplet_aware():
     # 1/3 of a 400ms beat ~= 133.3ms; a note near 133 should snap via divisor 3
     tp = TimingPoint(0, 400.0, 4, True)
@@ -55,6 +64,15 @@ def test_trim_trailing_more_aggressive_than_leading():
     assert max(o.time for o in objs) == 600
     objs2 = _circles([0]) + _circles([2500, 2700, 2900, 3100])  # 2500ms lead gap
     assert trim_isolated_ends(objs2) == 0
+
+
+def test_trim_leading_intro_cluster():
+    from src.postprocess import trim_isolated_ends
+    # a 2-note intro cluster, then an 8s gap to the body -> drop both intro notes
+    objs = _circles([0, 200]) + _circles([8200, 8400, 8600, 8800])
+    removed = trim_isolated_ends(objs)
+    assert removed == 2
+    assert min(o.time for o in objs) == 8200
 
 
 def test_trim_drops_circle_after_trailing_spinner():

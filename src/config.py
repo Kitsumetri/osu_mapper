@@ -29,7 +29,9 @@ class AudioConfig:
         return frame * self.ms_per_frame
 
 
-# Map-signal channel layout (the diffusion target). v3: 10 channels.
+# Map-signal channel layout (the diffusion target). v3: 10 channels. v5: +7
+# slider channels (indices appended so 0-9 keep their meaning / older models).
+N_SLIDER_ANCHORS = 3  # K control-point slots carried per slider (head-relative)
 SIGNAL_CHANNELS = [
     "onset",  # 0: bump at circle/slider-head start
     "slider_hold",  # 1: +1 during slider body
@@ -41,11 +43,22 @@ SIGNAL_CHANNELS = [
     "whistle",  # 7: bump at objects with the whistle hitsound (bit 2)
     "finish",  # 8: bump at objects with the finish hitsound (bit 4)
     "clap",  # 9: bump at objects with the clap hitsound (bit 8)
+    # v5 slider-shape channels: control-point offsets from the slider head,
+    # normalised by playfield size, held constant over the slider span (baseline 0).
+    "slider_dx1",  # 10
+    "slider_dy1",  # 11
+    "slider_dx2",  # 12
+    "slider_dy2",  # 13
+    "slider_dx3",  # 14
+    "slider_dy3",  # 15
+    "slides",  # 16: repeat count held over the slider span (reverse sliders)
 ]
 N_SIGNAL_CHANNELS = len(SIGNAL_CHANNELS)
 
 # Channel indices grouped by decode behaviour.
 CH_ONSET, CH_SLIDER, CH_SPINNER, CH_NEWCOMBO, CH_CURX, CH_CURY = 0, 1, 2, 3, 4, 5
 CH_KIAI, CH_WHISTLE, CH_FINISH, CH_CLAP = 6, 7, 8, 9
+CH_SLIDER_ANCHORS = 10                       # first of 2*N_SLIDER_ANCHORS dx/dy channels
+CH_SLIDES = CH_SLIDER_ANCHORS + 2 * N_SLIDER_ANCHORS  # 16
 
 AUDIO = AudioConfig()

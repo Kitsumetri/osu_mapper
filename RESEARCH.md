@@ -392,62 +392,22 @@ clap/finish to the nearest object.
 
 ## 10. Roadmap: v3 status → v4 → v5
 
-### 10.0 v3 status (shipped)
-10-channel signal + difficulty conditioning + CFG; heavy model
-(`std-v3-heavy2`, base 128, loss 0.0056) generates difficulty-controllable maps
-(in-game SR ≈ target ±0.5), kiai, hitsounds, curved sliders. **Decode fixes from
-play feedback**: slider ends snapped to the ¼-grid (55%→0% off-grid), bezier
-control points simplified via RDP (6–8→≤4), slider time-overlap clamp,
-beat-snap, dangling-end trim, `--match-sr` calibration loop.
+### 10.0–10.1 v3/v4 — shipped (summary; details in RESULTS.md)
 
-**Still open (from play feedback) — mostly model/conditioning, not decode:**
-| # | feedback | nature | plan |
-|---|----------|--------|------|
-| 1 | no breaks (too dense) | model leaves no gaps | `[Events]` breaks shipped (§10.1.D-iii) but only mark existing gaps; real fix is density conditioning (§10.1.D-i/ii) |
-| 2 | kiai lags the drop ~10–12 s, 1/3 coverage | kiai channel alignment | more data + downbeat-snap kiai edges — v4 |
-| 6 | some circle placement odd | pattern quality | flow/DS modelling — v5 §10.2 |
-| — | streams slightly low, SR drift at extremes | undertrained tails | more data (v4) + bake SR-offset (§10.1.B) |
-| — | hitsounds slightly high (~0.5 vs 0.33) | accent threshold | ✅ DONE — `accent_threshold=0.85` → ~0.33 (§10.1.C) |
+v3 (10-ch signal + difficulty conditioning + CFG) and v4/**v4b** (ranked-only data
++ crop 4096 + attn_levels 3 + flip aug, current release) are done. Decode/post wins
+shipped and in the code: slider-end snap + RDP simplify, slider-tail clamp, beat-snap
++ trim, **C** `accent_threshold=0.85` (hitsounds → ~0.33), **D-iii** `[Events]` breaks
+(cosmetic), `--match-sr`.
 
-### 10.1 v4 — scale + control (next; some need a re-preprocess)
-
-The current full-library preprocess (`std-v3-all`, ~28k maps, curated SR≤12)
-feeds this. Batch the representation-changing items into one re-preprocess+retrain.
-
-- **A. Scale (running)** — train on the full library (≈28k vs 6k), base 128,
-  **batch 32** (VRAM was only ~half used), more epochs. Biggest single lever;
-  expected to lift streams, calibrate SR tails, sharpen patterns. *No repr change.*
-- **B. SR-offset bake (cheap, post-eval)** — measure target-vs-achieved over an
-  `evaluate.py` sweep; fit a correction into `target_context` so one pass hits the
-  target (today `--match-sr` iterates). Revisit `density≈0.8·sr` vs §8.
-- **C. Hitsound + accent threshold (cheap, decode)** — ✅ **DONE (2026-06-14)**:
-  `decode_signal(accent_threshold=0.85)` brings hitsound usage to ~0.33 (real),
-  from ~0.52 at threshold 0. Calibrated by sweeping on real generated output —
-  the accent channels saturate near +1, so only a high cut thins them.
-- **D. Density / breaks control** — the model fills everything (no gaps → no
-  breaks). Options: (i) condition density more strongly / separately so quiet
-  target → sparser; (ii) suppress onsets where the mel energy is low
-  (intro/break/outro detection); (iii) write explicit `[Events]` break periods
-  for gaps >~3.5 s. (i)+(ii) are the real fixes; (iii) is cosmetic. **(iii) DONE
-  (2026-06-14)**: `postprocess.compute_breaks` + `write_osu(breaks=…)`. But (iii)
-  only marks gaps that already exist — dense songs still produce 0 breaks, so
-  (i)/(ii) remain the open root-cause fix.
-- **E. Style / mapper conditioning** *(repr: wider ctx)* — append a coarse style
-  class (farm/stream/tech/alt, clustered from `metrics.py` pattern stats) or a
-  learned `creator` embedding to `c`, with the same CFG. Targets "Sotarks 1-2
-  farm" vs "tech". Manifest already stores `creator`.
-- **F. Slider-shape + repeats channels** *(repr: +channels)* — move slider shape
-  off the shared, noisy cursor channel into **dedicated K-anchor offset channels**
-  at the slider head, so curves are a first-class denoised target (RDP becomes a
-  clean-up, not a crutch). **Also encode `slides` (repeat count)**: today the
-  representation loses it — a reverse slider (`slides≥2`, ~8% of real sliders)
-  is encoded as a *slow forward* slider (hold box over the full out-and-back
-  duration + forward-only cursor trace), so the decoder always emits `slides=1`
-  and we never generate reverse sliders. Add a small per-slider-head repeat
-  signal (e.g. a channel whose value encodes slides 1/2/3) and decode it.
-
-*v4 batch*: one re-preprocess adding (E style label + F slider channels), retrain
-with the wider context at scale; B/C/D-ii/D-iii are inference-side, ship anytime.
+**Still open, referenced below:**
+- **B. SR-offset bake** into `target_context` — fit target-vs-achieved from one
+  `evaluate.py` sweep so one pass hits the SR (today `--match-sr` iterates).
+- **D-i/ii. Density / breaks (model-side)** — condition density harder, or suppress
+  onsets in low-mel-energy sections; the `[Events]` writer only marks existing gaps.
+- **E. Style / mapper conditioning** *(wider ctx)* — coarse style class or `creator`
+  embedding + CFG. **Deferred** from the v5 batch as too speculative (§10.3).
+- **F. Slider-shape + `slides` channels** — **implemented as the v5 batch → §10.3.**
 
 ### 10.2 v5 — pattern realism & timing fidelity
 
@@ -480,6 +440,203 @@ with the wider context at scale; B/C/D-ii/D-iii are inference-side, ship anytime
   if v5 goes DiT/attention-heavy** (then attention dominates and FA2 matters). Free
   now: pin `sdpa_kernel([CUDNN_ATTENTION, EFFICIENT_ATTENTION])` to force the best
   fused backend.
+
+## 10.3 v5 slider-shape + style — design (ACTIVE BUILD, branch `feat/v5-slider-style`)
+
+The next batch (chosen 2026-06-14; **refined to proven-only**). **Scope: §10.1.F
+slider channels only.** Targets the two most visible, highest-confidence
+complaints: **sliders are straight lines (60–80%)** and **no reverse sliders**.
+Validated direction: Mapperatorinator's `osu_diffusion` makes slider anchors +
+repeat counts first-class typed points (see [[reference-mapperatorinator]]).
+
+**§10.1.E style/mapper conditioning is DEFERRED** (not in this batch): KMeans
+cluster quality, whether a coarse label captures real "style", and whether
+conditioning on it actually helps are all uncertain and indirect — too speculative
+to bundle. It stays a separate later experiment; `CONTEXT_DIM` is unchanged here.
+
+### Why the current encoding fails
+Slider shape is traced into the shared `cursor_x/cursor_y` channels across the
+hold (`signal.encode_beatmap`), so it competes with the global cursor path and
+denoises to mush → the decoder's straight-vs-curve test usually picks a line. And
+`slides` (repeat count) is dropped entirely: a reverse slider is encoded as a slow
+forward slider, so the decoder always emits `slides=1`.
+
+### Slider-shape channels (the F fix) — "hold-box" anchor encoding
+Move shape into **dedicated channels that carry the control-point offsets as a
+constant value over the slider's hold span** (like `slider_hold`, but valued).
+Hold-boxes are smooth and denoise-friendly; decode reads the span mean (robust to
+noise). Fixed **K=3 anchor slots** (covers waves/arcs; RDP already simplifies real
+sliders to ≤4 control points):
+
+- For anchor *i* ∈ {1..K}: two channels `slider_dx_i`, `slider_dy_i` = the offset
+  of control point *i* from the slider head, normalised by playfield size
+  (dx/512, dy/384) into ~[-1,1], held constant over the hold span (baseline 0
+  elsewhere). Sliders with < K control points repeat the last anchor (decode
+  dedupes consecutive identical anchors).
+- **`slides` channel**: hold-box valued by repeat count, e.g. `clip((slides-1)/3,
+  0,1)*2-1` → 1→-1, 2→-0.33, 3→+0.33; decode rounds the span mean back.
+
+Encode: from each slider's `curve_points` (first K, head-relative) + `slides`.
+Decode: at a slider head, read the K anchor channels' hold-span means → control
+points = head + offsets; read `slides` → repeat count; `length` = anchor path
+length (one traversal); osu! derives duration from length×slides. The cursor
+channels keep carrying the *circle/jump* path; sliders no longer pollute them.
+
+Cursor channels also change: stop tracing slider control points into
+`cursor_x/cursor_y` (that's the noise source). The cursor keeps only the object
+**head** keyframe (+ the slider **end** keyframe for flow continuity); slider body
+shape lives entirely in the anchor channels.
+
+### Channel layout: 10 → 17 (new channels APPENDED, indices 0–9 unchanged)
+`[0 onset, 1 slider_hold, 2 spinner_hold, 3 new_combo, 4 cursor_x, 5 cursor_y,
+6 kiai_hold, 7 whistle, 8 finish, 9 clap, 10 slider_dx1, 11 slider_dy1,
+12 slider_dx2, 13 slider_dy2, 14 slider_dx3, 15 slider_dy3, 16 slides]`.
+`N_SIGNAL_CHANNELS=17`. Appending (not reordering) keeps the v4/ranked 10-ch
+models + existing tests valid; anchors baseline 0, `slides` baseline -1.
+
+### Implementation checklist (hermetic-testable before any retrain)
+1. `config.py`: append 7 channels (10→17) + `CH_*` indices.
+2. `signal.py`: `encode_beatmap` writes anchor (RDP≤K, head-relative, normalised,
+   held over span) + `slides` channels, and only head/end cursor keyframes;
+   `decode_signal` reads anchors (span-mean) + `slides` (round) for slider geometry,
+   replacing `_slider_path`'s cursor trace.
+3. `dataset.py`: **flip aug must negate `slider_dx_i` (h-flip, ch 10/12/14) and
+   `slider_dy_i` (v-flip, ch 11/13/15)** — else augmentation corrupts slider
+   geometry; `slides` (16) is flip-invariant. Pad anchors to 0, `slides` to -1.
+4. `model`/`train`: input channels follow config; **fresh train** (17-ch can't load
+   the 10-ch v4 ckpt). `CONTEXT_DIM` unchanged (no style this batch).
+5. Tests: round-trip a curved + a **reverse** slider through encode→decode; flip-aug
+   negates the new channels. Update `TECH_REPORT.md` channel table.
+6. `conditioning.py`: **unchanged** (style deferred).
+
+### Risks / mitigations
+- Anchor channels are sparse (active only during sliders) → noisier. Mitigation:
+  hold-box (not spikes) + span-mean decode + RDP cleanup retained.
+- Reverse-slider length: anchors describe **one** traversal; `length` = that path,
+  `slides` = repeats, hold span = full out-and-back; let osu! derive duration.
+- 17-ch model is a fresh train (no resume from v4) — gate it on the current
+  ranked run's eval first, so we know the baseline it must beat.
+
+### Sequencing
+Analysis (this doc) → sync memory/docs → implement code + hermetic tests (safe,
+no GPU) → **after the running ranked train finishes + is evaluated** → re-preprocess
+`ranked-v5` → fresh train → eval/package `[AI-v5-sliders]`. Inference-side wins
+(§10.1.B SR-bake, §10.1.D-ii energy-gated breaks, kiai-snap) ship independently.
+
+## 10.4 v4b play-feedback action items (2026-06-14)
+
+From the in-game v4b comparison (see RESULTS.md). Ranked+context+aug validated for
+patterns/kiai/hitsounds; the open items:
+
+- **Rhythm regression (NEW — top decode priority, testable on v4b, no retrain).**
+  v4b puts some notes off the ¼ grid (look like 1/6 or 1/8) and leaves occasional
+  strange 0.5–2 s pauses; v4 rhythm was tighter. Two hypotheses, not exclusive:
+  (a) the snap loosening (45→60 ms / 40→50 %, fb #5) now pulls onsets onto the
+  *wrong* ¼ line — **test reverting to 45 ms**; (b) ranked maps use 1/6·1/8
+  subdivisions that `snap_to_grid`'s ¼(+⅓) grid can't place, so they land
+  off-grid — **add 1/6, 1/8 divisors (per-section)**. Also probe the pauses
+  (density / `onset_threshold`). A/B these decode params on the v4b ckpt.
+- **Kiai ends 1–3 s early** — extend the decoded kiai end (pad to the next
+  downbeat) in `decode_kiai`.
+- **No spinners** — `spinner_hold` rarely fires at decode; check the spinner
+  encode/threshold, or accept (low priority).
+- **Curve sliders still low / streams still weak** — the representation fixes:
+  v5 slider channels (§10.3, implemented) for curves+reverse; flow/distance-snap
+  (§10.2) for streams. Need the v5 train + likely v6 flow work.
+
+## 10.5 v5 play feedback (2026-06-15) + the gold-data plan
+
+v5 (17-ch) in-game: kiai 9/10; **reverse sliders work**; streams "way better, not
+ranked level"; some patterns good, some nasty.
+
+**Fixed this pass (no retrain):**
+- **AR** was terrible (`4+0.7·sr` → AR5–7). Now `target_settings` AR `7.75+0.25·sr`
+  (AR9 ≈ median player; SR≤3→8–8.5, ≤5→8.5–9, >5→9–10) — also matches real ranked AR.
+- **Straight vs curved sliders** — v5 emitted *every* slider as a 3-point bezier
+  (a "line built from curve points"). Decode now emits a **linear** slider when the
+  anchor polygon is near-collinear (`SLIDER_STRAIGHT_RATIO`); verified ~77% B / 23% L.
+- `package_map` was overriding the generated AR/OD with the original's (so all prior
+  in-game tests ran at the original's AR) — now keeps the generated settings.
+
+**Still open:**
+- **Rhythm** — ✅ **off-¼ notes FIXED (task #8)**: diagnosed that the model places
+  notes on the 1/8 & 1/6 grids (1/4-only snap caught 68%; 1/8 caught 100%), so the
+  ¼-only snapper dragged them off — `generate` now snaps to `divisors=(4,8,6)` →
+  100% on a clean 1/4|1/8|1/6 line (36/33/31 split). **Still open (model-side):** the
+  occasional 1–2 s pauses over steady music are a *density* gap, not a snap issue —
+  fold into density conditioning / gold-data (§10.1.D), not a decode fix.
+- **Hitsounds** below ranked level (≈v4) — model under-places vs ranked; gold-data
+  (hitsound≥10% filter) + maybe an accent-density condition.
+- **Slider velocity (SV)** — *we currently ignore SV (everything SV=1)*; real maps
+  vary it. Two levels: (a) **decode-side per-slider SV** (task #9 / §11 5.1) — emit
+  an inherited point per slider so geometry length + intended duration both hold,
+  making SV non-trivial for free; (b) **learn SV from data** (encode an SV channel +
+  condition) — a v6 representation change. Do (a) first.
+- **Patterns** (some nasty) — flow/distance-snap modelling (§10.2, v6).
+
+**Round 2 fixes (2026-06-15, decode-side, no retrain) — `[AI-v5c]`:**
+- **Slider "imposter line"** — decoder kept clustered/redundant anchors (a straight
+  slider with 2 bunched points near the end). Now RDP-simplifies decoded anchors →
+  real lines + genuine curves (~76% L / 24% B). `_slider_from_anchors`.
+- **Intro junk** (out-of-bounds note + downbeat note + 8 s silence) — `trim_isolated_ends`
+  now drops a leading *cluster* before a big gap, not just a single lead note.
+- **Overlapping spinners** — `decode_signal` merges spinners within 800 ms (a split
+  spinner showed as two overlapping).
+- **Timing** — `generate --timing-from <ref.osu>` uses a known map's exact BPM+offset
+  (fixes 198→202 BPM + wrong offset). *Novel songs still use the ~28%-accurate librosa
+  estimate → needs a better timing model (e.g. Mapperatorinator's infer-20×-and-average
+  "super timing"), a v6+ item.*
+- **Still model-side:** kiai is inconsistent per-generation (gold-data `--require-kiai`
+  for v6); 0.6–0.8 s density gaps (density conditioning); SV/patterns (v6).
+
+**Gold-data filter (next dataset, user spec).** `preprocess --gold` =
+`--ranked-only --require-kiai --single-bpm --min-hitsound-frac 0.1 --min-sr 1
+--max-sr 10`. New manifest fields `n_uninherited` (BPM-change detection) +
+`hitsound_frac`. Rationale: ranked/loved + kiai + single-BPM (the model can't do
+multi-BPM timing yet) + real hitsound density + sane SR removes the weakest training
+signal. User has new ranked/loved maps to add → refresh `osu!.db` (open osu!) then
+`preprocess --gold` → retrain v6.
+
+## 11. Audit follow-ups (external review 2026-06-14)
+
+A separate auditor read every `src/` file + re-derived the diffusion math (all
+correct). Defects were at the encode/decode/writer boundary + config hygiene.
+
+**Fixed** (commits `44f8a80`, `6444f3e` on `feat/v5-slider-style`): **C-1** spec-correct
+slider `edgeSounds`/`edgeSets`/`hitSample` in `write_osu` (was a malformed, shifted
+field that lazer could reject); **C-2** `generate` writes AR/OD/HP/CS from
+`conditioning.target_settings(sr)` instead of a hardcoded AR8/OD7 — file difficulty
+(and the rosu SR read-back) now match what the model was conditioned on; **C-3** a
+slider that lost its curve points is rewritten as a circle (not type&2 with no path);
+**S-8** short-song mel pad uses −1.0 (silence) not 0.0 (≈−40 dB); **S-16** `corpus_stats`
+parses + mode-filters before the expensive rosu call; **S-6** `AttnBlock1d` asserts
+`ch % heads == 0`; **S-9** `item_id` gets a source-path hash (no silent npz overwrite);
+**S-3** removed dead `skip_chs`; **S-1** noted `p_sample` reference-only; checkpoints
+store `sig_channels`; deleted dead `src/utils/` + unused `h5py`/`pyyaml`/`colorlog`;
+synced `requirements.txt`; fixed TECH_REPORT §9 (it listed the *diverged* base-160/0.5
+config as "current" → now base-128/0.3) + the v5 decode (§8.2) + README channel count.
+
+**Deferred (tasks created / future work):**
+- **Per-slider SV** (5.1) — emit an inherited timing point per slider so geometry
+  length *and* model-intended duration are both honoured (solves the SV=1
+  shape-vs-rhythm tension; makes `sv_changes_per_min` non-zero). *Task.*
+- **Per-channel target standardisation** (5.2) — train on `(x−μ_c)/σ_c` (corpus
+  per-channel stats) to zero-centre the −1-baseline channels; a suspected
+  contributor to the base-160 bf16 divergence. *Task.*
+- **Zero-terminal-SNR β + v-prediction** (5.3) — the principled fix likely needed
+  to unblock base ≥160 (higher leverage than just lowering LR). *Future / pairs with 5.2.*
+- **Batched CFG** (5.4) — one concatenated forward instead of two → ~2× faster
+  sampling, identical output. *Task.*
+- **Attention on the up-path** (S-5) / fuse the top skip (S-4) — architecture A/B
+  vs the 17/19 metric; needs a retrain.
+- Minor (cosmetic/negligible, left as-is): `package_map` re-parse drops `[Events]`
+  breaks (S-17); `_validate` last-batch over-weighting (S-14); `snap_slider_ends`
+  SV=1 (S-11, no bug for single-timing generated maps; subsumed by 5.1);
+  `compute_breaks` ordering (S-13); slider 1-frame demotion (S-7, rare).
+- Investigations (need runs/data): base-160 divergence root cause (U-4, grad-norm
+  trace); long-song attention-length transfer (U-5); `osu!.db` size-prefix robustness
+  (U-1, fine for the current client). Moot after fixes: lazer slider-field tolerance
+  (U-2 → C-1), short-song pad frequency (U-6 → S-8).
 
 ## References
 - [Mapping techniques (Basics)](https://osu.ppy.sh/wiki/en/Mapping_Techniques/Basics)

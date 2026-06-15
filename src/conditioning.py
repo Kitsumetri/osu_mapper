@@ -22,19 +22,36 @@ def context_vector(sr: float, ar: float, od: float, hp: float, cs: float,
     return [min(1.5, max(0.0, raw[f] / _SCALE[f])) for f in CONTEXT_FIELDS]
 
 
+def target_settings(sr: float) -> dict[str, float]:
+    """Raw (un-normalised) difficulty settings a target SR maps to (rough corpus
+    trends, RESEARCH.md §8). Single source of truth: ``target_context`` conditions
+    the model on these, and ``generate`` writes the same values into the ``.osu``
+    so the file's AR/OD/CS/HP match what the model was asked to produce."""
+    return {
+        # AR tuned to modern player expectations (AR9 ~ median): SR<=3 -> 8.0-8.5,
+        # SR<=5 -> 8.5-9.0, SR>5 -> 9.0-10. Also matches real ranked AR (8-10) better
+        # than the old 4+0.7*sr, which conditioned on unrealistically low AR.
+        "ar": min(10.0, 7.75 + 0.25 * sr),
+        "od": min(10.0, 4.0 + 0.7 * sr),
+        "hp": 5.0,
+        "cs": 4.0,
+        "density": max(0.8, 0.8 * sr),
+    }
+
+
 def target_context(sr: float, ar: float | None = None, od: float | None = None,
                    hp: float | None = None, cs: float | None = None,
                    density: float | None = None) -> list[float]:
     """Build an inference context from a target star rating.
 
-    AR/OD/HP/CS/density default to rough functions of SR (matching the corpus
-    trends in RESEARCH.md §8) when not given explicitly.
+    AR/OD/HP/CS/density default to ``target_settings(sr)`` when not given explicitly.
     """
-    ar = ar if ar is not None else min(10.0, 4.0 + 0.7 * sr)
-    od = od if od is not None else min(10.0, 3.0 + 0.8 * sr)
-    hp = hp if hp is not None else 5.0
-    cs = cs if cs is not None else 4.0
-    density = density if density is not None else max(0.8, 0.8 * sr)
+    s = target_settings(sr)
+    ar = ar if ar is not None else s["ar"]
+    od = od if od is not None else s["od"]
+    hp = hp if hp is not None else s["hp"]
+    cs = cs if cs is not None else s["cs"]
+    density = density if density is not None else s["density"]
     return context_vector(sr, ar, od, hp, cs, density)
 
 

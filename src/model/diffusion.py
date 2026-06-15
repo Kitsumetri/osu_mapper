@@ -36,7 +36,12 @@ class GaussianDiffusion:
     def p_sample(self, model, cond, shape, steps: int | None = None):
         """Full ancestral DDPM sampling (uses every timestep). For fewer steps
         use :meth:`ddim_sample`, which is mathematically correct when steps are
-        skipped (plain strided ancestral sampling is not)."""
+        skipped (plain strided ancestral sampling is not).
+
+        NOTE: reference implementation only — not used by ``generate`` (which uses
+        ``ddim_sample``). It does not pass difficulty ``ctx``/CFG, so it produces
+        *unconditional* samples; wire those through before using it in production.
+        """
         b = shape[0]
         x = torch.randn(shape, device=self.device)
         for i in reversed(range(self.timesteps)):

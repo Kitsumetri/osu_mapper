@@ -59,6 +59,7 @@ class AttnBlock1d(nn.Module):
 
     def __init__(self, ch: int, heads: int = 4):
         super().__init__()
+        assert ch % heads == 0, f"AttnBlock1d channels {ch} not divisible by heads {heads}"
         self.heads = heads
         self.norm = nn.GroupNorm(math.gcd(8, ch), ch)
         self.qkv = nn.Conv1d(ch, ch * 3, 1)
@@ -134,14 +135,12 @@ class UNet1d(nn.Module):
         self.down_samps = nn.ModuleList()
         self.down_attn = nn.ModuleList()
         prev = base
-        skip_chs = [base]
         for i, ch in enumerate(chs):
             self.downs.append(ResBlock1d(prev, ch, t_dim))
             # attention at the ``attn_levels`` deepest (coarsest) levels to bound
             # cost; raise it to give the model longer-range pattern context.
             use_attn = attn and i >= len(chs) - attn_levels
             self.down_attn.append(AttnBlock1d(ch) if use_attn else nn.Identity())
-            skip_chs.append(ch)
             self.down_samps.append(Down(ch))
             prev = ch
 

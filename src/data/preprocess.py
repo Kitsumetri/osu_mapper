@@ -51,7 +51,7 @@ def _process_set(args):
     """Process one beatmap set (runs in a worker process). Decodes each audio
     once, writes mel .npy + per-difficulty signal .npz, returns manifest rows +
     counts. Audio decoding (the bottleneck) parallelises cleanly across sets."""
-    set_dir, osu_paths, mels_dir, items_dir, min_objects, max_seconds, max_sr = args
+    set_dir, osu_paths, mels_dir, items_dir, min_objects, max_seconds, max_sr, gold = args
     entries: list[dict] = []
     skipped = errors = mels = 0
     cap = int(AUDIO.time_to_frame(max_seconds * 1000))
@@ -86,7 +86,15 @@ def _process_set(args):
         mels += 1
         for bm in bms:
             sr = star_rating(bm.path)               # curation
-            if sr is not None and sr > max_sr:
+            n_obj = len(bm.hit_objects)
+            hitsound_frac = sum(1 for o in bm.hit_objects if o.hit_sound) / max(1, n_obj)
+            n_uninherited = sum(1 for tp in bm.timing_points if tp.uninherited)
+            has_kiai = len(bm.kiai_spans()) > 0
+            # curation + optional "gold" quality gates
+            if (sr is None or sr > max_sr or sr < gold["min_sr"]
+                    or (gold["require_kiai"] and not has_kiai)
+                    or (gold["single_bpm"] and n_uninherited > 1)
+                    or hitsound_frac < gold["min_hs_frac"]):
                 skipped += 1
                 continue
             try:
@@ -94,7 +102,11 @@ def _process_set(args):
             except Exception:
                 errors += 1
                 continue
-            item_id = _safe(f"{set_dir.name}__{bm.version}").replace(" ", "_")
+            # short source-path hash guarantees uniqueness even when two diffs
+            # share a version name or _safe()'s truncation coincides (else savez
+            # silently overwrites and two manifest rows point at one file).
+            uid = hashlib.sha1(str(bm.path).lower().encode()).hexdigest()[:8]
+            item_id = _safe(f"{set_dir.name}__{bm.version}").replace(" ", "_") + f"__{uid}"
             np.savez_compressed(items_dir / f"{item_id}.npz", signal=sig)
             entries.append({
                 "item_id": item_id, "audio_id": aid,
@@ -105,7 +117,8 @@ def _process_set(args):
                 "od": bm.overall_difficulty, "hp": bm.hp,
                 "slider_multiplier": bm.slider_multiplier,
                 "bpm": bm.bpm, "n_timing_points": len(bm.timing_points),
-                "has_kiai": len(bm.kiai_spans()) > 0,
+                "n_uninherited": n_uninherited, "has_kiai": has_kiai,
+                "hitsound_frac": round(hitsound_frac, 3),
                 "duration_s": round(AUDIO.frame_to_time(T) / 1000, 1),
                 "frames": T,
             })
@@ -115,7 +128,10 @@ def _process_set(args):
 def process_library(songs_dir: Path, out_dir: Path, limit: int | None = None,
                     min_objects: int = 50, max_seconds: float = 240.0,
                     max_sr: float = 12.0, workers: int | None = None,
-                    ranked_only: bool = False, osu_db: str | Path | None = None):
+                    ranked_only: bool = False, osu_db: str | Path | None = None,
+                    gold: dict | None = None):
+    gold = gold or {"min_sr": 0.0, "require_kiai": False, "single_bpm": False,
+                    "min_hs_frac": 0.0}
     mels_dir = out_dir / "mels"
     items_dir = out_dir / "items"
     mels_dir.mkdir(parents=True, exist_ok=True)
@@ -138,7 +154,7 @@ def process_library(songs_dir: Path, out_dir: Path, limit: int | None = None,
         print(f"ranked filter: {len(ranked)} ranked std maps in db; "
               f"kept {n_kept}/{n_osu} .osu across {len(kept_sets)}/{len(sets)} sets")
         sets = kept_sets
-    tasks = [(sd, ops, mels_dir, items_dir, min_objects, max_seconds, max_sr)
+    tasks = [(sd, ops, mels_dir, items_dir, min_objects, max_seconds, max_sr, gold)
              for sd, ops in sets]
 
     manifest: list[dict] = []
@@ -188,10 +204,29 @@ def main():
                     help="keep only ranked/approved/loved maps (joins osu!.db)")
     ap.add_argument("--osu-db", default=None,
                     help="path to osu!.db (default: <songs>/../osu!.db)")
+    # "gold" quality gates (all stored in the manifest regardless; these filter)
+    ap.add_argument("--min-sr", type=float, default=0.0, help="skip maps below this SR")
+    ap.add_argument("--require-kiai", action="store_true", help="skip maps with no kiai")
+    ap.add_argument("--single-bpm", action="store_true",
+                    help="skip maps with >1 uninherited timing point (BPM changes)")
+    ap.add_argument("--min-hitsound-frac", type=float, default=0.0,
+                    help="skip maps where < this fraction of objects carry a hitsound")
+    ap.add_argument("--gold", action="store_true",
+                    help="preset: --ranked-only --require-kiai --single-bpm "
+                         "--min-hitsound-frac 0.1 --min-sr 1 --max-sr 10")
     args = ap.parse_args()
+    if args.gold:
+        args.ranked_only = True
+        args.require_kiai = True
+        args.single_bpm = True
+        args.min_hitsound_frac = max(0.1, args.min_hitsound_frac)
+        args.min_sr = max(1.0, args.min_sr)
+        args.max_sr = min(10.0, args.max_sr)
+    gold = {"min_sr": args.min_sr, "require_kiai": args.require_kiai,
+            "single_bpm": args.single_bpm, "min_hs_frac": args.min_hitsound_frac}
     process_library(Path(args.songs), Path(args.out), args.limit,
                     args.min_objects, args.max_seconds, args.max_sr, args.workers,
-                    ranked_only=args.ranked_only, osu_db=args.osu_db)
+                    ranked_only=args.ranked_only, osu_db=args.osu_db, gold=gold)
 
 
 if __name__ == "__main__":

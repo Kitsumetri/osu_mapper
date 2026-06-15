@@ -60,14 +60,16 @@ def collect(songs_dir: Path, limit: int | None = None, seed: int = 0,
         n_seen += 1
         if n_seen % progress_every == 0:
             print(f"  scanned {n_seen}/{len(files)} files, used {n_used} std maps", flush=True)
-        sr = star_rating(f)            # also filters to std mode
-        if sr is None:
-            continue
+        # parse + cheap mode/object filter FIRST, then the expensive rosu SR call
+        # (avoids parsing std maps twice and skips rosu on taiko/mania/ctb).
         try:
             bm = parse_beatmap(f)
         except Exception:
             continue
         if bm.mode != 0 or len(bm.hit_objects) < 50:
+            continue
+        sr = star_rating(f)
+        if sr is None:
             continue
         m = compute_metrics(bm)
         if m.get("n_objects", 0) < 50:

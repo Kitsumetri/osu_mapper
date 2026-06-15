@@ -1,6 +1,7 @@
-# Core ML
-torch>=2.6          # install the CUDA build separately, e.g.
-                    #   pip install torch --index-url https://download.pytorch.org/whl/cu124
+# Prefer `uv sync` (pyproject.toml is the source of truth). This mirrors it for pip.
+# Core ML — install the CUDA build from the PyTorch index, e.g.
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+torch>=2.11
 numpy>=1.26
 
 # Audio
@@ -8,12 +9,11 @@ librosa>=0.11
 soundfile>=0.13
 
 # Data / IO
-h5py>=3.16
 tqdm>=4.66
-PyYAML>=6.0
 
 # Difficulty (star rating) — Rust port of osu!lazer's calculator
 rosu-pp-py>=1.0
 
 # Dev / test
 pytest>=8.0
+ruff>=0.6

@@ -77,14 +77,16 @@ def package(generated: Path, original: Path, songs_dir: Path,
     bm.artist = artist
     bm.creator = "osu_mapper"
     bm.version = f"{prefix} AI Generated"
-    # borrow difficulty settings from the original for sane gameplay values
-    bm.circle_size = orig.circle_size
-    bm.approach_rate = orig.approach_rate
-    bm.overall_difficulty = orig.overall_difficulty
-    bm.hp = orig.hp
-    # KEEP the generated map's SliderMultiplier — its slider lengths are
-    # calibrated to it (beat-snapped ends). Overriding with the original's SM
+    # KEEP the generated map's own difficulty settings — generate writes AR/OD/HP/CS
+    # to match the conditioned target SR (conditioning.target_settings). Borrowing the
+    # original's would make an easy generated map play at the original's (often much
+    # harder) AR/OD and also change its computed star rating. SliderMultiplier is kept
+    # too: slider lengths are calibrated to it (beat-snapped ends), so overriding it
     # rescales every slider duration and breaks the rhythm snapping.
+    bm.circle_size = gen.circle_size
+    bm.approach_rate = gen.approach_rate
+    bm.overall_difficulty = gen.overall_difficulty
+    bm.hp = gen.hp
     bm.slider_multiplier = gen.slider_multiplier
 
     out_osu = out_dir / f"{_safe(artist + ' - ' + title)} ({bm.creator}) [{prefix} AI].osu"
