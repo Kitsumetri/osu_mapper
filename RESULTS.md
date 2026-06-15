@@ -1,7 +1,30 @@
 # Results
 
 Training-run history + generated-map quality (metrics via `src/metrics.py`).
-**Current release: v4b** (`runs/20260614-151630-ranked-full/ckpt/last.pt`, 10-ch).
+**Current release: v5** (`runs/20260614-224107-ranked-v5/ckpt/best.pt`, 17-ch).
+
+## v5 — slider-shape + reverse sliders (DONE 2026-06-15)
+
+`runs/20260614-224107-ranked-v5/ckpt/best.pt` (epoch 55, val 0.00330). 17-channel
+representation (K=3 dedicated slider-anchor `dx/dy` + `slides` channel) on the same
+ranked-v5 data, base 128 / crop 4096 / attn_levels 3 / batch 16 / 60 epochs, flip
+aug. Clean convergence, no divergence (~295 s/epoch). (val isn't comparable to the
+10-ch loss — the extra structured channels lower the average MSE.)
+
+**The two target complaints are fixed** (Headphone Actor @ SR 5.36, 533 obj):
+- **Curved sliders: 100% bezier** (170/170, 3 control points) — was ~20–40% before,
+  rest straight lines. The dedicated anchor channels work.
+- **Reverse sliders: 46/170 = 27%** (slides {1:124, 2:40, 3:5, 4:1}) — was **0**
+  (impossible in the 10-ch representation). *Note: 27% is higher than real maps'
+  ~8% — the model may over-produce reverses; watch in-game.*
+- AR/OD now written to match the conditioned SR (AR7.5/OD7.0 at SR5 — C-2 fix).
+- Caveats: **every** slider is a 3-point curve (model always fills K=3 anchors → no
+  straight sliders; could look over-wavy — needs in-game eyeball); no spinners;
+  rhythm regression from v4b (off-¼ → 1/6·1/8) still open (§10.4). Packaged `[AI-v5]`.
+
+**Also fixed during this eval:** `package_map` was overriding the generated map's
+AR/OD/HP/CS with the *original* beatmap's — so all prior `[AI-*]` in-game tests ran
+at the original's (often harder) AR. Now it keeps the generated settings.
 
 ## v4b — ranked train (current; v4 branch merged to main) — 2026-06-14
 
