@@ -574,6 +574,21 @@ ranked level"; some patterns good, some nasty.
   condition) — a v6 representation change. Do (a) first.
 - **Patterns** (some nasty) — flow/distance-snap modelling (§10.2, v6).
 
+**Round 2 fixes (2026-06-15, decode-side, no retrain) — `[AI-v5c]`:**
+- **Slider "imposter line"** — decoder kept clustered/redundant anchors (a straight
+  slider with 2 bunched points near the end). Now RDP-simplifies decoded anchors →
+  real lines + genuine curves (~76% L / 24% B). `_slider_from_anchors`.
+- **Intro junk** (out-of-bounds note + downbeat note + 8 s silence) — `trim_isolated_ends`
+  now drops a leading *cluster* before a big gap, not just a single lead note.
+- **Overlapping spinners** — `decode_signal` merges spinners within 800 ms (a split
+  spinner showed as two overlapping).
+- **Timing** — `generate --timing-from <ref.osu>` uses a known map's exact BPM+offset
+  (fixes 198→202 BPM + wrong offset). *Novel songs still use the ~28%-accurate librosa
+  estimate → needs a better timing model (e.g. Mapperatorinator's infer-20×-and-average
+  "super timing"), a v6+ item.*
+- **Still model-side:** kiai is inconsistent per-generation (gold-data `--require-kiai`
+  for v6); 0.6–0.8 s density gaps (density conditioning); SV/patterns (v6).
+
 **Gold-data filter (next dataset, user spec).** `preprocess --gold` =
 `--ranked-only --require-kiai --single-bpm --min-hitsound-frac 0.1 --min-sr 1
 --max-sr 10`. New manifest fields `n_uninherited` (BPM-change detection) +
