@@ -29,7 +29,8 @@ from .postprocess import (
 
 
 def generate(audio_path, ckpt_path, out_path, steps=100, base=64, use_ema=True,
-             snap=True, sr=None, guidance=2.0, match_sr=False, max_iter=3, tol=0.4):
+             snap=True, sr=None, guidance=2.0, match_sr=False, max_iter=3, tol=0.4,
+             snap_divisors=(4, 8, 6)):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     ckpt = torch.load(ckpt_path, map_location=device)
     cargs = ckpt.get("args", {})
@@ -77,7 +78,10 @@ def generate(audio_path, ckpt_path, out_path, steps=100, base=64, use_ema=True,
         else:
             bm.approach_rate, bm.overall_difficulty, bm.hp, bm.circle_size = 8.0, 7.0, 5.0, 4.0
         if snap:
-            snap_to_grid(objects, tp)                       # snap onsets to grid
+            # snap onsets to the nearest of 1/4, 1/8, 1/6 — the model places notes
+            # on the 1/8 and 1/6 grids too, so a 1/4-only snap drags those onto the
+            # wrong 1/4 line and wrecks the rhythm (play feedback).
+            snap_to_grid(objects, tp, divisors=snap_divisors)
             snap_slider_ends(objects, tp, bm.slider_multiplier)  # snap slider ends
         # keep slider tails inside the playfield (must run after length-changing
         # snap_slider_ends, before breaks/write which read end_time gaps)
