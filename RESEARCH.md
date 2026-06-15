@@ -597,6 +597,35 @@ multi-BPM timing yet) + real hitsound density + sane SR removes the weakest trai
 signal. User has new ranked/loved maps to add → refresh `osu!.db` (open osu!) then
 `preprocess --gold` → retrain v6.
 
+## 10.6 v6 batch — design (ACTIVE, branch `feat/v6-sv-adaln`)
+
+One re-preprocess + fresh train. Targets the v5 model-side residue: same-speed sliders,
+inconsistent kiai, weak hitsounds, density gaps. Three changes:
+
+### A. SV channel (learn slider velocity)
+v5 ignores SV (every slider SV=1). Real maps vary it (slow build-ups, fast kiai). Add a
+**dedicated SV channel** (signal 17→18, `CH_SLIDER_SV=17`): for each slider encode the real
+multiplier `bm._sv_at(time)` as `clip(log2(sv)/2, -1, 1)` held over the slider span (baseline
+0 = SV 1×, range 0.25×–4×). Store the decoded SV on the `HitObject` (new `sv` field). Decode →
+`generate` emits an **inherited timing point per SV change** (dedupe consecutive equal SV), and
+the slider snap becomes **SV-aware** (snap *duration* by nudging SV, keeping the anchor geometry
+length — solves the audit's S-11 / §11 5.1 shape-vs-rhythm tension *from learned data*, not a
+heuristic). This is the proper version of the rejected decode-side per-slider SV.
+
+### B. adaLN-zero conditioning
+Replace the additive FiLM (`h += time(t_emb)`) with **DiT adaLN-zero**: each `ResBlock1d`
+predicts `(scale, shift, gate)` from the conditioning embedding (`SiLU→Linear`, gate
+**zero-init** so blocks start as identity), modulating `h = norm(h)·(1+scale)+shift` and gating
+the residual `x + gate·block(...)`. Gives difficulty multiplicative control; the 2026-survey
+contained upgrade. Model-only change (hermetic-testable); fresh train (can't load v5 ckpt).
+
+### C. Gold data
+`preprocess --gold` (code DONE) but re-run with the v6 18-ch encoding once A lands → `ranked-v6`.
+
+### Order / status
+adaLN (B, contained) → SV channel (A) → re-preprocess `ranked-v6` (gold+18-ch) → fresh train →
+eval/package `[AI-v6]`. Optionally A/B adaLN vs FiLM and SV vs no-SV.
+
 ## 11. Audit follow-ups (external review 2026-06-14)
 
 A separate auditor read every `src/` file + re-derived the diffusion math (all

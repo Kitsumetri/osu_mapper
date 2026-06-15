@@ -63,31 +63,36 @@ uv run python -m src.generate --audio song.mp3 --ckpt runs/<id>/ckpt/last.pt --s
 uv run python -m src.evaluate --audio song.mp3 --ckpt runs/<id>/ckpt/last.pt --srs 2,3,4,5,6 --ref-stats artifacts/reference_stats.json
 ```
 
-## 5. Current state (2026-06-14)
+## 5. Current state (2026-06-15)
 
-- **Released = v4b** (ranked model `runs/20260614-151630-ranked-full/ckpt/last.pt`, **10-ch**,
-  epoch 48, val 0.00486). Trained on **ranked-only** data (osu!.db filter, ~23.6k maps) with
-  crop 4096 + attn_levels 3 + flip augmentation. Eval: SR monotonic, **17–19/19 metrics
-  in-range**. **v4 branch merged to `main`.** Packaged `[AI-v4b]`. In-game feedback →
-  RESULTS.md / RESEARCH §10.4.
-- **Active branch `feat/v5-slider-style`** (off v4): the **17-channel slider representation**
-  (dedicated anchor dx/dy + `slides` channels; design in RESEARCH §10.3). Code DONE; dataset
-  `data/processed/ranked-v5` DONE (23,626 items, 17-ch); **fresh train not yet run** (GPU-gated).
-- **Env**: `uv` venv, **torch 2.11.0+cu128**. `--compile` flag wired but Windows-blocked
-  (needs MSVC + triton-windows; §6). `artifacts/reference_stats.json` = 31,362-map reference.
+- **Released = v5** (`runs/20260614-224107-ranked-v5/ckpt/best.pt`, **17-ch**, epoch 55,
+  val 0.0033). 17-channel slider representation (anchor dx/dy + `slides`) on ranked-v5 data,
+  crop 4096 / attn_levels 3 / flip aug. **Curved sliders + reverse sliders work.** Many
+  decode fixes shipped from two play-test rounds (RESEARCH §10.5): rhythm snap to {1/4,1/8,1/6},
+  slider RDP (real lines vs imposter-curves), realistic AR (`7.75+0.25·sr`), intro-cluster trim,
+  spinner merge, `generate --timing-from <ref.osu>` (exact BPM/offset), package_map keeps
+  generated difficulty. In-game: "way better, fixes helped, kiai generates." Branch
+  `feat/v5-slider-style` — **user will push + PR to main.**
+- **Active branch `feat/v6-sv-adaln`** (off v5): the v6 batch (see §6 + RESEARCH §10.6).
+- **Env**: `uv` venv, **torch 2.11.0+cu128**. `--compile` wired but Windows-blocked (no MSVC).
+  `data/processed/ranked-v5` (17-ch) on disk; `artifacts/reference_stats.json` = 31,362-map ref.
 - **Git**: I cannot push — the user pushes. Commit locally with descriptive messages.
 
-## 6. Open queue (next work, on `feat/v5-slider-style`)
+## 6. v6 batch — the next retrain (branch `feat/v6-sv-adaln`; design RESEARCH §10.6)
 
-1. **Rhythm fix** — NEW top issue from v4b feedback (decode-side, no retrain): some notes
-   off the ¼ grid (look 1/6·1/8) + strange 0.5–2 s pauses. A/B snap tolerance (60→45 ms) +
-   add 1/6, 1/8 divisors; probe density/`onset_threshold`. Test on the v4b 10-ch ckpt (v4
-   code is in `main`). RESEARCH §10.4.
-2. **v5 fresh train** on `ranked-v5` (17-ch; GPU-gated) → eval + package `[AI-v5-sliders]`;
-   checks whether the anchor channels fix curved + reverse sliders.
-3. **adaLN-zero** conditioning (impl + A/B vs plain v5) — the contained DiT upgrade, RESEARCH §10.2.
-4. **SR-offset bake** into `target_context` (§10.1.B); **density/break** control is model-side (§10.1.D).
-5. **`torch.compile`** — ready behind `--compile`, blocked here (no MSVC/triton-windows); use on Linux/cloud.
+One re-preprocess + fresh train bundling the model-side wins that v5's decode fixes can't reach:
+1. **Gold data** — `preprocess --gold` (ranked + kiai + single-BPM + hitsounds≥10% + 1<SR<10;
+   code DONE, manifest fields added). User refreshed `osu!.db` + added maps. *Re-preprocess
+   with the v6 encoding (below) when the channels are final.*
+2. **SV channel** (learn slider velocity) — encode each slider's real SV into a new channel
+   (channels 17→18), decode → emit inherited timing points + SV-aware slider snap. Fixes the
+   "all sliders same speed" gap; replaces the rejected decode-side per-slider SV.
+3. **adaLN-zero conditioning** — replace additive FiLM with DiT-style per-block scale/shift/gate
+   (gate zero-init) so difficulty modulates multiplicatively. Contained model change.
+4. Then re-preprocess `ranked-v6` (gold + 18-ch) → fresh train → eval/package `[AI-v6]`.
+
+Carry-over / parallel: SR-offset bake (§10.1.B), density conditioning for the 0.6–0.8 s gaps,
+a real timing model for novel songs ("super timing", §10.2), flow/pattern modelling (§10.2).
 
 ## 7. Hard-won lessons (don't re-learn these)
 
