@@ -544,6 +544,40 @@ patterns/kiai/hitsounds; the open items:
   v5 slider channels (§10.3, implemented) for curves+reverse; flow/distance-snap
   (§10.2) for streams. Need the v5 train + likely v6 flow work.
 
+## 10.5 v5 play feedback (2026-06-15) + the gold-data plan
+
+v5 (17-ch) in-game: kiai 9/10; **reverse sliders work**; streams "way better, not
+ranked level"; some patterns good, some nasty.
+
+**Fixed this pass (no retrain):**
+- **AR** was terrible (`4+0.7·sr` → AR5–7). Now `target_settings` AR `7.75+0.25·sr`
+  (AR9 ≈ median player; SR≤3→8–8.5, ≤5→8.5–9, >5→9–10) — also matches real ranked AR.
+- **Straight vs curved sliders** — v5 emitted *every* slider as a 3-point bezier
+  (a "line built from curve points"). Decode now emits a **linear** slider when the
+  anchor polygon is near-collinear (`SLIDER_STRAIGHT_RATIO`); verified ~77% B / 23% L.
+- `package_map` was overriding the generated AR/OD with the original's (so all prior
+  in-game tests ran at the original's AR) — now keeps the generated settings.
+
+**Still open:**
+- **Rhythm** (still the top issue, task #8) — off-¼ notes (1/6·1/8?), a few stacked,
+  1–2 s gaps over steady music. Decode A/B (snap divisors / tolerance) + density.
+- **Hitsounds** below ranked level (≈v4) — model under-places vs ranked; gold-data
+  (hitsound≥10% filter) + maybe an accent-density condition.
+- **Slider velocity (SV)** — *we currently ignore SV (everything SV=1)*; real maps
+  vary it. Two levels: (a) **decode-side per-slider SV** (task #9 / §11 5.1) — emit
+  an inherited point per slider so geometry length + intended duration both hold,
+  making SV non-trivial for free; (b) **learn SV from data** (encode an SV channel +
+  condition) — a v6 representation change. Do (a) first.
+- **Patterns** (some nasty) — flow/distance-snap modelling (§10.2, v6).
+
+**Gold-data filter (next dataset, user spec).** `preprocess --gold` =
+`--ranked-only --require-kiai --single-bpm --min-hitsound-frac 0.1 --min-sr 1
+--max-sr 10`. New manifest fields `n_uninherited` (BPM-change detection) +
+`hitsound_frac`. Rationale: ranked/loved + kiai + single-BPM (the model can't do
+multi-BPM timing yet) + real hitsound density + sane SR removes the weakest training
+signal. User has new ranked/loved maps to add → refresh `osu!.db` (open osu!) then
+`preprocess --gold` → retrain v6.
+
 ## 11. Audit follow-ups (external review 2026-06-14)
 
 A separate auditor read every `src/` file + re-derived the diffusion math (all

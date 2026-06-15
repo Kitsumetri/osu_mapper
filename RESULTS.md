@@ -26,6 +26,12 @@ aug. Clean convergence, no divergence (~295 s/epoch). (val isn't comparable to t
 AR/OD/HP/CS with the *original* beatmap's — so all prior `[AI-*]` in-game tests ran
 at the original's (often harder) AR. Now it keeps the generated settings.
 
+**Play feedback (in-game, 2026-06-15):** kiai 9/10, reverse sliders good, streams way
+better. Fixes applied (no retrain): realistic AR (`7.75+0.25·sr` → AR9 median),
+straight-vs-curved slider mix (~77/23), package_map difficulty. Still open → §10.5:
+rhythm (off-¼ + gaps, task #8), hitsounds below ranked level, slider-velocity support
+(task #9), pattern quality. Next dataset: `preprocess --gold` (task #12).
+
 ## v4b — ranked train (current; v4 branch merged to main) — 2026-06-14
 
 `runs/20260614-151630-ranked-full/ckpt/last.pt`, **epoch 48, val_loss 0.00486** (well
