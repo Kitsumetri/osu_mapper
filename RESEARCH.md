@@ -559,8 +559,12 @@ ranked level"; some patterns good, some nasty.
   in-game tests ran at the original's AR) — now keeps the generated settings.
 
 **Still open:**
-- **Rhythm** (still the top issue, task #8) — off-¼ notes (1/6·1/8?), a few stacked,
-  1–2 s gaps over steady music. Decode A/B (snap divisors / tolerance) + density.
+- **Rhythm** — ✅ **off-¼ notes FIXED (task #8)**: diagnosed that the model places
+  notes on the 1/8 & 1/6 grids (1/4-only snap caught 68%; 1/8 caught 100%), so the
+  ¼-only snapper dragged them off — `generate` now snaps to `divisors=(4,8,6)` →
+  100% on a clean 1/4|1/8|1/6 line (36/33/31 split). **Still open (model-side):** the
+  occasional 1–2 s pauses over steady music are a *density* gap, not a snap issue —
+  fold into density conditioning / gold-data (§10.1.D), not a decode fix.
 - **Hitsounds** below ranked level (≈v4) — model under-places vs ranked; gold-data
   (hitsound≥10% filter) + maybe an accent-density condition.
 - **Slider velocity (SV)** — *we currently ignore SV (everything SV=1)*; real maps
