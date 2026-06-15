@@ -38,6 +38,7 @@ ONSET_SIGMA_FRAMES = 1.2   # width of onset/new-combo bumps
 # decoded-slider path length within this ratio of the straight-line distance is
 # treated as a *straight* (linear) slider rather than a curved bezier.
 SLIDER_STRAIGHT_RATIO = 1.06
+SPINNER_MERGE_MS = 800.0   # spinners within this gap are merged into one
 
 
 def _gaussian_bump(signal: np.ndarray, center: float, sigma: float = ONSET_SIGMA_FRAMES):
@@ -286,14 +287,21 @@ def _slider_from_anchors(start, anchor_ch, p, end_frame):
         prev = (ax, ay)
     if not pts:  # all anchors collapsed to the head -> tiny linear slider
         return "L", [(int(np.clip(sx + 10, 0, PLAYFIELD_W)), sy)], 10.0
-    # straight-vs-curved: a near-collinear anchor polygon is a *line*, so emit a
-    # linear slider instead of a wasteful 3-point bezier (fb: a line built from
-    # curve points looks bad). Path within ~6% of the straight distance => straight.
-    straight = float(np.hypot(pts[-1][0] - sx, pts[-1][1] - sy))
-    if len(pts) >= 2 and length <= straight * SLIDER_STRAIGHT_RATIO:
-        return "L", [pts[-1]], max(10.0, straight)
-    ctype = "B" if len(pts) >= 2 else "L"
-    return ctype, pts, max(10.0, length)
+    # RDP-simplify: drop anchors within eps of the line through their neighbours,
+    # so clustered/redundant points collapse (fixes the "imposter line" — a straight
+    # slider that kept 2 bunched control points near the end).
+    simplified = _rdp([(sx, sy), *pts])[1:] or [pts[-1]]
+    prev = (sx, sy)
+    length = 0.0
+    for q in simplified:
+        length += float(np.hypot(q[0] - prev[0], q[1] - prev[1]))
+        prev = q
+    # straight-vs-curved: a near-collinear polygon is a *line* (emit linear, not a
+    # bezier). Path within ~6% of the straight distance => straight.
+    straight = float(np.hypot(simplified[-1][0] - sx, simplified[-1][1] - sy))
+    if len(simplified) < 2 or length <= straight * SLIDER_STRAIGHT_RATIO:
+        return "L", [simplified[-1]], max(10.0, straight)
+    return "B", simplified, max(10.0, length)
 
 
 def _pick_peaks(channel: np.ndarray, threshold: float, min_gap: int) -> list[int]:
@@ -379,6 +387,17 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
             i = j
         else:
             i += 1
+    # merge spinners that overlap or sit close together (a single intended spinner
+    # split by a brief channel dip -> two overlapping spinners in-game). fb #2.
+    if len(spinner_spans) > 1:
+        merge_gap = int(cfg.time_to_frame(SPINNER_MERGE_MS))
+        merged = [list(spinner_spans[0])]
+        for a, b in spinner_spans[1:]:
+            if a - merged[-1][1] <= merge_gap:
+                merged[-1][1] = b
+            else:
+                merged.append([a, b])
+        spinner_spans = [(a, b) for a, b in merged]
 
     peaks = _pick_peaks(onset, onset_threshold, min_gap_frames)
     for k, p in enumerate(peaks):

@@ -144,6 +144,16 @@ def test_curved_slider_from_anchor_channels():
     assert len(s.curve_points) >= 2
 
 
+def test_nearby_spinners_are_merged():
+    n = 200
+    sig = np.full((N_SIGNAL_CHANNELS, n), -1.0, dtype=np.float32)
+    sig[4:6] = 0.0
+    sig[2, 10:40] = 1.0   # spinner run 1
+    sig[2, 50:80] = 1.0   # spinner run 2, ~10-frame gap -> within SPINNER_MERGE_MS
+    dec = decode_signal(sig, min_spinner_frames=20, spinner_min_mean=0.3)
+    assert sum(o.is_spinner for o in dec) == 1   # merged into one
+
+
 def test_collinear_anchors_decode_to_linear_slider():
     """v5: near-collinear anchor channels should decode to a *linear* slider, not
     a wasteful 3-point bezier (fb: a line built from curve points looks bad)."""

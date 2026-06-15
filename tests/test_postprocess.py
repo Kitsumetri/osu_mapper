@@ -66,6 +66,15 @@ def test_trim_trailing_more_aggressive_than_leading():
     assert trim_isolated_ends(objs2) == 0
 
 
+def test_trim_leading_intro_cluster():
+    from src.postprocess import trim_isolated_ends
+    # a 2-note intro cluster, then an 8s gap to the body -> drop both intro notes
+    objs = _circles([0, 200]) + _circles([8200, 8400, 8600, 8800])
+    removed = trim_isolated_ends(objs)
+    assert removed == 2
+    assert min(o.time for o in objs) == 8200
+
+
 def test_trim_drops_circle_after_trailing_spinner():
     from src.parsing.beatmap import TYPE_SPINNER, HitObject
     from src.postprocess import trim_isolated_ends

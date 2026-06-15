@@ -16,7 +16,8 @@ from .parsing.beatmap import PLAYFIELD_H, PLAYFIELD_W, HitObject, TimingPoint
 
 def trim_isolated_ends(objects: list[HitObject], max_gap_ms: float = 3000.0,
                        trail_gap_ms: float | None = None,
-                       spinner_tail_ms: float = 1200.0) -> int:
+                       spinner_tail_ms: float = 1200.0,
+                       lead_cluster: int = 4) -> int:
     """Drop leading/trailing objects separated from the body by a huge silent gap.
 
     Fixes the "one lone note seconds after the song ends" artefact: if the last
@@ -44,9 +45,15 @@ def trim_isolated_ends(objects: list[HitObject], max_gap_ms: float = 3000.0,
             and 0 <= objs[-1].time - objs[-2].end_time < spinner_tail_ms):
         objs.pop()
         removed += 1
-    while len(objs) >= 2 and objs[1].time - objs[0].end_time > max_gap_ms:
-        objs.pop(0)
-        removed += 1
+    # leading: drop a small intro *cluster* separated from the body by a big gap
+    # (fb: a stray out-of-bounds note + a downbeat note, then ~8 s of silence).
+    # Find the first big gap within the first `lead_cluster` objects and drop
+    # everything before it.
+    for k in range(min(len(objs) - 1, lead_cluster)):
+        if objs[k + 1].time - objs[k].end_time > max_gap_ms:
+            del objs[:k + 1]
+            removed += k + 1
+            break
     objects[:] = objs
     return removed
 

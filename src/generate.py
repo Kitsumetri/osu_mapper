@@ -18,7 +18,7 @@ from .data.signal import decode_kiai, decode_signal
 from .data.timing import estimate_timing_point
 from .model.diffusion import GaussianDiffusion
 from .model.unet import UNet1d
-from .parsing.beatmap import Beatmap, TimingPoint, write_osu
+from .parsing.beatmap import Beatmap, TimingPoint, parse_beatmap, write_osu
 from .postprocess import (
     clamp_slider_endpoints,
     compute_breaks,
@@ -30,7 +30,7 @@ from .postprocess import (
 
 def generate(audio_path, ckpt_path, out_path, steps=100, base=64, use_ema=True,
              snap=True, sr=None, guidance=2.0, match_sr=False, max_iter=3, tol=0.4,
-             snap_divisors=(4, 8, 6)):
+             snap_divisors=(4, 8, 6), timing_ref=None):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     ckpt = torch.load(ckpt_path, map_location=device)
     cargs = ckpt.get("args", {})
@@ -51,8 +51,18 @@ def generate(audio_path, ckpt_path, out_path, steps=100, base=64, use_ema=True,
     pad = (-T) % 16                    # multiple of 16 for clean U-Net striding
     mel_p = np.pad(mel, ((0, 0), (0, pad)))
     cond = torch.from_numpy(mel_p[None].astype(np.float32)).to(device)
-    tp = estimate_timing_point(y)
-    print(f"estimated timing: {60000.0 / tp.beat_length:.1f} BPM, offset {tp.time} ms")
+    # timing: use a reference map's exact BPM+offset if given (the librosa estimate
+    # is only ~28% exact and the offset may be off a beat), else estimate.
+    tp = None
+    if timing_ref:
+        rb = parse_beatmap(timing_ref)
+        ref = next((t for t in rb.timing_points if t.uninherited and t.beat_length > 0), None)
+        if ref:
+            tp = TimingPoint(ref.time, ref.beat_length, ref.meter, True)
+            print(f"reference timing: {60000.0 / tp.beat_length:.1f} BPM, offset {tp.time} ms")
+    if tp is None:
+        tp = estimate_timing_point(y)
+        print(f"estimated timing: {60000.0 / tp.beat_length:.1f} BPM, offset {tp.time} ms")
 
     def _one_pass(sr_used):
         ctx = None
@@ -124,12 +134,16 @@ def main():
     ap.add_argument("--steps", type=int, default=100)
     ap.add_argument("--sr", type=float, default=None, help="target star rating")
     ap.add_argument("--guidance", type=float, default=2.0, help="classifier-free guidance scale")
+    ap.add_argument("--timing-from", default=None,
+                    help="read exact BPM+offset from this reference .osu instead of "
+                         "estimating (use when the song already has a known map)")
     ap.add_argument("--match-sr", action="store_true",
                     help="iterate to hit the requested star rating (corrects SR offset)")
     ap.add_argument("--no-snap", action="store_true", help="disable beat-snapping")
     args = ap.parse_args()
     generate(args.audio, args.ckpt, args.out, steps=args.steps, snap=not args.no_snap,
-             sr=args.sr, guidance=args.guidance, match_sr=args.match_sr)
+             sr=args.sr, guidance=args.guidance, match_sr=args.match_sr,
+             timing_ref=args.timing_from)
 
 
 if __name__ == "__main__":
