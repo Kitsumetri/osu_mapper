@@ -30,19 +30,37 @@ def timestep_embedding(t: torch.Tensor, dim: int) -> torch.Tensor:
 
 
 class ResBlock1d(nn.Module):
-    def __init__(self, in_ch: int, out_ch: int, t_dim: int, groups: int = 8):
+    """Residual conv block with timestep/difficulty conditioning. Two modes:
+    ``adaln=False`` (FiLM): add a learned shift of the embedding after conv1.
+    ``adaln=True`` (DiT adaLN-zero): predict (scale, shift, gate) from the embedding;
+    modulate ``norm2`` by scale/shift and gate the residual. The projection is
+    zero-initialised so each block starts as the identity/skip and eases in."""
+
+    def __init__(self, in_ch: int, out_ch: int, t_dim: int, groups: int = 8,
+                 adaln: bool = True):
         super().__init__()
+        self.adaln = adaln
         g = math.gcd(groups, in_ch)
         self.norm1 = nn.GroupNorm(g, in_ch)
         self.conv1 = nn.Conv1d(in_ch, out_ch, 3, padding=1)
-        self.time = nn.Linear(t_dim, out_ch)
         g2 = math.gcd(groups, out_ch)
         self.norm2 = nn.GroupNorm(g2, out_ch)
         self.conv2 = nn.Conv1d(out_ch, out_ch, 3, padding=1)
         self.skip = nn.Conv1d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
+        if adaln:
+            self.ada = nn.Linear(t_dim, out_ch * 3)
+            nn.init.zeros_(self.ada.weight)
+            nn.init.zeros_(self.ada.bias)   # scale=shift=gate=0 -> block starts as skip(x)
+        else:
+            self.time = nn.Linear(t_dim, out_ch)
 
     def forward(self, x, t_emb):
         h = self.conv1(F.silu(self.norm1(x)))
+        if self.adaln:
+            scale, shift, gate = self.ada(F.silu(t_emb)).chunk(3, dim=-1)
+            h = self.norm2(h) * (1 + scale[:, :, None]) + shift[:, :, None]
+            h = self.conv2(F.silu(h))
+            return self.skip(x) + gate[:, :, None] * h
         h = h + self.time(t_emb)[:, :, None]
         h = self.conv2(F.silu(self.norm2(h)))
         return h + self.skip(x)
@@ -115,6 +133,7 @@ class UNet1d(nn.Module):
         attn: bool = True,
         ctx_dim: int = 0,
         attn_levels: int = 2,
+        adaln: bool = True,
     ):
         super().__init__()
         self.sig_channels = sig_channels
@@ -136,7 +155,7 @@ class UNet1d(nn.Module):
         self.down_attn = nn.ModuleList()
         prev = base
         for i, ch in enumerate(chs):
-            self.downs.append(ResBlock1d(prev, ch, t_dim))
+            self.downs.append(ResBlock1d(prev, ch, t_dim, adaln=adaln))
             # attention at the ``attn_levels`` deepest (coarsest) levels to bound
             # cost; raise it to give the model longer-range pattern context.
             use_attn = attn and i >= len(chs) - attn_levels
@@ -144,15 +163,15 @@ class UNet1d(nn.Module):
             self.down_samps.append(Down(ch))
             prev = ch
 
-        self.mid1 = ResBlock1d(prev, prev, t_dim)
+        self.mid1 = ResBlock1d(prev, prev, t_dim, adaln=adaln)
         self.mid_attn = AttnBlock1d(prev) if attn else nn.Identity()
-        self.mid2 = ResBlock1d(prev, prev, t_dim)
+        self.mid2 = ResBlock1d(prev, prev, t_dim, adaln=adaln)
 
         self.up_samps = nn.ModuleList()
         self.ups = nn.ModuleList()
         for ch in reversed(chs):
             self.up_samps.append(Up(prev))
-            self.ups.append(ResBlock1d(prev + ch, ch, t_dim))
+            self.ups.append(ResBlock1d(prev + ch, ch, t_dim, adaln=adaln))
             prev = ch
 
         self.out_norm = nn.GroupNorm(math.gcd(8, prev), prev)

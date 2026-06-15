@@ -22,18 +22,27 @@ def test_unet_forward_with_attention():
 
 def test_unet_difficulty_conditioning():
     ctx_dim = 6
-    m = UNet1d(C_SIG, C_COND, base=16, mults=(1, 2), t_dim=32, attn=False, ctx_dim=ctx_dim)
     x, cond, t = torch.randn(B, C_SIG, T), torch.randn(B, C_COND, T), torch.randint(0, 1000, (B,))
     ctx = torch.rand(B, ctx_dim)
-    # conditioned, unconditioned (None), and CFG-dropped all run and match shape
-    assert m(x, cond, t, ctx=ctx).shape == (B, C_SIG, T)
-    assert m(x, cond, t, ctx=None).shape == (B, C_SIG, T)
     drop = torch.tensor([True, False])
-    assert m(x, cond, t, ctx=ctx, ctx_drop=drop).shape == (B, C_SIG, T)
-    # ctx changes the output (conditioning actually wired in)
-    a = m(x, cond, t, ctx=ctx)
-    b = m(x, cond, t, ctx=None)
-    assert not torch.allclose(a, b)
+    for adaln in (False, True):
+        m = UNet1d(C_SIG, C_COND, base=16, mults=(1, 2), t_dim=32, attn=False,
+                   ctx_dim=ctx_dim, adaln=adaln)
+        # conditioned, unconditioned (None), and CFG-dropped all run and match shape
+        assert m(x, cond, t, ctx=ctx).shape == (B, C_SIG, T)
+        assert m(x, cond, t, ctx=None).shape == (B, C_SIG, T)
+        assert m(x, cond, t, ctx=ctx, ctx_drop=drop).shape == (B, C_SIG, T)
+        if adaln:
+            # adaLN-zero gates conditioning to zero at init (it eases in during
+            # training), so perturb the ada projections to test the ctx wiring.
+            with torch.no_grad():
+                for mod in m.modules():
+                    if hasattr(mod, "ada"):
+                        mod.ada.weight.normal_(0, 0.1)
+        # ctx changes the output (conditioning actually wired in)
+        a = m(x, cond, t, ctx=ctx)
+        b = m(x, cond, t, ctx=None)
+        assert not torch.allclose(a, b), f"ctx has no effect (adaln={adaln})"
 
 
 def test_timestep_embedding_shape():
