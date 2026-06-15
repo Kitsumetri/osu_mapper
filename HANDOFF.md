@@ -1,8 +1,8 @@
 # Agent handoff — osu_mapper
 
-Full working context for a fresh agent. Read this first, then `README.md` (usage +
-data/run layout), `TECH_REPORT.md` (math), `RESEARCH.md` (design + v5 plans),
-`RESULTS.md` (run history).
+Full working context for a fresh agent. **New session? Start with `NEW_AGENT_PROMPT.md`**,
+then this file, then `README.md` (usage + data/run layout), `TECH_REPORT.md` (math),
+`RESEARCH.md` (design + roadmap), `RESULTS.md` (run history).
 
 ## 1. What this is
 
@@ -73,7 +73,10 @@ uv run python -m src.evaluate --audio song.mp3 --ckpt runs/<id>/ckpt/last.pt --s
   spinner merge, `generate --timing-from <ref.osu>` (exact BPM/offset), package_map keeps
   generated difficulty. In-game: "way better, fixes helped, kiai generates." Branch
   `feat/v5-slider-style` — **user will push + PR to main.**
-- **Active branch `feat/v6-sv-adaln`** (off v5): the v6 batch (see §6 + RESEARCH §10.6).
+- **Active branch `feat/v6-sv-adaln`** (off v5): v6 = **adaLN-zero** (DONE, draft-validated:
+  loss 0.18→0.028 clean) + **gold data** (`data/processed/ranked-v6`, 25,073 maps, 100% kiai
+  + single-BPM + hitsounds≥10%, SR 1.1–10, 17-ch). **Per-slider SV reverted** (structural,
+  §10.6.A). **Next: the full v6 train (GPU, user runs)** — see §6 + RESEARCH §10.6.
 - **Env**: `uv` venv, **torch 2.11.0+cu128**. `--compile` wired but Windows-blocked (no MSVC).
   `data/processed/ranked-v5` (17-ch) on disk; `artifacts/reference_stats.json` = 31,362-map ref.
 - **Git**: I cannot push — the user pushes. Commit locally with descriptive messages.
