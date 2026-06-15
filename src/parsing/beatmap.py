@@ -64,7 +64,6 @@ class HitObject:
     slides: int = 1
     length: float = 0.0  # pixel length
     end_time: int = 0  # computed for sliders/spinners
-    sv: float = 1.0  # per-slider slider-velocity (decode-side; emitted as inherited point)
 
     @property
     def is_circle(self) -> bool:

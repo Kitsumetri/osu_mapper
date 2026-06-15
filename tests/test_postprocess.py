@@ -131,34 +131,6 @@ def test_compute_breaks_marks_big_gaps_only():
     assert compute_breaks(_circles([0, 200, 400, 600])) == []
 
 
-def test_assign_slider_velocity_snaps_duration_via_sv():
-    from src.parsing.beatmap import TYPE_SLIDER, HitObject
-    from src.postprocess import assign_slider_velocity
-    tp = TimingPoint(0, 400.0, 4, True)   # beat 400, 1/4 = 100ms
-    s = HitObject(x=0, y=0, time=0, type=TYPE_SLIDER, end_time=250, length=280.0,
-                  curve_type="L", curve_points=[(100, 0)], slides=1)
-    nxt = HitObject(x=0, y=0, time=1000, type=TYPE_CIRCLE, end_time=1000)
-    assign_slider_velocity([s, nxt], tp, slider_multiplier=1.4)
-    dur = s.end_time - s.time
-    assert dur % 100 == 0 and s.sv > 0           # duration on the 1/4 grid, SV set
-    rendered = s.length / (1.4 * 100 * s.sv) * 400 * s.slides   # osu's slider duration
-    assert abs(rendered - dur) < 1               # length+SV render exactly that duration
-
-
-def test_build_timing_carries_sectioned_sv_and_kiai():
-    from src.parsing.beatmap import TYPE_SLIDER, HitObject
-    from src.postprocess import build_timing
-    base = TimingPoint(0, 400.0, 4, True)
-    sls = [HitObject(x=0, y=0, time=t, type=TYPE_SLIDER, end_time=t + 200, sv=sv)
-           for t, sv in [(100, 1.5), (500, 1.5), (900, 0.75)]]
-    pts = build_timing(base, sls, kiai_spans=[(1000, 2000)])
-    inh = [p for p in pts if not p.uninherited]
-    svs = [round(p.sv, 2) for p in inh]
-    assert 1.5 in svs and 0.75 in svs                       # SV changes emitted
-    assert svs.count(1.5) == 1                               # consecutive equal SV deduped
-    assert any(p.kiai for p in inh)                          # kiai carried on an inherited point
-
-
 def test_snap_slider_ends_to_grid():
     from src.parsing.beatmap import TYPE_SLIDER
     from src.postprocess import snap_slider_ends

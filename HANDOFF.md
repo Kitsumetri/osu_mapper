@@ -84,9 +84,9 @@ One re-preprocess + fresh train bundling the model-side wins that v5's decode fi
 1. **Gold data** — `preprocess --gold` (ranked + kiai + single-BPM + hitsounds≥10% + 1<SR<10;
    code DONE, manifest fields added). User refreshed `osu!.db` + added maps. *Re-preprocess
    with the v6 encoding (below) when the channels are final.*
-2. ✅ **Slider velocity (SV)** — DONE, **decode-side** (no channel): `postprocess.
-   assign_slider_velocity` + `build_timing` snap slider duration via SV keeping geometry,
-   sectioned (real-map-like), emitted as inherited points. Works on the v5 model.
+2. ❌ **Slider velocity (SV)** — decode-side per-slider attempt REVERTED (too many SV sections;
+   SV is structural like kiai, not per-slider geometry). Proper SV = learned/structural, future
+   v6+ (RESEARCH §10.6.A).
 3. ✅ **adaLN-zero conditioning** — DONE (`--adaln`, default on). DiT per-block scale/shift/gate.
 4. **Gold data** — `preprocess --gold` (17-ch) → `ranked-v6`. Then **fresh train** (adaLN) →
    eval/package `[AI-v6]`. *This is the remaining v6 step (GPU; user runs it).*

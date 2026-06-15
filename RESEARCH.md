@@ -602,17 +602,20 @@ signal. User has new ranked/loved maps to add → refresh `osu!.db` (open osu!) 
 One re-preprocess + fresh train. Targets the v5 model-side residue: same-speed sliders,
 inconsistent kiai, weak hitsounds, density gaps. Three changes:
 
-### A. Slider velocity (SV) — DONE, decode-side (no channel)
-v5 ignored SV (every slider SV=1, snapped by distorting `length`). **Key realisation:** given
-the model's anchor geometry (→ pixel length) and the hold-span (→ duration), the SV is
-*determined* (`SV = length·beat·slides/(SM·100·dur)`) — a separate SV channel is redundant. So
-SV is **decode-side** (`postprocess.assign_slider_velocity` + `build_timing`, no 18th channel,
-works on the v5 model): snap each slider's duration to the grid and set its SV, keeping the
-curve geometry; emit it as an inherited timing point. SV is **sectioned** (hold a section SV,
-change only on a >`section_tol` jump) so we get ~real-map SV variety (e.g. 24 section SVs / 77
-points across 177 sliders, range 0.5–2.4) not one point per slider. `build_timing` also folds
-kiai into the same inherited-point list. `HitObject` gained an `sv` field. **v6 signal stays
-17-ch.**
+### A. Slider velocity (SV) — REVERTED (the decode-side approach was wrong)
+First attempt derived SV per-slider from geometry/duration and "sectioned" it — but that gave
+~24 SVs / 77 points (user: *"terrible"*). **Why it's wrong:** SV is **not** a per-slider
+geometric consequence; it's a **structural/stylistic** choice mappers make in a few **coarse
+sections, like kiai** (per user, an experienced mapper): *slow part → low SV; drop → SV≈1 or
+above; most of the map ≈1; occasional **fast 1–6 s burst** when the song calls for fast
+sliders.* Real maps have **few** SV sections, tied to **song structure**, not per-slider noise.
+Reverted to clean SV=1 (`snap_slider_ends`, v5 behaviour).
+
+**The right way (future v6+):** SV must be **learned/structural**, e.g. (a) an **SV channel**
+the model learns (it reproduces where real mappers put coarse SV changes — naturally sparse),
+or (b) a **structural heuristic** tied to mel energy / kiai (low SV in quiet intros/breakdowns,
+≈1 elsewhere, rare fast burst). Either way: **coarse, few sections, structure-aligned.** Analyse
+real SV maps for the typical section count/diversity first. Not in this v6 batch.
 
 ### B. adaLN-zero conditioning
 Replace the additive FiLM (`h += time(t_emb)`) with **DiT adaLN-zero**: each `ResBlock1d`
@@ -625,9 +628,9 @@ contained upgrade. Model-only change (hermetic-testable); fresh train (can't loa
 `preprocess --gold` (code DONE), 17-ch → `ranked-v6`.
 
 ### Order / status
-✅ **A (SV, decode-side)** and ✅ **B (adaLN-zero, model)** DONE. Remaining: re-preprocess
-`ranked-v6` (gold, **17-ch**) → fresh train (adaLN) → eval/package `[AI-v6]`. Optionally A/B
-adaLN vs FiLM. SV already works on the v5 model (decode-side).
+✅ **B (adaLN-zero)** DONE. ❌ **A (SV)** reverted (structural-SV deferred, see above).
+Remaining: re-preprocess `ranked-v6` (gold, **17-ch**) → fresh train (adaLN) → eval/package
+`[AI-v6]`. Optionally A/B adaLN vs FiLM.
 
 ## 11. Audit follow-ups (external review 2026-06-14)
 
