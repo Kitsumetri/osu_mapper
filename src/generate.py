@@ -20,9 +20,10 @@ from .model.diffusion import GaussianDiffusion
 from .model.unet import UNet1d
 from .parsing.beatmap import Beatmap, TimingPoint, parse_beatmap, write_osu
 from .postprocess import (
+    assign_slider_velocity,
+    build_timing,
     clamp_slider_endpoints,
     compute_breaks,
-    snap_slider_ends,
     snap_to_grid,
     trim_isolated_ends,
 )
@@ -93,16 +94,14 @@ def generate(audio_path, ckpt_path, out_path, steps=100, base=64, use_ema=True,
             # on the 1/8 and 1/6 grids too, so a 1/4-only snap drags those onto the
             # wrong 1/4 line and wrecks the rhythm (play feedback).
             snap_to_grid(objects, tp, divisors=snap_divisors)
-            snap_slider_ends(objects, tp, bm.slider_multiplier)  # snap slider ends
-        # keep slider tails inside the playfield (must run after length-changing
-        # snap_slider_ends, before breaks/write which read end_time gaps)
+            # per-slider (sectioned) SV: snap slider duration to the grid via velocity,
+            # keeping the curve geometry (replaces length-distorting snap_slider_ends).
+            assign_slider_velocity(objects, tp, bm.slider_multiplier)
+        # cap any SV-extended tail to the playfield (after length is final)
         clamp_slider_endpoints(objects)
         breaks = compute_breaks(objects)
-        timing = [tp]
-        for ks, ke in decode_kiai(sig):
-            timing.append(TimingPoint(ks, -100.0, tp.meter, False, effects=1))
-            timing.append(TimingPoint(ke, -100.0, tp.meter, False, effects=0))
-        timing.sort(key=lambda t: t.time)
+        # unified timing: BPM + inherited points carrying SV + kiai state
+        timing = build_timing(tp, objects, decode_kiai(sig))
         write_osu(bm, objects, out_path, timing_points=timing, breaks=breaks)
         return objects
 

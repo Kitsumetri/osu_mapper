@@ -602,15 +602,17 @@ signal. User has new ranked/loved maps to add → refresh `osu!.db` (open osu!) 
 One re-preprocess + fresh train. Targets the v5 model-side residue: same-speed sliders,
 inconsistent kiai, weak hitsounds, density gaps. Three changes:
 
-### A. SV channel (learn slider velocity)
-v5 ignores SV (every slider SV=1). Real maps vary it (slow build-ups, fast kiai). Add a
-**dedicated SV channel** (signal 17→18, `CH_SLIDER_SV=17`): for each slider encode the real
-multiplier `bm._sv_at(time)` as `clip(log2(sv)/2, -1, 1)` held over the slider span (baseline
-0 = SV 1×, range 0.25×–4×). Store the decoded SV on the `HitObject` (new `sv` field). Decode →
-`generate` emits an **inherited timing point per SV change** (dedupe consecutive equal SV), and
-the slider snap becomes **SV-aware** (snap *duration* by nudging SV, keeping the anchor geometry
-length — solves the audit's S-11 / §11 5.1 shape-vs-rhythm tension *from learned data*, not a
-heuristic). This is the proper version of the rejected decode-side per-slider SV.
+### A. Slider velocity (SV) — DONE, decode-side (no channel)
+v5 ignored SV (every slider SV=1, snapped by distorting `length`). **Key realisation:** given
+the model's anchor geometry (→ pixel length) and the hold-span (→ duration), the SV is
+*determined* (`SV = length·beat·slides/(SM·100·dur)`) — a separate SV channel is redundant. So
+SV is **decode-side** (`postprocess.assign_slider_velocity` + `build_timing`, no 18th channel,
+works on the v5 model): snap each slider's duration to the grid and set its SV, keeping the
+curve geometry; emit it as an inherited timing point. SV is **sectioned** (hold a section SV,
+change only on a >`section_tol` jump) so we get ~real-map SV variety (e.g. 24 section SVs / 77
+points across 177 sliders, range 0.5–2.4) not one point per slider. `build_timing` also folds
+kiai into the same inherited-point list. `HitObject` gained an `sv` field. **v6 signal stays
+17-ch.**
 
 ### B. adaLN-zero conditioning
 Replace the additive FiLM (`h += time(t_emb)`) with **DiT adaLN-zero**: each `ResBlock1d`
@@ -620,11 +622,12 @@ the residual `x + gate·block(...)`. Gives difficulty multiplicative control; th
 contained upgrade. Model-only change (hermetic-testable); fresh train (can't load v5 ckpt).
 
 ### C. Gold data
-`preprocess --gold` (code DONE) but re-run with the v6 18-ch encoding once A lands → `ranked-v6`.
+`preprocess --gold` (code DONE), 17-ch → `ranked-v6`.
 
 ### Order / status
-adaLN (B, contained) → SV channel (A) → re-preprocess `ranked-v6` (gold+18-ch) → fresh train →
-eval/package `[AI-v6]`. Optionally A/B adaLN vs FiLM and SV vs no-SV.
+✅ **A (SV, decode-side)** and ✅ **B (adaLN-zero, model)** DONE. Remaining: re-preprocess
+`ranked-v6` (gold, **17-ch**) → fresh train (adaLN) → eval/package `[AI-v6]`. Optionally A/B
+adaLN vs FiLM. SV already works on the v5 model (decode-side).
 
 ## 11. Audit follow-ups (external review 2026-06-14)
 

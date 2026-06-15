@@ -84,12 +84,12 @@ One re-preprocess + fresh train bundling the model-side wins that v5's decode fi
 1. **Gold data** — `preprocess --gold` (ranked + kiai + single-BPM + hitsounds≥10% + 1<SR<10;
    code DONE, manifest fields added). User refreshed `osu!.db` + added maps. *Re-preprocess
    with the v6 encoding (below) when the channels are final.*
-2. **SV channel** (learn slider velocity) — encode each slider's real SV into a new channel
-   (channels 17→18), decode → emit inherited timing points + SV-aware slider snap. Fixes the
-   "all sliders same speed" gap; replaces the rejected decode-side per-slider SV.
-3. **adaLN-zero conditioning** — replace additive FiLM with DiT-style per-block scale/shift/gate
-   (gate zero-init) so difficulty modulates multiplicatively. Contained model change.
-4. Then re-preprocess `ranked-v6` (gold + 18-ch) → fresh train → eval/package `[AI-v6]`.
+2. ✅ **Slider velocity (SV)** — DONE, **decode-side** (no channel): `postprocess.
+   assign_slider_velocity` + `build_timing` snap slider duration via SV keeping geometry,
+   sectioned (real-map-like), emitted as inherited points. Works on the v5 model.
+3. ✅ **adaLN-zero conditioning** — DONE (`--adaln`, default on). DiT per-block scale/shift/gate.
+4. **Gold data** — `preprocess --gold` (17-ch) → `ranked-v6`. Then **fresh train** (adaLN) →
+   eval/package `[AI-v6]`. *This is the remaining v6 step (GPU; user runs it).*
 
 Carry-over / parallel: SR-offset bake (§10.1.B), density conditioning for the 0.6–0.8 s gaps,
 a real timing model for novel songs ("super timing", §10.2), flow/pattern modelling (§10.2).
