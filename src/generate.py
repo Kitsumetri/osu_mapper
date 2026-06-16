@@ -6,6 +6,7 @@ python -m src.generate --audio song.mp3 --ckpt checkpoints/model_last.pt --out o
 from __future__ import annotations
 
 import argparse
+from collections import namedtuple
 from pathlib import Path
 
 import numpy as np
@@ -27,11 +28,19 @@ from .postprocess import (
     trim_isolated_ends,
 )
 
+# a loaded denoiser + its sampler, ready to reuse across many generate() calls
+LoadedModel = namedtuple("LoadedModel", "model diff ctx_dim device")
+# prepared audio conditioning: mel batch, true len T, padded len, timing point
+PreparedAudio = namedtuple("PreparedAudio", "cond t_len t_full tp")
 
-def generate(audio_path, ckpt_path, out_path, steps=100, base=64, use_ema=True,
-             snap=True, sr=None, guidance=2.0, match_sr=False, max_iter=3, tol=0.4,
-             snap_divisors=(4, 8, 6), timing_ref=None):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+def load_model(ckpt_path, base=64, use_ema=True, device=None) -> LoadedModel:
+    """Load a checkpoint into an eval-ready U-Net + diffusion sampler.
+
+    Reuse the result across generate() calls (e.g. an SR sweep) to avoid
+    reloading the ~1 GB checkpoint each time.
+    """
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     ckpt = torch.load(ckpt_path, map_location=device)
     cargs = ckpt.get("args", {})
     base = cargs.get("base", base)
@@ -45,11 +54,19 @@ def generate(audio_path, ckpt_path, out_path, steps=100, base=64, use_ema=True,
     model.load_state_dict(weights)
     model.eval()
     diff = GaussianDiffusion(timesteps=cargs.get("timesteps", 1000), device=device)
+    return LoadedModel(model, diff, ctx_dim, device)
 
+
+def prepare_audio(audio_path, device, timing_ref=None) -> PreparedAudio:
+    """Decode audio once into the mel conditioning + a timing point.
+
+    Reuse across generate() calls for the same song (e.g. an SR sweep) to avoid
+    re-decoding + re-running beat estimation each time.
+    """
     y = load_audio(audio_path)          # decode once, reuse for mel + timing
     mel = log_mel(y)                    # (n_mels, T)
-    T = mel.shape[1]
-    pad = (-T) % 16                    # multiple of 16 for clean U-Net striding
+    t_len = mel.shape[1]
+    pad = (-t_len) % 16                # multiple of 16 for clean U-Net striding
     mel_p = np.pad(mel, ((0, 0), (0, pad)))
     cond = torch.from_numpy(mel_p[None].astype(np.float32)).to(device)
     # timing: use a reference map's exact BPM+offset if given (the librosa estimate
@@ -64,12 +81,24 @@ def generate(audio_path, ckpt_path, out_path, steps=100, base=64, use_ema=True,
     if tp is None:
         tp = estimate_timing_point(y)
         print(f"estimated timing: {60000.0 / tp.beat_length:.1f} BPM, offset {tp.time} ms")
+    return PreparedAudio(cond, t_len, mel_p.shape[1], tp)
+
+
+def generate(audio_path, ckpt_path=None, out_path="generated.osu", steps=100, base=64,
+             use_ema=True, snap=True, sr=None, guidance=2.0, match_sr=False, max_iter=3,
+             tol=0.4, snap_divisors=(4, 8, 6), timing_ref=None, loaded=None, prepared=None):
+    if loaded is None:
+        loaded = load_model(ckpt_path, base=base, use_ema=use_ema)
+    model, diff, ctx_dim, device = loaded
+    if prepared is None:
+        prepared = prepare_audio(audio_path, device, timing_ref)
+    cond, T, t_full, tp = prepared
 
     def _one_pass(sr_used):
         ctx = None
         if ctx_dim and sr_used is not None:
             ctx = torch.tensor([target_context(sr_used)], dtype=torch.float32, device=device)
-        sig = diff.ddim_sample(model, cond, (1, N_SIGNAL_CHANNELS, mel_p.shape[1]),
+        sig = diff.ddim_sample(model, cond, (1, N_SIGNAL_CHANNELS, t_full),
                                steps=steps, ctx=ctx, guidance=guidance)
         sig = sig[0, :, :T].float().cpu().numpy()
         objects = decode_signal(sig)

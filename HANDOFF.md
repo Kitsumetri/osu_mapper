@@ -51,7 +51,7 @@ audio.mp3 ─► log-mel (64×T) ──────┐
 | `src/data/{audio,timing,preprocess,dataset}.py` | log-mel / BPM est / crawl→manifest / torch Dataset (+flip aug) |
 | `src/model/{unet,diffusion}.py` | denoiser + DDPM/DDIM/CFG |
 | `src/train.py` | training loop (bf16, EMA, cosine LR, CFG drop, val split, resume, `--compile`) |
-| `src/generate.py` | audio→.osu (DDIM+CFG, `--sr`, `--guidance`, `--match-sr`) |
+| `src/generate.py` | audio→.osu (DDIM+CFG, `--sr`/`--guidance`/`--match-sr`/`--match-iter`/`--timing-from`); `load_model`+`prepare_audio` helpers let an SR sweep reuse one checkpoint/audio load |
 | `src/postprocess.py` | beat-snap, slider clamp, trim, `[Events]` breaks |
 | `src/{metrics,corpus_stats,evaluate,package_map}.py` | metrics / reference dists / SR-sweep eval / package a Songs folder |
 | `tests/` | 94 hermetic tests (no dataset/GPU) |
