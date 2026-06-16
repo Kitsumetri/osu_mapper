@@ -107,15 +107,29 @@ def generate(audio_path, ckpt_path, out_path, steps=100, base=64, use_ema=True,
     if match_sr and sr is not None and ctx_dim:
         # feedback loop: nudge the context SR until the *achieved* SR (rosu) hits
         # the requested target, correcting the model's systematic SR offset.
+        # SR is stochastic per sample, so keep the *closest* pass, not the last.
+        import shutil
+
         from .difficulty import star_rating
+        best_path = str(out_path) + ".best"
+        best_objs, best_err = None, float("inf")
         cur = sr
         for it in range(max_iter):
             objs = _one_pass(cur)
             achieved = star_rating(out_path)
             print(f"  [match-sr] iter {it}: ctx={cur:.2f} -> achieved {achieved}")
-            if achieved is None or abs(achieved - sr) <= tol:
+            if achieved is None:
+                break
+            err = abs(achieved - sr)
+            if err < best_err:
+                best_err, best_objs = err, objs
+                shutil.copyfile(out_path, best_path)
+            if err <= tol:
                 break
             cur = float(min(11.0, max(1.0, cur + 0.8 * (sr - achieved))))
+        if best_objs is not None:
+            shutil.move(best_path, out_path)
+            objs = best_objs
     else:
         if ctx_dim and sr is not None:
             print(f"conditioning on target star rating {sr:.2f}* (guidance {guidance})")
@@ -138,11 +152,13 @@ def main():
                          "estimating (use when the song already has a known map)")
     ap.add_argument("--match-sr", action="store_true",
                     help="iterate to hit the requested star rating (corrects SR offset)")
+    ap.add_argument("--match-iter", type=int, default=3,
+                    help="max --match-sr iterations (raise for high/noisy SR targets)")
     ap.add_argument("--no-snap", action="store_true", help="disable beat-snapping")
     args = ap.parse_args()
     generate(args.audio, args.ckpt, args.out, steps=args.steps, snap=not args.no_snap,
              sr=args.sr, guidance=args.guidance, match_sr=args.match_sr,
-             timing_ref=args.timing_from)
+             max_iter=args.match_iter, timing_ref=args.timing_from)
 
 
 if __name__ == "__main__":
