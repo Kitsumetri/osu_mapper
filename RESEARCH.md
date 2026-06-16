@@ -629,8 +629,49 @@ contained upgrade. Model-only change (hermetic-testable); fresh train (can't loa
 
 ### Order / status
 ✅ **B (adaLN-zero)** DONE. ❌ **A (SV)** reverted (structural-SV deferred, see above).
-Remaining: re-preprocess `ranked-v6` (gold, **17-ch**) → fresh train (adaLN) → eval/package
-`[AI-v6]`. Optionally A/B adaLN vs FiLM.
+✅ Re-preprocessed `ranked-v6` (gold, 17-ch) → trained (adaLN) → eval/packaged `[AI-v6]`. DONE.
+
+## 10.7 v7 batch — "patterns" (ACTIVE, design 2026-06-16)
+
+**v6 play feedback:** (1) rhythm better than v5, still imperfect; (2) hitsounds 5/10
+(persistent every version); (3) **patterns now the #1 issue** — beginner-level jumps/
+streams; (4) kiai fluctuates run-to-run; (5) too many straight line-sliders (user wants
+~50-65% curved).
+
+### Phase 1 analysis — measure before building (`analyze_phase1.py`, real 397 vs v6 sweep)
+| measure | real | v6 | |
+|---|---|---|---|
+| mean / std spacing px | 133.5 / 77.3 | 119.7 / 66.2 | compressed |
+| jump_ratio / stream_ratio | 0.205 / 0.149 | 0.119 / 0.101 | ~½–⅔ of real |
+| turn angle° / reversal | 88.4 / 0.123 | 85.1 / 0.118 | **≈ real** |
+| visible-curve % (sagitta≥10px) | 38.1 | 13.4 | ~⅓ of real |
+| median slider sagitta px | 4.8 | **0.0** | collapsed straight |
+| SV distinct vals / changes per map | 5 / 10 | 1 / 0 | v6 = none |
+
+**Root cause (key):** patterns (#3) and straight sliders (#5) are the **same bug —
+under-dispersion from ε-MSE** (the model regresses spatial outputs toward the mean →
+compressed spacing *and* collinear slider anchors). **Flow angles are already ≈ real**, so
+**attention is NOT the bottleneck** — objective/representation > attention. Decode can't fix
+sliders (the type-B classifier already matches visible curvature; the model just makes few
+curves). Real SV is **structured + sparse** (~5 vals / ~10 changes per map, mostly ≤1.2×
+with a rare 10× burst) → validates a **learned SV channel**. NB user's 50-65% target is
+*above* real-corpus ~25-38% (stylistic). Added `metrics.curved_slider_ratio` (sagitta-based).
+
+### Phased plan (one variable at a time; P1 gates the rest)
+- **P0** ✅ slider-mix decode probe → concluded decode-bound is wrong lever; added curvature metric.
+- **P1** ✅ analysis above.
+- **P2** ✅ **v-prediction + zero-terminal-SNR** (`--objective v --zero-snr`, §11 5.3) — attacks
+  under-dispersion directly + doubles as the base-160 unblock. Done + hermetic-tested +
+  GPU-smoked (v-loss O(1), ~100× ε scale → not comparable to v6 0.003; LR/grad-clip may
+  want retuning). **NEXT: user trains base-128 v-pred, eval vs Phase-1 baselines.**
+- **P3** attention (RoPE / up-path S-5 / one finer level + grad-checkpointing) — *demoted*
+  by the flow-angle finding; cheap A/B only. Build flash-attn-2 wheel **only if** this makes
+  attention dominate FLOPs (else SDPA's fused backend already suffices, §10.2). fp8/fp4 not
+  worth it (weights ≈0.25 GB; activations are the cost → grad-checkpointing instead).
+- **P4** representation reprocess (ONE pass): flow/Δpos channels + **learned SV channel** +
+  optional curvature cue → `gold-v7` (~18-20 ch); retrain best P2/P3 config.
+- **P5** parallel tracks: kiai segmentation head (#4); hitsound musicality (#2); BPM/offset
+  (try pretrained beat-trackers before a bespoke net).
 
 ## 11. Audit follow-ups (external review 2026-06-14)
 

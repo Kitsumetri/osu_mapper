@@ -7,8 +7,9 @@
 Work autonomously: write code, run it (`uv run …`), fix errors, iterate. Be honest about
 quality — state metrics, don't oversell. **You cannot push**; commit locally with
 descriptive messages (`Co-Authored-By: Claude`), the user pushes + PRs to main. Trust the
-user's (`Kitsumetri`) in-game play/mapping feedback. **Next concrete step:** in-game
-play-test of `[AI-v6]` → promote v6 to release if it beats v5; then structural SV (§6).
+user's (`Kitsumetri`) in-game play/mapping feedback. **Next concrete step:** train the
+**v7 Phase 2** model (`--objective v --zero-snr`, base 128) and eval vs the Phase-1
+pattern baselines (RESEARCH §10.7); v6 is the current candidate awaiting that comparison.
 
 ## 1. What this is
 
@@ -65,7 +66,9 @@ uv run ruff check .
 uv run python -m src.data.preprocess --songs "C:/osu!/Songs" --out data/processed/<tag> --ranked-only --workers 10
 uv run python -m src.train --data data/processed/<tag> --tag <t> --base 128 --crop 4096 --attn-levels 3 --batch 16 --epochs 60 --save-every 5
 #   base 128 is the proven-stable size — base 160 + bf16 DIVERGES (§7). Resume: --resume runs/<id>/ckpt/last.pt
+#   v7 Phase 2 objective: add `--objective v --zero-snr` (v-loss is O(1), ~100x eps; LR/clip may want retuning)
 uv run python -m src.generate --audio song.mp3 --ckpt runs/<id>/ckpt/last.pt --sr 5 --match-sr --out out.osu
+uv run python analyze_phase1.py   # real-vs-generated curvature/spacing/SV probe (track v7 progress)
 uv run python -m src.evaluate --audio song.mp3 --ckpt runs/<id>/ckpt/last.pt --srs 2,3,4,5,6 --ref-stats artifacts/reference_stats.json
 ```
 
@@ -85,7 +88,12 @@ uv run python -m src.evaluate --audio song.mp3 --ckpt runs/<id>/ckpt/last.pt --s
   25,073 maps, 100% kiai + single-BPM + hitsounds≥10%, SR 1.1–10, 17-ch). Eval: SR monotonic,
   in-range 14–17/19, curved sliders solid; vs v5 metrics ~a wash but SR calibration tighter
   (RESULTS v6). Packaged `[AI-v6]` (926 obj). **Per-slider SV reverted** (structural, §10.6.A).
-  **Next: in-game play test → promote to release if good; then structural SV (TODO #2).**
+- **v7 ACTIVE = "patterns"** (RESEARCH §10.7). v6 play feedback: patterns are now the #1
+  issue (beginner jumps/streams), + persistent weak hitsounds, fluctuating kiai, too-straight
+  sliders. **Phase 1 finding:** patterns + straight-sliders = one root cause, **under-dispersion
+  from ε-MSE** (flow angles already ≈ real → attention is *not* the bottleneck). **Phase 2 DONE
+  (code):** v-prediction + zero-terminal-SNR (`--objective v --zero-snr`), hermetic-tested +
+  GPU-smoked. **Next: user trains base-128 v-pred, eval vs Phase-1 baselines** (`analyze_phase1.py`).
 - **Env**: `uv` venv, **torch 2.11.0+cu128**. `--compile` wired but Windows-blocked (no MSVC).
   `data/processed/ranked-v5` (17-ch) on disk; `artifacts/reference_stats.json` = 31,362-map ref.
 - **Git**: I cannot push — the user pushes. Commit locally with descriptive messages.
