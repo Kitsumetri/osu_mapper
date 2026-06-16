@@ -74,6 +74,22 @@ def test_score_against_reference():
     assert by_key["jump_ratio"][5] is True
 
 
+def test_curved_slider_ratio_vs_type():
+    from src.parsing.beatmap import TYPE_SLIDER
+    bm = Beatmap(path=Path("x.osu"), timing_points=[TimingPoint(0, 400.0, 4, True)])
+    # a "bezier" whose anchors are collinear -> looks straight -> sagitta 0
+    flat = HitObject(x=0, y=0, time=0, type=TYPE_SLIDER, end_time=100,
+                     curve_type="B", curve_points=[(50, 0), (100, 0)], length=100)
+    # a genuinely bowed slider -> large sagitta
+    bowed = HitObject(x=0, y=0, time=200, type=TYPE_SLIDER, end_time=300,
+                      curve_type="B", curve_points=[(50, 80), (100, 0)], length=120)
+    bm.hit_objects = [flat, bowed]
+    m = compute_metrics(bm)
+    # both are type "B" but only one is visibly curved
+    assert m["bezier_slider_ratio"] == 1.0
+    assert m["curved_slider_ratio"] == 0.5
+
+
 def test_straight_flow_low_turn():
     from src.parsing.beatmap import TimingPoint
     bm = Beatmap(path=Path("x.osu"), timing_points=[TimingPoint(0, 400.0, 4, True)])

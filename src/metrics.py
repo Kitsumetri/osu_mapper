@@ -19,10 +19,31 @@ from .parsing.beatmap import Beatmap, parse_beatmap
 # spacing thresholds (osu! pixels); playfield is 512x384
 STREAM_MAX_SPACING = 120.0
 JUMP_MIN_SPACING = 200.0
+# a slider counts as *visibly* curved if any control point bows this far (px) off
+# the head->tail chord. Tracks perceived curvature, unlike the B/L type flag (a
+# bezier with near-collinear anchors looks straight): real ranked ~0.38, v6 ~0.13.
+CURVE_SAGITTA_PX = 10.0
 
 
 def _dist(a, b) -> float:
     return math.hypot(a.x - b.x, a.y - b.y)
+
+
+def slider_sagitta(o) -> float:
+    """Max perpendicular bow (px) of a slider's control polygon off its chord.
+
+    0 for a straight slider; grows with visible curvature. Uses the control
+    points, so it reflects shape regardless of the stored curve-type letter.
+    """
+    poly = [(o.x, o.y), *(o.curve_points or [])]
+    if len(poly) < 3:
+        return 0.0
+    (ax, ay), (bx, by) = poly[0], poly[-1]
+    dx, dy = bx - ax, by - ay
+    chord = math.hypot(dx, dy)
+    if chord < 1e-6:
+        return max(math.hypot(px - ax, py - ay) for px, py in poly)
+    return max(abs((px - ax) * dy - (py - ay) * dx) / chord for px, py in poly)
 
 
 def compute_metrics(bm: Beatmap) -> dict:
@@ -101,6 +122,11 @@ def compute_metrics(bm: Beatmap) -> dict:
         "spinner_ratio": round(sum(o.is_spinner for o in objs) / n, 3),
         "bezier_slider_ratio": round(
             sum(o.is_slider and o.curve_type == "B" for o in objs)
+            / max(1, sum(o.is_slider for o in objs)), 3),
+        # visibly-curved sliders (sagitta-based) — the meaningful curvature measure;
+        # bezier_slider_ratio over-counts near-straight beziers (see CURVE_SAGITTA_PX).
+        "curved_slider_ratio": round(
+            sum(o.is_slider and slider_sagitta(o) >= CURVE_SAGITTA_PX for o in objs)
             / max(1, sum(o.is_slider for o in objs)), 3),
         "new_combo_ratio": round(sum(o.is_new_combo for o in objs) / n, 3),
         "mean_spacing_px": round(_mean(spacings), 1),
