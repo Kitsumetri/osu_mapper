@@ -654,8 +654,9 @@ compressed spacing *and* collinear slider anchors). **Flow angles are already �
 **attention is NOT the bottleneck** — objective/representation > attention. Decode can't fix
 sliders (the type-B classifier already matches visible curvature; the model just makes few
 curves). Real SV is **structured + sparse** (~5 vals / ~10 changes per map, mostly ≤1.2×
-with a rare 10× burst) → validates a **learned SV channel**. NB user's 50-65% target is
-*above* real-corpus ~25-38% (stylistic). Added `metrics.curved_slider_ratio` (sagitta-based).
+with a rare 10× burst) → validates a **learned SV channel**. Curve target set to **38-45%**
+visibly-curved (user's choice, just above the corpus ~38% upper bound; v6 is ~13%). Added
+`metrics.curved_slider_ratio` (sagitta-based) to track it.
 
 ### Phased plan (one variable at a time; P1 gates the rest)
 - **P0** ✅ slider-mix decode probe → concluded decode-bound is wrong lever; added curvature metric.
@@ -707,8 +708,9 @@ confidence:
   rather than replacing the representation. +2 ch. Skip if P2 suffices.
 - **C. Curvature cue (conditional).** If sliders stay flat after P2, add a per-slider intended-
   sagitta scalar (held over the span) so the model signals curve-vs-straight intent decoupled
-  from anchor MSE; decode scales L/B + displacement from it. The user's 50-65%-curved target is
-  *above* real-corpus 25-38% → bias this cue / decode threshold once curvature is honest. +1 ch.
+  from anchor MSE; decode scales L/B + displacement from it. **Target 38-45% visibly-curved**
+  (user's choice, just above the corpus ~38% upper bound) → bias this cue / decode threshold
+  once curvature is honest. +1 ch.
 - Bundle whichever of A/B/C survive → `gold-v7` (18-21 ch); retrain best P2/P3 config.
 
 ### P5 design draft — parallel tracks (independent; fit between trains)
