@@ -101,3 +101,43 @@ def test_ddim_deterministic_when_eta_zero():
     torch.manual_seed(123)
     b = diff.ddim_sample(m, cond, (1, C_SIG, T), steps=10, eta=0.0)
     assert torch.allclose(a, b)
+
+
+def test_v_objective_roundtrip():
+    # v target must invert back to the exact x0 and eps it was built from
+    import pytest
+    diff = GaussianDiffusion(timesteps=100, device=DEV, objective="v")
+    x0 = torch.randn(B, C_SIG, T)
+    noise = torch.randn_like(x0)
+    t = torch.randint(0, 100, (B,))
+    x_t = diff.q_sample(x0, t, noise)
+    v = diff.target(x0, t, noise)
+    a = diff.sqrt_acp[t][:, None, None]
+    s = diff.sqrt_one_minus_acp[t][:, None, None]
+    rec_x0, rec_eps = diff._to_x0_eps(v, x_t, a, s)
+    assert torch.allclose(rec_x0, x0, atol=1e-4)
+    assert torch.allclose(rec_eps, noise, atol=1e-4)
+    # eps objective target is just the noise
+    deps = GaussianDiffusion(timesteps=100, device=DEV, objective="eps")
+    assert torch.allclose(deps.target(x0, t, noise), noise)
+    with pytest.raises(ValueError):
+        GaussianDiffusion(timesteps=100, device=DEV, objective="eps", zero_snr=True)
+
+
+def test_zero_terminal_snr_schedule():
+    diff = GaussianDiffusion(timesteps=100, device=DEV, objective="v", zero_snr=True)
+    # terminal alpha_bar driven to 0 (pure noise at the last step); start preserved
+    assert diff.sqrt_acp[-1].abs() < 1e-6
+    base = GaussianDiffusion(timesteps=100, device=DEV)
+    assert torch.allclose(diff.sqrt_acp[0], base.sqrt_acp[0], atol=1e-5)
+    # cumprod stays monotonically non-increasing
+    assert (diff.alphas_cumprod[1:] <= diff.alphas_cumprod[:-1] + 1e-6).all()
+
+
+def test_ddim_v_zero_snr_finite():
+    m = _model()
+    diff = GaussianDiffusion(timesteps=100, device=DEV, objective="v", zero_snr=True)
+    cond = torch.randn(1, C_COND, T)
+    out = diff.ddim_sample(m, cond, (1, C_SIG, T), steps=10, ctx=None, guidance=1.0)
+    assert out.shape == (1, C_SIG, T)
+    assert torch.isfinite(out).all()

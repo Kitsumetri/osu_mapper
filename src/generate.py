@@ -53,7 +53,9 @@ def load_model(ckpt_path, base=64, use_ema=True, device=None) -> LoadedModel:
     weights = ckpt["ema"] if (use_ema and ckpt.get("ema")) else ckpt["model"]
     model.load_state_dict(weights)
     model.eval()
-    diff = GaussianDiffusion(timesteps=cargs.get("timesteps", 1000), device=device)
+    diff = GaussianDiffusion(timesteps=cargs.get("timesteps", 1000), device=device,
+                             objective=cargs.get("objective", "eps"),
+                             zero_snr=cargs.get("zero_snr", False))
     return LoadedModel(model, diff, ctx_dim, device)
 
 
@@ -86,7 +88,8 @@ def prepare_audio(audio_path, device, timing_ref=None) -> PreparedAudio:
 
 def generate(audio_path, ckpt_path=None, out_path="generated.osu", steps=100, base=64,
              use_ema=True, snap=True, sr=None, guidance=2.0, match_sr=False, max_iter=3,
-             tol=0.4, snap_divisors=(4, 8, 6), timing_ref=None, loaded=None, prepared=None):
+             tol=0.4, snap_divisors=(4, 8, 6), timing_ref=None, loaded=None, prepared=None,
+             guidance_rescale=0.0):
     if loaded is None:
         loaded = load_model(ckpt_path, base=base, use_ema=use_ema)
     model, diff, ctx_dim, device = loaded
@@ -99,7 +102,8 @@ def generate(audio_path, ckpt_path=None, out_path="generated.osu", steps=100, ba
         if ctx_dim and sr_used is not None:
             ctx = torch.tensor([target_context(sr_used)], dtype=torch.float32, device=device)
         sig = diff.ddim_sample(model, cond, (1, N_SIGNAL_CHANNELS, t_full),
-                               steps=steps, ctx=ctx, guidance=guidance)
+                               steps=steps, ctx=ctx, guidance=guidance,
+                               guidance_rescale=guidance_rescale)
         sig = sig[0, :, :T].float().cpu().numpy()
         objects = decode_signal(sig)
         trim_isolated_ends(objects)
@@ -176,6 +180,8 @@ def main():
     ap.add_argument("--steps", type=int, default=100)
     ap.add_argument("--sr", type=float, default=None, help="target star rating")
     ap.add_argument("--guidance", type=float, default=2.0, help="classifier-free guidance scale")
+    ap.add_argument("--guidance-rescale", type=float, default=0.0,
+                    help="rescale guided x0 toward conditional std (0-1; for v/zero-SNR ckpts)")
     ap.add_argument("--timing-from", default=None,
                     help="read exact BPM+offset from this reference .osu instead of "
                          "estimating (use when the song already has a known map)")
@@ -187,7 +193,8 @@ def main():
     args = ap.parse_args()
     generate(args.audio, args.ckpt, args.out, steps=args.steps, snap=not args.no_snap,
              sr=args.sr, guidance=args.guidance, match_sr=args.match_sr,
-             max_iter=args.match_iter, timing_ref=args.timing_from)
+             max_iter=args.match_iter, timing_ref=args.timing_from,
+             guidance_rescale=args.guidance_rescale)
 
 
 if __name__ == "__main__":

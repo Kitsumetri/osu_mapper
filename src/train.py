@@ -131,7 +131,9 @@ def train(args):
     n_params = sum(p.numel() for p in model.parameters())
     print(f"model: {n_params / 1e6:.1f}M params (base={args.base}, attn={args.attn})")
     ema = EMA(model, decay=args.ema) if args.ema > 0 else None
-    diff = GaussianDiffusion(timesteps=args.timesteps, device=device)
+    diff = GaussianDiffusion(timesteps=args.timesteps, device=device,
+                             objective=args.objective, zero_snr=args.zero_snr)
+    print(f"diffusion: objective={args.objective} zero_snr={args.zero_snr}")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4,
                             fused=(device == "cuda"))
     bf16_ok = device == "cuda" and torch.cuda.is_bf16_supported()
@@ -185,9 +187,10 @@ def train(args):
             t = torch.randint(0, diff.timesteps, (b,), device=device, generator=g)
             noise = torch.randn(sig.shape, device=device, generator=g)
             x_t = diff.q_sample(sig, t, noise)
+            target = diff.target(sig, t, noise)
             with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=device == "cuda"):
                 pred = model(x_t, mel, t, ctx=ctx)      # full conditioning (no CFG drop)
-                loss = torch.nn.functional.mse_loss(pred, noise)
+                loss = torch.nn.functional.mse_loss(pred, target)
             tot += loss.item()
             nb += 1
         model.train()
@@ -217,9 +220,10 @@ def train(args):
             t = torch.randint(0, diff.timesteps, (b,), device=device)
             noise = torch.randn_like(sig)
             x_t = diff.q_sample(sig, t, noise)
+            target = diff.target(sig, t, noise)
             with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=device == "cuda"):
                 pred = fwd_model(x_t, mel, t, ctx=ctx, ctx_drop=ctx_drop)
-                loss = torch.nn.functional.mse_loss(pred, noise) / args.accum
+                loss = torch.nn.functional.mse_loss(pred, target) / args.accum
             scaler.scale(loss).backward()
             running += loss.item() * args.accum
             if (i + 1) % args.accum == 0:
@@ -297,6 +301,10 @@ def main():
                     help="prob. of dropping difficulty context (classifier-free guidance)")
     ap.add_argument("--ema", type=float, default=0.999, help="EMA decay (0 disables)")
     ap.add_argument("--timesteps", type=int, default=1000)
+    ap.add_argument("--objective", choices=["eps", "v"], default="eps",
+                    help="prediction target: eps (v1-v6) or v (velocity, v7 sharpness fix)")
+    ap.add_argument("--zero-snr", action="store_true",
+                    help="rescale schedule to zero terminal SNR (requires --objective v)")
     ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--min-objects", type=int, default=50)
