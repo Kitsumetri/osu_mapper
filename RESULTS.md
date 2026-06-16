@@ -2,6 +2,42 @@
 
 Training-run history + generated-map quality (metrics via `src/metrics.py`).
 **Current release: v5** (`runs/20260614-224107-ranked-v5/ckpt/best.pt`, 17-ch).
+**v6 trained + packaged (2026-06-16), awaiting play feedback before promotion.**
+
+## v6 — adaLN-zero + gold data (TRAINED 2026-06-16, awaiting play test)
+
+`runs/20260616-013932-ranked-v6/ckpt/best.pt` (epoch 59, **val 0.00314**). 17-ch,
+**adaLN-zero conditioning** (DiT per-block scale/shift/gate, `--adaln` default on) on
+**gold data** `data/processed/ranked-v6` (**25,073 maps**: ranked + 100% kiai + single-BPM
++ hitsounds≥10% + 1<SR<10), base 128 / crop 4096 / attn_levels 3 / batch 16 / 60 epochs,
+flip aug. Clean convergence, no divergence (~330 s/epoch); 66.1 M params.
+
+**Eval — SR sweep (Headphone Actor, vs `reference_stats.json`):**
+```
+ target  got SR   dens  strm  jump  grid   bez  kiai    hs  in-range
+    2.0    2.82   2.45  0.00  0.02  0.75  0.09  0.21  0.24  14/19
+    3.0    3.29   2.97  0.01  0.04  0.79  0.13  0.11  0.28  16/19
+    4.0    3.59   3.02  0.01  0.03  0.79  0.08  0.00  0.27  17/19
+    5.0    5.24   4.18  0.08  0.07  0.78  0.18  0.10  0.33  16/19
+    6.0    6.52   5.19  0.18  0.12  0.75  0.16  0.14  0.44  17/19
+```
+SR monotonic ✓. bez 0.75–0.79 (curved sliders solid). hitsounds 0.24→0.44 scale with SR
+(real ~0.33). **One flag: kiai 0.00 at SR4** (others 0.10–0.21) — watch in-game given
+gold is 100% kiai. Packaged `[AI-v6]` (target SR5, `--match-sr`→4.90, `--timing-from`
+Collab Expert, 926 obj, CS4/AR9).
+
+**A/B vs v5** (same audio/eval, v5 = `20260614-224107-ranked-v5/ckpt/best.pt`):
+```
+            target:  2.0   3.0   4.0   5.0   6.0
+got SR   v6 (adaLN) 2.82  3.29  3.59  5.24  6.52   in-range 14/16/17/16/17
+         v5         3.01  3.46  4.29  5.79  6.87   in-range 13/16/13/16/18
+```
+Sense-check: v6 SR calibration is **tighter to target** in the low/mid range (v5 over-shoots
+everywhere; v6 close except an SR4 dip), and **more consistent in-range** mid-curve (SR4
+17 vs 13). v5 has marginally more uniform kiai across SRs (0.15–0.23 vs v6's 0.00–0.21 with
+the SR4 outlier) and slightly higher hitsounds. **Static metrics are roughly a wash** — the
+adaLN difficulty-control + gold-data kiai/hitsound consistency wins are the kind that show
+up in play, not corpus stats. Promotion to release pending in-game feedback.
 
 ## v5 — slider-shape + reverse sliders (DONE 2026-06-15)
 

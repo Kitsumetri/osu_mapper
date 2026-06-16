@@ -63,7 +63,7 @@ uv run python -m src.generate --audio song.mp3 --ckpt runs/<id>/ckpt/last.pt --s
 uv run python -m src.evaluate --audio song.mp3 --ckpt runs/<id>/ckpt/last.pt --srs 2,3,4,5,6 --ref-stats artifacts/reference_stats.json
 ```
 
-## 5. Current state (2026-06-15)
+## 5. Current state (2026-06-16)
 
 - **Released = v5** (`runs/20260614-224107-ranked-v5/ckpt/best.pt`, **17-ch**, epoch 55,
   val 0.0033). 17-channel slider representation (anchor dx/dy + `slides`) on ranked-v5 data,
@@ -73,10 +73,13 @@ uv run python -m src.evaluate --audio song.mp3 --ckpt runs/<id>/ckpt/last.pt --s
   spinner merge, `generate --timing-from <ref.osu>` (exact BPM/offset), package_map keeps
   generated difficulty. In-game: "way better, fixes helped, kiai generates." Branch
   `feat/v5-slider-style` — **user will push + PR to main.**
-- **Active branch `feat/v6-sv-adaln`** (off v5): v6 = **adaLN-zero** (DONE, draft-validated:
-  loss 0.18→0.028 clean) + **gold data** (`data/processed/ranked-v6`, 25,073 maps, 100% kiai
-  + single-BPM + hitsounds≥10%, SR 1.1–10, 17-ch). **Per-slider SV reverted** (structural,
-  §10.6.A). **Next: the full v6 train (GPU, user runs)** — see §6 + RESEARCH §10.6.
+- **v6 TRAINED (2026-06-16)** on branch `feat/v6-sv-adaln`: `runs/20260616-013932-ranked-v6/
+  ckpt/best.pt`, epoch 59, **val 0.00314**, clean (no divergence, ~330 s/epoch, 66.1 M params).
+  v6 = **adaLN-zero** (`--adaln` default on) + **gold data** (`data/processed/ranked-v6`,
+  25,073 maps, 100% kiai + single-BPM + hitsounds≥10%, SR 1.1–10, 17-ch). Eval: SR monotonic,
+  in-range 14–17/19, curved sliders solid; vs v5 metrics ~a wash but SR calibration tighter
+  (RESULTS v6). Packaged `[AI-v6]` (926 obj). **Per-slider SV reverted** (structural, §10.6.A).
+  **Next: in-game play test → promote to release if good; then structural SV (TODO #2).**
 - **Env**: `uv` venv, **torch 2.11.0+cu128**. `--compile` wired but Windows-blocked (no MSVC).
   `data/processed/ranked-v5` (17-ch) on disk; `artifacts/reference_stats.json` = 31,362-map ref.
 - **Git**: I cannot push — the user pushes. Commit locally with descriptive messages.
@@ -91,8 +94,9 @@ One re-preprocess + fresh train bundling the model-side wins that v5's decode fi
    SV is structural like kiai, not per-slider geometry). Proper SV = learned/structural, future
    v6+ (RESEARCH §10.6.A).
 3. ✅ **adaLN-zero conditioning** — DONE (`--adaln`, default on). DiT per-block scale/shift/gate.
-4. **Gold data** — `preprocess --gold` (17-ch) → `ranked-v6`. Then **fresh train** (adaLN) →
-   eval/package `[AI-v6]`. *This is the remaining v6 step (GPU; user runs it).*
+4. ✅ **Gold data** — `preprocess --gold` (17-ch) → `ranked-v6` DONE. **Fresh train** (adaLN)
+   DONE 2026-06-16 (`runs/20260616-013932-ranked-v6`, val 0.00314). Eval + `[AI-v6]` packaged
+   (RESULTS v6). *Remaining: in-game play test → promote v6 to release if it beats v5.*
 
 Carry-over / parallel: SR-offset bake (§10.1.B), density conditioning for the 0.6–0.8 s gaps,
 a real timing model for novel songs ("super timing", §10.2), flow/pattern modelling (§10.2).

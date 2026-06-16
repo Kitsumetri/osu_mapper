@@ -33,13 +33,14 @@ quality (state metrics, don't oversell). The user (`Kitsumetri`) is an osu! play
   rhythm snap to {1/4,1/8,1/6}, slider RDP (real lines vs imposter-curves), realistic
   AR (`7.75+0.25·sr`), intro-cluster trim, spinner merge, `--timing-from`, package_map
   keeps generated difficulty. Branch `feat/v5-slider-style`, **merged to main**.
-- **Active branch `feat/v6-sv-adaln`** (off v5). v6 = **adaLN-zero conditioning**
-  (DONE, `--adaln` default on; draft-validated: loss 0.18→0.028 clean) + **gold data**
-  (`data/processed/ranked-v6`, **25,073 maps**, 100% kiai + single-BPM + hitsounds≥10%,
-  SR 1.1–10, 17-ch). **Per-slider SV was tried and REVERTED** (SV is structural like
-  kiai, not per-slider — see §10.6.A).
-- **THE NEXT STEP: the full v6 train** (GPU, user runs). After it lands, eval + package
-  `[AI-v6]`, compare to v5 (kiai consistency, hitsounds, difficulty control via adaLN).
+- **v6 TRAINED (branch `feat/v6-sv-adaln`)**: `runs/20260616-013932-ranked-v6/ckpt/best.pt`,
+  epoch 59, **val 0.00314**, clean. v6 = **adaLN-zero** (`--adaln` default on) + **gold data**
+  (`data/processed/ranked-v6`, **25,073 maps**, 100% kiai + single-BPM + hitsounds≥10%, SR
+  1.1–10, 17-ch). Eval done (SR monotonic, in-range 14–17/19; vs v5 ~a wash, SR calibration
+  tighter — RESULTS v6). `[AI-v6]` packaged. **Per-slider SV was tried and REVERTED** (SV is
+  structural like kiai, not per-slider — see §10.6.A).
+- **THE NEXT STEP: in-game play test of `[AI-v6]`** → promote v6 to release if it beats v5
+  (kiai consistency, hitsounds, difficulty control via adaLN). Then **structural SV** (§10.6.A).
 
 ## How to run
 ```bash
@@ -55,10 +56,9 @@ uv run python -m src.data.preprocess --songs "C:/osu!/Songs" --out data/processe
 ```
 
 ## Immediate TODO (do in order; full list in HANDOFF §6 + the task list)
-1. **When the user reports the v6 train is done**: eval (SR sweep), package `[AI-v6]`,
-   write RESULTS + memory; A/B sense-check adaLN (gold data) vs v5. Prune the run's
-   milestone ckpts to `last.pt` after picking best. (Also clean the leftover
-   `runs/*v6-draft*` validation run.)
+1. ✅ **v6 train done** (2026-06-16): eval (SR sweep), `[AI-v6]` packaged, RESULTS + memory +
+   A/B vs v5 written, milestone ckpts pruned. **Remaining: in-game play test → promote to
+   release if it beats v5.** Watch the SR4 kiai=0.00 eval outlier in-game.
 2. **Structural SV** (the right way this time): SV is a *few coarse sections* tied to
    song structure (slow→low SV, drop→≥1, mostly ~1, rare 1–6 s fast burst), NOT
    per-slider. Options: learn it via an SV channel, or a mel-energy/kiai heuristic.
