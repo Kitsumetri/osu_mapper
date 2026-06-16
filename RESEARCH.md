@@ -691,6 +691,35 @@ Gate on whether it adds anything *on top of* P2; build nothing exotic.
   12 GB (FA2 standalone is redundant — `AttnBlock1d` already uses SDPA's fused flash kernel).
 - **Measure:** A/B (P2) vs (P2+RoPE+up-path) on jump/stream/curvature via `analyze_phase1.py`.
 
+### Memory & precision for scaling — the fp8/fp4 question (MEASURED 2026-06-16)
+Probed the real training footprint (base 128, batch 16, crop 4096, bf16 autocast, fused AdamW):
+| component | size | share of peak |
+|---|---|---|
+| **activations** (transient, fwd+bwd) | **~4.26 GB** | **~80%** |
+| Adam states (m,v fp32) | 0.55 GB | 10% |
+| weights (fp32 master) | 0.25 GB | 5% |
+| grads (fp32) | 0.25 GB | 5% |
+| **peak total** | **5.3 GB** / 12 | |
+
+**Conclusion — weight quantization is the wrong lever here.** fp32→fp8 weights saves 0.18 GB
+(3.5% of peak), fp4 saves 0.22 GB — negligible, because weights are 5% of memory; **activations
+are 80%**. Implications:
+- **base-160 is NOT memory-blocked** (5.3 GB peak leaves ~6.7 GB free) — it's **stability**-blocked
+  (bf16 divergence, §7). The real "scaling" fix is **P2 (v-pred/zero-SNR) + per-channel
+  standardisation (§11 5.2)**, not quantization.
+- To cut the 80% that matters (activations, e.g. when P3 adds full-res O(T²) attention): **gradient
+  checkpointing** (lossless), gradient accumulation (`--accum`, already present), or smaller crop —
+  never weight dtype.
+- **fp8 *training*** on Ada (sm_89): immature (PyTorch fp8 is Hopper-focused, needs amax scaling)
+  and it would compound our existing bf16 instability → **not now**. **fp4** is Blackwell-era → N/A.
+- Minor real option: **8-bit Adam** (bitsandbytes) trims the 0.55 GB optimizer state to ~0.15 GB,
+  but it's Windows-finicky and irrelevant at base 128 (plenty of headroom). Revisit only if a much
+  bigger net is memory-bound.
+- **dtype policy that helps:** keep bf16 autocast for bulk matmuls but **fp32 for norms / attention
+  softmax / the v-target** (stability), which we largely already do via autocast + QK-norm.
+- **Inference quantization** (fp8/int8 ckpt) is feasible and mature-ish but inference isn't a
+  bottleneck (ckpt ~1 GB, generation fast) → low priority.
+
 ### P4 design draft — representation + SV channel (ONE reprocess → `gold-v7`)
 Decide the final channel set *after* P2 numbers (P2 may already fix dispersion). Order by
 confidence:
@@ -726,10 +755,29 @@ confidence:
   onset bands (claps on backbeats, finish on downbeats/cymbal onsets). Start **rule-based** from
   beat phase + per-band onsets (deterministic, no retrain); model-side percussion conditioning
   is the fallback.
-- **BPM/offset for novel songs.** librosa ~28% exact. We have ground-truth BPM/offset for tens
-  of thousands of corpus maps → evaluate pretrained trackers (beat-this 2024, BeatNet, madmom)
-  on exact-match before training a bespoke downbeat CNN. Pair with "super timing" (infer 20× +
-  average, §10.2). Independent of the patterns work.
+- **BPM/offset detection for novel songs (expanded).** The timing problem decomposes into
+  **tempo** (BPM; ~74% of gold maps single-BPM, ~26% variable), **offset** (the ms position of the
+  beat grid's phase — the hard part: a correct BPM with a wrong offset shifts *every* object;
+  osu! wants ~5 ms accuracy), and **downbeat/meter** (measure starts, for kiai/section edges).
+  librosa gives tempo+beats but rough phase (~28% exact). **Our unfair advantage: ground truth** —
+  the corpus has human-verified BPM+offset in every `.osu` timing point → both a *benchmark* and a
+  *training set*. Plan, cheap→involved:
+  1. **Benchmark first** (mirrors Phase 1 "measure before building"): score pretrained trackers
+     against corpus ground truth — BPM within 0.1, offset within ~10 ms — on osu!'s music
+     distribution (anime/electronic/fast; general trackers train on other genres). Candidates:
+     **beat_this** (2024 ISMIR, transformer, SOTA, pip+torch), **BeatNet** (CRNN+particle filter,
+     joint beat/downbeat/tempo). *madmom is strong but has Python-3.12/Windows install pain — try
+     last.* Decisive and cheap; tells us if any tool is good enough as-is.
+  2. **Offset refinement** (regardless of tracker): cross-correlate the onset-strength envelope
+     with a click train at the estimated BPM; the lag maximising correlation = offset. Plus
+     **"super timing"** (§10.2): aggregate estimates over many windows / runs → median for stability.
+  3. **Bespoke downbeat net** *only if* pretrained falls short on osu! music: a small TCN/CRNN
+     `mel → (beat, downbeat) activation` trained on the ~25 k-song labelled corpus (reuse our mel
+     pipeline); extract BPM via tempogram/autocorrelation + offset via the activation phase.
+  4. **Novel self-consistent angle:** our model already emits an **onset channel on the audio frame
+     grid**, and generated onsets cluster on beats — so we can *fit* a BPM+offset grid to the
+     model's own onset output as a post-hoc refinement (no extra net). Worth a quick test.
+  Keep `--timing-from <ref.osu>` for known songs (always exact). Independent of the patterns work.
 
 ## 11. Audit follow-ups (external review 2026-06-14)
 
