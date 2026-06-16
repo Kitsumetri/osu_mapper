@@ -1,8 +1,14 @@
 # Agent handoff — osu_mapper
 
-Full working context for a fresh agent. **New session? Start with `NEW_AGENT_PROMPT.md`**,
-then this file, then `README.md` (usage + data/run layout), `TECH_REPORT.md` (math),
-`RESEARCH.md` (design + roadmap), `RESULTS.md` (run history).
+**This file is the entry point for a fresh agent** — read it first, then `README.md`
+(usage + data/run layout), `TECH_REPORT.md` (math), `RESEARCH.md` (design + roadmap),
+`RESULTS.md` (run history). These docs are the source of truth.
+
+Work autonomously: write code, run it (`uv run …`), fix errors, iterate. Be honest about
+quality — state metrics, don't oversell. **You cannot push**; commit locally with
+descriptive messages (`Co-Authored-By: Claude`), the user pushes + PRs to main. Trust the
+user's (`Kitsumetri`) in-game play/mapping feedback. **Next concrete step:** in-game
+play-test of `[AI-v6]` → promote v6 to release if it beats v5; then structural SV (§6).
 
 ## 1. What this is
 
