@@ -697,12 +697,15 @@ confidence:
 - **A. Learned SV channel (the user's insight; highest priority).** Per-frame continuous
   channel = the effective SV-multiplier *timeline* (from green lines + SliderMultiplier),
   piecewise-constant. Encode **log2(SV)** scaled+clamped to ~[0.25×,4×]→[-1,1] (multiplicative;
-  the rare 10× burst is clipped so it doesn't compress the useful range). 17→18 ch. **Decode:**
-  median-filter + quantise + change-point detect with a **min section length (~1 s)** → few
-  green lines (Phase 1: real ≈5 vals / 10 changes per map), then **slider duration = pixel_len
-  /(100·SliderMultiplier·SV)·beat** — resolves the geometry-vs-duration tension (same anchors,
-  SV sets speed → duration follows). Hermetic-testable (SV timeline encode→decode round-trip,
-  merge-to-few-sections). Naturally sparse because trained on real sparse SV.
+  the rare 10× burst is clipped so it doesn't compress the useful range). 17→18 ch. **Decode —
+  stability over fidelity (user choice 2026-06-16): target ~6-8 sections** (between coarse ~4 and
+  real ~10), never noise. Robustness chain: (1) median-filter the raw channel; (2) quantise SV to
+  a coarse grid (~0.1); (3) **hysteresis** — only open a new section on ΔSV ≥ ~0.15 (kills tiny
+  wobbles); (4) **min section length ~1-2 s**; (5) hard cap (~8 sections) keeping the largest
+  changes if over budget. Then **slider duration = pixel_len/(100·SliderMultiplier·SV)·beat** —
+  resolves the geometry-vs-duration tension (same anchors, SV sets speed → duration follows).
+  Hermetic-testable (SV timeline encode→decode round-trip; a noisy channel must collapse to ≤8
+  stable sections). Naturally sparse because trained on real sparse SV.
 - **B. Flow/Δposition (conditional on P2).** If v-pred doesn't fully widen spacing, add Δx/Δy
   (velocity) as **auxiliary** prediction targets (extra supervision; decode keeps absolute x/y)
   rather than replacing the representation. +2 ch. Skip if P2 suffices.
