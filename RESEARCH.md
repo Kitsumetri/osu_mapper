@@ -673,6 +673,59 @@ with a rare 10× burst) → validates a **learned SV channel**. NB user's 50-65%
 - **P5** parallel tracks: kiai segmentation head (#4); hitsound musicality (#2); BPM/offset
   (try pretrained beat-trackers before a bespoke net).
 
+### P3 design draft — attention upgrade (cheap A/B; demoted by the flow-angle finding)
+Gate on whether it adds anything *on top of* P2; build nothing exotic.
+- **RoPE in `AttnBlock1d`** — attention is currently pure content-based (no positional
+  signal beyond conv locality); rotary embeddings inject *relative time* so the model can
+  attend "N frames ago" (beats recur at a fixed frame stride, ~26 fr at 200 BPM/86 fps).
+  Apply rotary to q,k after QK-norm (rotation preserves unit norm); head_dim is even.
+  Use the per-level local frame index. Cost negligible; flag `--rope`, store in ckpt args.
+- **Up-path attention (audit S-5)** — attention currently only on down-path + mid; add it
+  to the symmetric up blocks for extra refinement during upsampling. Moderate cost.
+- **Finer-level attention** — the finest (full-res 4096) level has no attention; adding it
+  is O(T²) memory — *only* here is grad-checkpointing/FA relevant. Defer unless RoPE+up-path
+  move metrics.
+- **Gradient checkpointing (`--grad-checkpoint`)** — wrap down/up res+attn blocks in
+  `torch.utils.checkpoint`; the real memory enabler for finer attention / base-160 within
+  12 GB (FA2 standalone is redundant — `AttnBlock1d` already uses SDPA's fused flash kernel).
+- **Measure:** A/B (P2) vs (P2+RoPE+up-path) on jump/stream/curvature via `analyze_phase1.py`.
+
+### P4 design draft — representation + SV channel (ONE reprocess → `gold-v7`)
+Decide the final channel set *after* P2 numbers (P2 may already fix dispersion). Order by
+confidence:
+- **A. Learned SV channel (the user's insight; highest priority).** Per-frame continuous
+  channel = the effective SV-multiplier *timeline* (from green lines + SliderMultiplier),
+  piecewise-constant. Encode **log2(SV)** scaled+clamped to ~[0.25×,4×]→[-1,1] (multiplicative;
+  the rare 10× burst is clipped so it doesn't compress the useful range). 17→18 ch. **Decode:**
+  median-filter + quantise + change-point detect with a **min section length (~1 s)** → few
+  green lines (Phase 1: real ≈5 vals / 10 changes per map), then **slider duration = pixel_len
+  /(100·SliderMultiplier·SV)·beat** — resolves the geometry-vs-duration tension (same anchors,
+  SV sets speed → duration follows). Hermetic-testable (SV timeline encode→decode round-trip,
+  merge-to-few-sections). Naturally sparse because trained on real sparse SV.
+- **B. Flow/Δposition (conditional on P2).** If v-pred doesn't fully widen spacing, add Δx/Δy
+  (velocity) as **auxiliary** prediction targets (extra supervision; decode keeps absolute x/y)
+  rather than replacing the representation. +2 ch. Skip if P2 suffices.
+- **C. Curvature cue (conditional).** If sliders stay flat after P2, add a per-slider intended-
+  sagitta scalar (held over the span) so the model signals curve-vs-straight intent decoupled
+  from anchor MSE; decode scales L/B + displacement from it. The user's 50-65%-curved target is
+  *above* real-corpus 25-38% → bias this cue / decode threshold once curvature is honest. +1 ch.
+- Bundle whichever of A/B/C survive → `gold-v7` (18-21 ch); retrain best P2/P3 config.
+
+### P5 design draft — parallel tracks (independent; fit between trains)
+- **Kiai segmentation head (#4 fluctuation).** Kiai is one stochastic channel → borderline
+  sections flip per sample (eval saw kiai=0.00 at SR4). Train a small **supervised mel→kiai**
+  1D-conv head (BCE vs real kiai labels) and use its *deterministic* output at decode (and/or as
+  conditioning), replacing the noisy generated channel. Analyse real kiai vs mel energy first.
+- **Hitsound musicality (#2, persistent 5/10).** whistle/finish/clap are per-frame independent
+  accents, uncorrelated with percussion. Analyse where each type lands vs beat phase + audio
+  onset bands (claps on backbeats, finish on downbeats/cymbal onsets). Start **rule-based** from
+  beat phase + per-band onsets (deterministic, no retrain); model-side percussion conditioning
+  is the fallback.
+- **BPM/offset for novel songs.** librosa ~28% exact. We have ground-truth BPM/offset for tens
+  of thousands of corpus maps → evaluate pretrained trackers (beat-this 2024, BeatNet, madmom)
+  on exact-match before training a bespoke downbeat CNN. Pair with "super timing" (infer 20× +
+  average, §10.2). Independent of the patterns work.
+
 ## 11. Audit follow-ups (external review 2026-06-14)
 
 A separate auditor read every `src/` file + re-derived the diffusion math (all
