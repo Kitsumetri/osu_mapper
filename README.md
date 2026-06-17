@@ -32,8 +32,9 @@ adds 6 slider-anchor `dx/dy` channels (control-point offsets held over the slide
 span) + a `slides` channel, so slider shape and reverse sliders are first-class
 rather than read off the noisy cursor path (see [`TECH_REPORT.md`](TECH_REPORT.md) §3.2).
 **v7 = 19**: adds an `sv` slider-velocity timeline and a per-slider `curve` cue.
-Channel checks are index-based (and the loader uses each checkpoint's own channel
-count), so older 17-ch checkpoints still load under the 19-ch build.
+**v7.5 = 20**: adds a `corner` cue for red (angular) control points. Channel checks
+are index-based (and the loader uses each checkpoint's own channel count), so older
+17-ch checkpoints still load under the newer builds.
 
 Difficulty is supplied as an **input context vector** `[SR, AR, OD, HP, CS,
 density]` (conditioning, not a channel).
@@ -114,7 +115,7 @@ src/
   train.py               training loop (bf16, EMA, cosine LR, runs/ logging)
   generate.py            audio -> .osu inference (DDIM+CFG, EMA, --match-sr, --timing-from)
   timing_model/          SEPARATE model: BPM/offset beat tracker (labels + eval; RESEARCH 10.8)
-tests/                   122 hermetic pytest tests (no dataset/GPU needed)
+tests/                   127 hermetic pytest tests (no dataset/GPU needed)
 main.py                  CLI dispatcher (preprocess | train | generate)
 ```
 
@@ -146,7 +147,7 @@ artifacts/                     # exported, shareable outputs (generated/packaged
 ## Development
 
 ```bash
-uv run pytest          # 122 hermetic tests
+uv run pytest          # 127 hermetic tests
 uv run ruff check .    # lint
 ```
 

@@ -31,8 +31,9 @@ audio.mp3 ─► log-mel (64×T) ──────┐
 
 - **Signal channels** (`src/config.py`): v4 = **10** (onset, slider_hold, spinner_hold,
   new_combo, cursor_x/y, kiai_hold, whistle, finish, clap). **v5 = 17** (+6 slider-anchor
-  dx/dy + 1 slides). **v7 = 19** (+1 `sv` timeline `CH_SV`, +1 `curve` cue `CH_CURVE`). ~86 fps (sr 22050,
-  hop 256). Encode/decode in `src/data/signal.py`; channel checks index-based so old ckpts load.
+  dx/dy + 1 slides). **v7 = 19** (+`sv` `CH_SV`, +`curve` `CH_CURVE`); **v7.5 = 20** (+`corner` `CH_CORNER`,
+  red-point cue). ~86 fps (sr 22050, hop 256). Encode/decode `src/data/signal.py`; channel checks
+  index-based + loader uses each ckpt's `sig_channels`, so old ckpts still load.
 - **Diffusion** (`diffusion.py`): DDPM (1000 steps, linear β); **ε- or v-prediction**
   (`--objective`, v7 uses `v`) + optional **zero-terminal-SNR**; DDIM sampler + CFG (+rescale).
 - **U-Net** (`unet.py`): base × (1,2,4,8), **adaLN-zero** conditioning (v6+), **QK-norm
@@ -60,13 +61,13 @@ audio.mp3 ─► log-mel (64×T) ──────┐
 | `src/{metrics,corpus_stats,evaluate,package_map}.py` | metrics (incl. `curved_slider_ratio`) / reference dists / SR-sweep eval / package a Songs folder |
 | `src/timing_model/` | **separate package** (not the diffusion model): BPM/offset timing model (RESEARCH §10.8). `labels.py` (beat/downbeat/BPM from osu timing), `metrics.py` (F-measure + osu exact-match). CPU foundation done; model/train pending GPU |
 | `analyze_phase1.py` | real-vs-generated probe (curvature/spacing/flow/SV) — track per-version progress |
-| `tests/` | 122 hermetic tests (no dataset/GPU) |
+| `tests/` | 127 hermetic tests (no dataset/GPU) |
 | `runs/<id>/`, `data/processed/<tag>/`, `artifacts/` | gitignored heavy outputs |
 
 ## 4. How to run (uv env: `uv run …` or activate `.venv`)
 
 ```bash
-uv run --extra dev pytest                # 122 hermetic tests
+uv run --extra dev pytest                # 127 hermetic tests
 uv run --extra dev ruff check .
 # v7: gold data -> 19-ch (--gold = ranked+kiai+single-BPM+hitsounds>=10%+1<SR<10)
 uv run python -m src.data.preprocess --songs "C:/osu!/Songs" --out data/processed/ranked-v7 --gold --workers 10
@@ -109,7 +110,8 @@ uv run python -m src.evaluate --audio song.mp3 --ckpt runs/<id>/ckpt/best.pt --s
   compatible). v7-draft memory probe: baseline 5.30 GB, +rope+up_attn 9.83, +grad_ckpt 5.02;
   full-res attn4 OOMs (not viable). **Next: reprocess `gold-v7` (19-ch) + train** with
   `--objective v --zero-snr --rope --up-attn` (user). Track with `analyze_phase1.py --ckpt …`.
-- **Env**: `uv` venv, **torch 2.11.0+cu128**. `--compile` wired but Windows-blocked (no MSVC).
+- **Env**: `uv` venv, **torch 2.11.0+cu128**. `--compile` **now works on Windows** (triton-windows
+  + MSVC installed 2026-06-17, verified) — previously blocked.
   `data/processed/ranked-v5` (17-ch) on disk; `artifacts/reference_stats.json` = 31,362-map ref.
 - **Git**: I cannot push — the user pushes. Commit locally with descriptive messages.
 
@@ -159,7 +161,8 @@ segmentation head, hitsound musicality, BPM/offset model. v5→v6 history in RES
 - **Memory: activations are ~80% of the train footprint, weights ~5%** → fp8/fp4 weight quant is
   the wrong lever; base-160 is *stability*-blocked not memory-blocked; grad-checkpointing is the
   real memory lever. SDPA already uses the fused flash kernel → a standalone flash-attn build is
-  not worth it on this box (and prereqs/MSVC absent).
+  not worth it on this box (marginal over SDPA). (MSVC + triton-windows are now installed, so
+  `--compile` works; flash-attn-from-source is still low-ROI.)
 - **v-loss is ~100× ε-loss** (O(0.05) vs 0.003) — never compare across objectives; judge by trend.
 
 ## 8. Conventions
