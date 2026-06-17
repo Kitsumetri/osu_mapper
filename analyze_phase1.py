@@ -123,31 +123,42 @@ def summarize(name, beatmaps):
 
 
 def main():
-    random.seed(0)
-    print("loading real ranked maps from osu!.db ...")
-    paths = sorted(ranked_osu_paths(SONGS, DB))
-    sample = random.sample(paths, min(N_REAL, len(paths)))
-    real = []
-    for p in sample:
-        try:
-            bm = parse_beatmap(p)
-            if len(bm.hit_objects) >= 50:
-                real.append(bm)
-        except Exception:
-            continue
-    summarize("REAL ranked", real)
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--ckpt", default=CKPT)
+    ap.add_argument("--label", default=None, help="name for the generated block")
+    ap.add_argument("--rescale", type=float, default=0.0, help="guidance_rescale (v/zero-SNR)")
+    ap.add_argument("--no-real", action="store_true", help="skip the real-map baseline")
+    args = ap.parse_args()
+    label = args.label or Path(args.ckpt).parts[-3]  # the run-id folder
 
-    print("\ngenerating v6 SR sweep (load once) ...")
-    loaded = load_model(CKPT)
+    random.seed(0)
+    if not args.no_real:
+        print("loading real ranked maps from osu!.db ...")
+        paths = sorted(ranked_osu_paths(SONGS, DB))
+        sample = random.sample(paths, min(N_REAL, len(paths)))
+        real = []
+        for p in sample:
+            try:
+                bm = parse_beatmap(p)
+                if len(bm.hit_objects) >= 50:
+                    real.append(bm)
+            except Exception:
+                continue
+        summarize("REAL ranked", real)
+
+    print(f"\ngenerating SR sweep for {label} (load once, rescale={args.rescale}) ...")
+    loaded = load_model(args.ckpt)
     prepared = prepare_audio(AUDIO_2MIN, loaded.device)
     gen_dir = Path("artifacts/eval/phase1")
     gen_dir.mkdir(parents=True, exist_ok=True)
     gen = []
     for sr in GEN_SRS:
         out = gen_dir / f"gen_sr{sr}.osu"
-        generate(AUDIO_2MIN, out_path=out, sr=sr, loaded=loaded, prepared=prepared)
+        generate(AUDIO_2MIN, out_path=out, sr=sr, loaded=loaded, prepared=prepared,
+                 guidance_rescale=args.rescale)
         gen.append(parse_beatmap(out))
-    summarize("v6 GENERATED", gen)
+    summarize(f"GENERATED [{label}]", gen)
 
 
 if __name__ == "__main__":

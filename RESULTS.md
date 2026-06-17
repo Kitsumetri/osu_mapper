@@ -2,7 +2,31 @@
 
 Training-run history + generated-map quality (metrics via `src/metrics.py`).
 **Current release: v5** (`runs/20260614-224107-ranked-v5/ckpt/best.pt`, 17-ch).
-**v6 trained + packaged (2026-06-16), awaiting play feedback before promotion.**
+**v6 + v7-Phase2 trained; v7 work in progress (RESEARCH §10.7).**
+
+## v7 Phase 2 — v-prediction + zero-terminal-SNR (TRAINED 2026-06-17)
+
+`runs/20260617-001225-v7-vpred/ckpt/best.pt` (epoch 59, **val 0.0507** — v-loss scale,
+~100x eps, NOT comparable to v6's 0.003). Same gold-v6 data + adaLN, base 128, 60 ep,
+`--objective v --zero-snr`. Clean convergence, no divergence (~329 s/epoch) — confirms the
+objective swap is stable and unblocks future base-160 scaling.
+
+**Phase-1 metric A/B** (`analyze_phase1.py`, real 397 vs v6 vs v7; 10-map sweeps):
+| measure | real | v6 | v7-vpred |
+|---|---|---|---|
+| mean spacing px | 133.5 | 119.7 | **129.6** |
+| jump_ratio | 0.205 | 0.119 | **0.145** |
+| std spacing px | 77.3 | 66.2 | 67.5 |
+| stream_ratio | 0.149 | 0.101 | 0.088 |
+| visible-curve % (sagitta≥10) | 38.1 | 13.4 | 12.1 |
+| median sagitta px | 4.8 | 0.0 | 0.0 |
+
+**Partial win:** v-pred closed ~70% of the mean-spacing gap and ~28% of the jump gap
+(bigger, more confident movements = the under-dispersion mechanism), but **did NOT improve
+spacing variety (std), streams, or slider curvature** (median slider still dead-straight).
+`guidance_rescale 0.7` didn't help → keep 0. Conclusion: objective fixes average *magnitude*,
+not *variety*/curvature → **P4 flow (B) + curvature-cue (C) channels now justified** (were
+conditional on P2). Packaged `[AI-v7]` (SR 5.18, 450 obj, 2-min set) for play test.
 
 ## v6 — adaLN-zero + gold data (TRAINED 2026-06-16, awaiting play test)
 
