@@ -15,6 +15,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 def timestep_embedding(t: torch.Tensor, dim: int) -> torch.Tensor:
@@ -66,19 +67,37 @@ class ResBlock1d(nn.Module):
         return h + self.skip(x)
 
 
+def _apply_rope(x: torch.Tensor, base: float = 10000.0) -> torch.Tensor:
+    """Rotary position embedding over the time axis. x: (b, heads, t, d), d even.
+
+    Parameter-free; makes the q.k logit depend on the *relative* frame offset (i-j),
+    so attention can express "N frames ago" — the recurring-beat structure of a map.
+    """
+    b, h, t, d = x.shape
+    half = d // 2
+    freqs = 1.0 / (base ** (torch.arange(half, device=x.device, dtype=torch.float32) / half))
+    ang = torch.arange(t, device=x.device, dtype=torch.float32)[:, None] * freqs[None, :]
+    cos, sin = ang.cos()[None, None], ang.sin()[None, None]   # (1,1,t,half)
+    x1, x2 = x[..., :half], x[..., half:]
+    return torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1).to(x.dtype)
+
+
 class AttnBlock1d(nn.Module):
     """Multi-head self-attention over the time axis (long-range structure).
 
     Uses query/key RMS-normalisation ("QK-norm") which keeps attention logits
     bounded and prevents the divergence seen with bf16 + plain dot-product
     attention. The output projection is zero-initialised so the block starts as
-    an identity and eases in during training.
+    an identity and eases in during training. ``rope`` adds rotary position
+    embeddings (relative-time awareness; parameter-free, so it doesn't change the
+    state_dict — only behaviour).
     """
 
-    def __init__(self, ch: int, heads: int = 4):
+    def __init__(self, ch: int, heads: int = 4, rope: bool = False):
         super().__init__()
         assert ch % heads == 0, f"AttnBlock1d channels {ch} not divisible by heads {heads}"
         self.heads = heads
+        self.rope = rope
         self.norm = nn.GroupNorm(math.gcd(8, ch), ch)
         self.qkv = nn.Conv1d(ch, ch * 3, 1)
         self.proj = nn.Conv1d(ch, ch, 1)
@@ -99,6 +118,8 @@ class AttnBlock1d(nn.Module):
         scale = self.logit_scale.clamp(max=math.log(100.0)).exp()
         q = F.normalize(q, dim=-1) * scale
         k = F.normalize(k, dim=-1)
+        if self.rope:  # rotation preserves the unit norm; commutes with the scalar scale
+            q, k = _apply_rope(q), _apply_rope(k)
         out = F.scaled_dot_product_attention(q, k, v, scale=1.0)
         out = out.transpose(-1, -2).reshape(b, c, t)
         return x + self.proj(out)
@@ -134,11 +155,15 @@ class UNet1d(nn.Module):
         ctx_dim: int = 0,
         attn_levels: int = 2,
         adaln: bool = True,
+        rope: bool = False,
+        up_attn: bool = False,
+        grad_ckpt: bool = False,
     ):
         super().__init__()
         self.sig_channels = sig_channels
         self.t_dim = t_dim
         self.ctx_dim = ctx_dim
+        self.grad_ckpt = grad_ckpt
         self.time_mlp = nn.Sequential(nn.Linear(t_dim, t_dim), nn.SiLU(), nn.Linear(t_dim, t_dim))
         if ctx_dim > 0:
             # difficulty context -> added to the timestep embedding (FiLM path).
@@ -159,19 +184,24 @@ class UNet1d(nn.Module):
             # attention at the ``attn_levels`` deepest (coarsest) levels to bound
             # cost; raise it to give the model longer-range pattern context.
             use_attn = attn and i >= len(chs) - attn_levels
-            self.down_attn.append(AttnBlock1d(ch) if use_attn else nn.Identity())
+            self.down_attn.append(AttnBlock1d(ch, rope=rope) if use_attn else nn.Identity())
             self.down_samps.append(Down(ch))
             prev = ch
 
         self.mid1 = ResBlock1d(prev, prev, t_dim, adaln=adaln)
-        self.mid_attn = AttnBlock1d(prev) if attn else nn.Identity()
+        self.mid_attn = AttnBlock1d(prev, rope=rope) if attn else nn.Identity()
         self.mid2 = ResBlock1d(prev, prev, t_dim, adaln=adaln)
 
         self.up_samps = nn.ModuleList()
         self.ups = nn.ModuleList()
-        for ch in reversed(chs):
+        self.up_attn = nn.ModuleList()
+        for i, ch in enumerate(reversed(chs)):
             self.up_samps.append(Up(prev))
             self.ups.append(ResBlock1d(prev + ch, ch, t_dim, adaln=adaln))
+            # symmetric attention on the up path (coarsest ``attn_levels`` levels), so
+            # long-range structure is also refined during upsampling (audit S-5).
+            use_up_attn = attn and up_attn and i < attn_levels
+            self.up_attn.append(AttnBlock1d(ch, rope=rope) if use_up_attn else nn.Identity())
             prev = ch
 
         self.out_norm = nn.GroupNorm(math.gcd(8, prev), prev)
@@ -196,18 +226,27 @@ class UNet1d(nn.Module):
         h = self.in_conv(torch.cat([x_t, cond], dim=1))
         skips = [h]
         for block, attn, ds in zip(self.downs, self.down_attn, self.down_samps):
-            h = block(h, t_emb)
-            h = attn(h)
+            h = self._run(block, h, t_emb)
+            h = self._run(attn, h)
             skips.append(h)
             h = ds(h)
-        h = self.mid1(h, t_emb)
-        h = self.mid_attn(h)
-        h = self.mid2(h, t_emb)
-        for us, block in zip(self.up_samps, self.ups):
+        h = self._run(self.mid1, h, t_emb)
+        h = self._run(self.mid_attn, h)
+        h = self._run(self.mid2, h, t_emb)
+        for us, block, attn in zip(self.up_samps, self.ups, self.up_attn):
             h = us(h)
             skip = skips.pop()
             # guard against off-by-one length mismatch from striding
             if h.shape[-1] != skip.shape[-1]:
                 h = F.interpolate(h, size=skip.shape[-1], mode="nearest")
-            h = block(torch.cat([h, skip], dim=1), t_emb)
+            h = self._run(block, torch.cat([h, skip], dim=1), t_emb)
+            h = self._run(attn, h)
         return self.out_conv(F.silu(self.out_norm(h)))
+
+    def _run(self, module, *args):
+        """Run a sub-module, gradient-checkpointing it in training to trade compute
+        for activation memory (the 80%-of-peak term; enables finer attention / bigger
+        models within 12 GB). No-op for Identity and at inference."""
+        if self.grad_ckpt and self.training and not isinstance(module, nn.Identity):
+            return checkpoint(module, *args, use_reentrant=False)
+        return module(*args)

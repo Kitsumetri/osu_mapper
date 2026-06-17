@@ -127,7 +127,8 @@ def train(args):
 
     model = UNet1d(N_SIGNAL_CHANNELS, AUDIO.n_mels, base=args.base, attn=args.attn,
                    ctx_dim=CONTEXT_DIM, attn_levels=args.attn_levels,
-                   adaln=args.adaln).to(device)
+                   adaln=args.adaln, rope=args.rope, up_attn=args.up_attn,
+                   grad_ckpt=args.grad_checkpoint).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"model: {n_params / 1e6:.1f}M params (base={args.base}, attn={args.attn})")
     ema = EMA(model, decay=args.ema) if args.ema > 0 else None
@@ -290,6 +291,12 @@ def main():
                          "(2=default; 3 gives finer-resolution pattern context)")
     ap.add_argument("--adaln", type=lambda s: s.lower() != "false", default=True,
                     help="adaLN-zero conditioning (v6 default; 'false' = additive FiLM)")
+    ap.add_argument("--rope", action="store_true",
+                    help="rotary position embeddings in attention (relative-time; free params)")
+    ap.add_argument("--up-attn", action="store_true",
+                    help="add symmetric attention on the up path (more attention; audit S-5)")
+    ap.add_argument("--grad-checkpoint", action="store_true",
+                    help="gradient-checkpoint blocks to fit finer attention / bigger nets in VRAM")
     ap.add_argument("--augment", type=lambda s: s.lower() != "false", default=True,
                     help="playfield h/v flip augmentation (default on; 'false' to disable)")
     ap.add_argument("--compile", action="store_true",

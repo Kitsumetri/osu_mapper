@@ -88,7 +88,8 @@ def load_model(ckpt_path, base=64, use_ema=True, device=None) -> LoadedModel:
     # checkpoints still load under the v7 18-ch global (decode handles the missing SV).
     n_sig = ckpt.get("sig_channels", N_SIGNAL_CHANNELS)
     model = UNet1d(n_sig, AUDIO.n_mels, base=base, attn=attn,
-                   ctx_dim=ctx_dim, attn_levels=attn_levels, adaln=adaln).to(device)
+                   ctx_dim=ctx_dim, attn_levels=attn_levels, adaln=adaln,
+                   rope=cargs.get("rope", False), up_attn=cargs.get("up_attn", False)).to(device)
     weights = ckpt["ema"] if (use_ema and ckpt.get("ema")) else ckpt["model"]
     model.load_state_dict(weights)
     model.eval()

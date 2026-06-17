@@ -141,3 +141,34 @@ def test_ddim_v_zero_snr_finite():
     out = diff.ddim_sample(m, cond, (1, C_SIG, T), steps=10, ctx=None, guidance=1.0)
     assert out.shape == (1, C_SIG, T)
     assert torch.isfinite(out).all()
+
+
+def test_apply_rope_preserves_norm_and_is_positional():
+    from src.model.unet import _apply_rope
+    x = torch.randn(1, 2, 5, 8)  # (b, heads, t, d)
+    r = _apply_rope(x)
+    assert torch.allclose(x.norm(dim=-1), r.norm(dim=-1), atol=1e-4)  # rotation -> norm kept
+    assert torch.allclose(r[:, :, 0], x[:, :, 0], atol=1e-5)          # position 0 unrotated
+    assert not torch.allclose(r[:, :, 3], x[:, :, 3], atol=1e-3)      # later positions rotate
+
+
+def test_unet_attention_upgrades_forward_and_grad():
+    # RoPE, up-path attention, and grad checkpointing all run + backprop
+    for kw in ({"rope": True},
+               {"up_attn": True, "attn_levels": 1},
+               {"rope": True, "up_attn": True, "grad_ckpt": True, "attn_levels": 1}):
+        m = UNet1d(C_SIG, C_COND, base=16, mults=(1, 2), t_dim=32, attn=True, **kw)
+        m.train()
+        out = m(torch.randn(B, C_SIG, T), torch.randn(B, C_COND, T),
+                torch.randint(0, 1000, (B,)))
+        assert out.shape == (B, C_SIG, T)
+        out.mean().backward()
+        assert any(p.grad is not None for p in m.parameters())
+
+
+def test_rope_is_parameter_free():
+    # RoPE adds no parameters (so it never breaks loading an existing state_dict)
+    base = UNet1d(C_SIG, C_COND, base=16, mults=(1, 2), t_dim=32, attn=True, rope=False)
+    rope = UNet1d(C_SIG, C_COND, base=16, mults=(1, 2), t_dim=32, attn=True, rope=True)
+    assert (sum(p.numel() for p in base.parameters())
+            == sum(p.numel() for p in rope.parameters()))
