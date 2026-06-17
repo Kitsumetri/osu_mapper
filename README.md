@@ -113,7 +113,8 @@ src/
     diffusion.py         Gaussian DDPM schedule, DDPM + DDIM + CFG sampling
   train.py               training loop (bf16, EMA, cosine LR, runs/ logging)
   generate.py            audio -> .osu inference (DDIM+CFG, EMA, --match-sr, --timing-from)
-tests/                   116 hermetic pytest tests (no dataset/GPU needed)
+  timing_model/          SEPARATE model: BPM/offset beat tracker (labels + eval; RESEARCH 10.8)
+tests/                   122 hermetic pytest tests (no dataset/GPU needed)
 main.py                  CLI dispatcher (preprocess | train | generate)
 ```
 
@@ -145,7 +146,7 @@ artifacts/                     # exported, shareable outputs (generated/packaged
 ## Development
 
 ```bash
-uv run pytest          # 116 hermetic tests
+uv run pytest          # 122 hermetic tests
 uv run ruff check .    # lint
 ```
 

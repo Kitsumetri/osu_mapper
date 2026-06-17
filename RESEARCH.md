@@ -856,12 +856,14 @@ frame grid — fit a grid to *its* onsets when no timing model is available.
 - **Practical:** drop the predicted timing into a generated map, eyeball in the osu! editor.
 
 ### Plan (CPU/no-GPU first; train only if needed)
-1. **Dataset extractor + eval harness** (pure CPU, do now): osu timing points → beat/downbeat/
-   BPM/offset labels; the metrics above. No GPU.
+1. ✅ **Dataset extractor + eval harness DONE** (CPU, `src/timing_model/`, 1d71d60): `labels.py`
+   (osu timing → beat/downbeat/BPM/offset) + `metrics.py` (native F-measure + osu exact-match) +
+   6 tests. Separate package from the diffusion sources.
 2. **Benchmark pretrained** (Beat This! → BeatNet → librosa; madmom last) on the corpus → know the
-   real exact-match on osu! music. Decisive — may make training unnecessary.
-3. **Train bespoke only if pretrained falls short** — TCN first, transformer for upside. Plenty of
-   labelled data; augmentation-heavy.
+   real exact-match on osu! music. Decisive — may make training unnecessary. *(Needs the tracker
+   libs + `mir_eval`; light inference. Next step when GPU/libs available.)*
+3. **Train bespoke only if pretrained falls short** — TCN first, transformer (+ our RoPE) for
+   upside. Plenty of labelled data; augmentation-heavy.
 
 ## 11. Audit follow-ups (external review 2026-06-14)
 

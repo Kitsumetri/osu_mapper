@@ -60,13 +60,13 @@ audio.mp3 ─► log-mel (64×T) ──────┐
 | `src/{metrics,corpus_stats,evaluate,package_map}.py` | metrics (incl. `curved_slider_ratio`) / reference dists / SR-sweep eval / package a Songs folder |
 | `src/timing_model/` | **separate package** (not the diffusion model): BPM/offset timing model (RESEARCH §10.8). `labels.py` (beat/downbeat/BPM from osu timing), `metrics.py` (F-measure + osu exact-match). CPU foundation done; model/train pending GPU |
 | `analyze_phase1.py` | real-vs-generated probe (curvature/spacing/flow/SV) — track per-version progress |
-| `tests/` | 116 hermetic tests (no dataset/GPU) |
+| `tests/` | 122 hermetic tests (no dataset/GPU) |
 | `runs/<id>/`, `data/processed/<tag>/`, `artifacts/` | gitignored heavy outputs |
 
 ## 4. How to run (uv env: `uv run …` or activate `.venv`)
 
 ```bash
-uv run --extra dev pytest                # 116 hermetic tests
+uv run --extra dev pytest                # 122 hermetic tests
 uv run --extra dev ruff check .
 # v7: gold data -> 19-ch (--gold = ranked+kiai+single-BPM+hitsounds>=10%+1<SR<10)
 uv run python -m src.data.preprocess --songs "C:/osu!/Songs" --out data/processed/ranked-v7 --gold --workers 10
