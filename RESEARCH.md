@@ -906,6 +906,49 @@ are *angular*, which our smooth-only decoder cannot produce. Median 1 red point 
 3. Net v7.5 = jumps back + smooth *and* angular sliders. (Curve target 38-45% now splits into
    smooth-curve vs red-angular; revisit the metric to count both.)
 
+## 10.10 Loss function — options & analysis (2026-06-17)
+
+**Framing.** Diffusion trains on **MSE between predicted and true noise** (ε, or v for v-pred).
+This isn't an arbitrary "choice" — it's the denoising score-matching objective (the ELBO
+reduction), and it's what makes diffusion train stably. So we don't *replace* it wholesale; we
+either swap the pointwise distance (L1/Huber) or add **auxiliary** terms. Important: the loss is
+on the *noise*, not on an image, and our target is a 19-ch time-series, not pixels — so
+image-specific perceptual losses don't transfer directly.
+
+**Per the user's ideas:**
+- **LPIPS (perceptual) — doesn't transfer.** LPIPS = distance in a pretrained *image* CNN's
+  feature space (VGG on ImageNet). There's no pretrained "beatmap-signal" perceptual net, and our
+  target isn't an image. The domain analog would be matching our hand-crafted `metrics.py` stats
+  (density/spacing/…), but those are computed on *decoded* objects → non-differentiable → can't
+  backprop. Skip, unless we ever train a learned beatmap encoder (overkill).
+- **Gram-matrix style loss — literal form doesn't transfer, but the *idea* does.** Gram = feature
+  correlations (image texture/style). The useful kernel: match **statistical moments** rather than
+  pointwise values. Our version = a **variance/auto-correlation matching** auxiliary on the
+  predicted x0: penalise the cursor channels' *variance* being below real (directly = more jumps),
+  or match the onset channel's autocorrelation (rhythm regularity). This attacks under-dispersion,
+  but it's the highest-risk term (adds a non-standard objective; tune carefully).
+- **Weighted MSE — the most promising, and domain-appropriate.** Two distinct flavours:
+  (a) **per-channel weighting** — our 19 channels differ in *difficulty*, not scale (true ε is
+  unit-Gaussian per channel). The easy piecewise channels (SV, curve, hitsounds) are "solved"
+  early while the hard **cursor/anchor** channels stay underfit → the model hedges to the mean →
+  under-dispersion. Up-weighting the spatial channels focuses gradient where patterns live.
+  (b) **active-frame weighting** — most frames are empty baseline; weighting frames near onsets
+  concentrates learning on the notes.
+
+**Other principled options (not mentioned, but better fits):**
+- **L1 / Pseudo-Huber on ε/v** — cheapest, lowest-risk swap; some diffusion/consistency works
+  report sharper, more robust results than L2. Easy A/B (`--loss {mse,huber}`). **Try first.**
+- **Min-SNR-γ timestep weighting** (Hang et al. 2023) — reweight per-timestep loss to balance the
+  multi-task denoising; faster convergence + better quality. Established, low-risk.
+- **Per-channel input standardisation** (§11 #5.2, already queued) — different from (a): zero-mean/
+  unit-var the *input* channels for stability (a base-160 unblock candidate), not loss weighting.
+
+**Honest priority.** The loss is a *secondary* lever for our dispersion problem — the data showed
+representation (flow channels) and *avoiding over-smoothing* (drop attention, §10.9) matter more,
+and v-pred already moved the objective. But cheap, stable nudges are worth A/B-ing, one at a time
+(we value stability — base-160 already diverges): **(1) Pseudo-Huber, (2) min-SNR-γ, (3) per-channel
+loss weighting on cursor/anchors.** Skip LPIPS/Gram-literal/adversarial (don't transfer / destabilise).
+
 ## 11. Audit follow-ups (external review 2026-06-14)
 
 A separate auditor read every `src/` file + re-derived the diffusion math (all
@@ -961,3 +1004,6 @@ config as "current" → now base-128/0.3) + the v5 decode (§8.2) + README chann
   · [Beat Transformer (dilated self-attn), 2022](https://arxiv.org/pdf/2209.07140)
   · [BEAST — online streaming transformer, 2023](https://arxiv.org/abs/2312.17156)
   · Davies & Böck, *TCN for beat tracking*, EUSIPCO 2019 · `mir_eval.beat` metrics
+- Loss options (§10.10): Hang et al., *Efficient Diffusion Training via Min-SNR Weighting*,
+  ICCV 2023 · Pseudo-Huber loss (Song & Dhariwal, *Improved Techniques for Consistency
+  Models*, 2023) · Gatys et al., *Neural Style Transfer* (Gram matrices) — image-only, doesn't transfer.
