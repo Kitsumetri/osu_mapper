@@ -785,6 +785,84 @@ confidence:
      model's own onset output as a post-hoc refinement (no extra net). Worth a quick test.
   Keep `--timing-from <ref.osu>` for known songs (always exact). Independent of the patterns work.
 
+## 10.8 Timing model — BPM + offset for novel songs (design, 2026-06-17)
+
+Replaces the librosa estimate (~28% exact) for songs with no reference `.osu`. `--timing-from`
+stays the exact path for known songs. This is the P5 timing track, fully specified here.
+
+### The problem (and what "offset" is)
+osu! timing = an **uninherited (red) timing point** `(time, beat_length, meter)`: `beat_length =
+60000/BPM`, beats at `time + k·beat_length`, downbeats every `meter` beats. So we need three
+things: **tempo** (BPM), **phase/offset** (the ms of the anchor **downbeat** — convention: first
+strong downbeat near the song start; needs ~5-10 ms accuracy or every object drifts), and
+**downbeat** (which beat is bar-1, for meter + to put the offset on a downbeat). I.e. classic
+**beat + downbeat + tempo tracking**. Gold maps are single-BPM (one grid); variable-BPM (~26%)
+is a later extension — filter to single-BPM + meter 4 for v1.
+
+### Our unfair advantage: a huge in-distribution labelled set
+The corpus (~6k unique audios, ~25k difficulties) ships **human-verified BPM+offset+meter** in
+every map's timing points → free, large, and **in osu!'s distribution** (anime/electronic/
+J-core, often 180-250 BPM) where general trackers (trained on Ballroom/GTZAN/Hainsworth) may be
+out of distribution. Use it as both **benchmark** and **training set**. Split by `audio_id`
+(difficulties share audio → leakage otherwise; we already dedup mels per audio_id).
+
+### SOTA survey (2024-25; confirmed via web search)
+- **Beat This!** (Foscarin et al., ISMIR 2024) — **transformer, current SOTA, no DBN
+  post-processing** (minimal peak-pick); generalises across styles incl. tempo changes. The
+  reference arch. Key tricks: mel front-end, **wide-tolerance** framewise targets, heavy
+  augmentation (esp. tempo-stretch), shift-tolerant BCE.
+- **Beat Transformer** (Zhao et al. 2022) — dilated self-attention + demixed (HPSS/stem)
+  spectrograms.
+- **BEAST** (2023) — online streaming transformer (beat F1 ~80, downbeat ~47, <50 ms latency).
+- **madmom** RNN/TCN + **DBN bar-pointer** — long-standing strong baseline; Python-3.12/Windows
+  install pain → benchmark last. **BeatNet** CRNN + particle filter (pip+torch). **librosa**
+  (onset env + DP + tempogram) = our current ~28%-exact baseline.
+
+### Recommended architecture
+Two viable routes; we have the mel pipeline + RoPE + 1D-conv infra to reuse:
+- **SOTA upside — small transformer (Beat This!-style):** conv mel front-end → transformer
+  encoder (reuse our **RoPE**) → two linear heads (beat, downbeat) → peak-pick. Generalises best,
+  data-hungry → lean on augmentation.
+- **Pragmatic — TCN (Davies & Böck 2019):** dilated 1D convs (large receptive field) → beat/
+  downbeat heads. Lighter, robust, less data/compute; the recommended **first** bespoke model.
+- **Input:** log-mel (reuse `src/data/audio.py`) but at a **finer hop** than the diffusion 86 fps
+  (offset needs ~5-10 ms; use ~100 fps / 10 ms hop) + **sub-frame parabolic interpolation** of the
+  activation peak for the final offset.
+- **Targets:** two framewise activations in [0,1], `beat[t]`/`downbeat[t]`, each a **widened
+  window** (Gaussian / ±1-2 frames) around the ground-truth times. **Loss:** framewise BCE
+  (positive-weighted/focal — beats are sparse), shift-tolerant.
+- **Training:** AdamW + cosine (our infra). **Augmentation is load-bearing** — tempo-stretch
+  (transforms BPM *and* labels → BPM-range coverage + invariance), pitch-shift (label-invariant),
+  noise, mix. Eval F-measure on val each epoch.
+
+### Inference (osu-specific) — global grid fit
+For single-BPM maps the cleanest output is **one (BPM, offset)** that best aligns the grid to the
+beat activation: tempogram/autocorrelation → BPM candidates; for each, phase-align by
+cross-correlating a click train with the activation; pick the best; take the offset on a
+**downbeat** (downbeat head) and refine sub-frame. This beats per-beat peak-picking for the
+constant-tempo case and yields a precise pair. **"Super timing":** ensemble over windows / a few
+stochastic passes → median, for stability. A DBN bar-pointer (madmom) is the heavier alternative.
+A neat **self-consistent fallback:** our diffusion model already emits an onset channel on the
+frame grid — fit a grid to *its* onsets when no timing model is available.
+
+### Correctness checking
+- **MIR (`mir_eval.beat`):** F-measure (±70 ms), Cemgil, CMLt/CMLc, **AMLt/AMLc** (tolerates
+  octave 2×/½× errors → separates "metrically plausible" from phase errors).
+- **osu exact-match (the one that matters; we have ground truth):** BPM within **0.1** (count
+  octave errors 2×/½×/1.5×/⅔× separately — plausible but wrong for osu); **offset error mod
+  beat_length** (the grid repeats, so phase is what matters) bucketed **<5 ms excellent / <10 good
+  / <20 playable**; **whole-song grid drift** (max deviation of predicted vs true beats — compounds
+  BPM+offset error). Test split by `audio_id`.
+- **Practical:** drop the predicted timing into a generated map, eyeball in the osu! editor.
+
+### Plan (CPU/no-GPU first; train only if needed)
+1. **Dataset extractor + eval harness** (pure CPU, do now): osu timing points → beat/downbeat/
+   BPM/offset labels; the metrics above. No GPU.
+2. **Benchmark pretrained** (Beat This! → BeatNet → librosa; madmom last) on the corpus → know the
+   real exact-match on osu! music. Decisive — may make training unnecessary.
+3. **Train bespoke only if pretrained falls short** — TCN first, transformer for upside. Plenty of
+   labelled data; augmentation-heavy.
+
 ## 11. Audit follow-ups (external review 2026-06-14)
 
 A separate auditor read every `src/` file + re-derived the diffusion math (all
@@ -835,3 +913,8 @@ config as "current" → now base-128/0.3) + the v5 decode (§8.2) + README chann
 - [Farm map (1-2 jumps, Sotarks)](https://osu.miraheze.org/wiki/Farm_map)
 - [Star patterns (forum)](https://osu.ppy.sh/community/forums/topics/292689)
 - [Burst vs alt maps (forum)](https://osu.ppy.sh/community/forums/topics/1763755)
+- Timing model (§10.8): Beat This! (accurate beat tracking w/o DBN, ISMIR 2024 —
+  [researchgate](https://www.researchgate.net/publication/382739081_Beat_this_Accurate_beat_tracking_without_DBN_postprocessing))
+  · [Beat Transformer (dilated self-attn), 2022](https://arxiv.org/pdf/2209.07140)
+  · [BEAST — online streaming transformer, 2023](https://arxiv.org/abs/2312.17156)
+  · Davies & Böck, *TCN for beat tracking*, EUSIPCO 2019 · `mir_eval.beat` metrics
