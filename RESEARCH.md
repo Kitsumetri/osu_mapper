@@ -739,7 +739,8 @@ confidence:
 - **B. Flow/Δposition (conditional on P2).** If v-pred doesn't fully widen spacing, add Δx/Δy
   (velocity) as **auxiliary** prediction targets (extra supervision; decode keeps absolute x/y)
   rather than replacing the representation. +2 ch. Skip if P2 suffices.
-- **C. Curvature cue (conditional).** If sliders stay flat after P2, add a per-slider intended-
+- **C. Curvature cue. ✅ CODE DONE (0c78502)** (sliders stayed flat after P2, so confirmed).
+  Per-slider intended-
   sagitta scalar (held over the span) so the model signals curve-vs-straight intent decoupled
   from anchor MSE; decode scales L/B + displacement from it. **Target 38-45% visibly-curved**
   (user's choice, just above the corpus ~38% upper bound) → bias this cue / decode threshold
