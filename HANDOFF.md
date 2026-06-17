@@ -58,6 +58,7 @@ audio.mp3 ─► log-mel (64×T) ──────┐
 | `src/generate.py` | audio→.osu (DDIM+CFG, `--sr`/`--guidance`/`--match-sr`/`--match-iter`/`--timing-from`); `load_model`+`prepare_audio` let an SR sweep reuse one load |
 | `src/postprocess.py` | beat-snap, slider clamp, trim, `[Events]` breaks |
 | `src/{metrics,corpus_stats,evaluate,package_map}.py` | metrics (incl. `curved_slider_ratio`) / reference dists / SR-sweep eval / package a Songs folder |
+| `src/timing_model/` | **separate package** (not the diffusion model): BPM/offset timing model (RESEARCH §10.8). `labels.py` (beat/downbeat/BPM from osu timing), `metrics.py` (F-measure + osu exact-match). CPU foundation done; model/train pending GPU |
 | `analyze_phase1.py` | real-vs-generated probe (curvature/spacing/flow/SV) — track per-version progress |
 | `tests/` | 116 hermetic tests (no dataset/GPU) |
 | `runs/<id>/`, `data/processed/<tag>/`, `artifacts/` | gitignored heavy outputs |
