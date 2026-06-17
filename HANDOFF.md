@@ -30,7 +30,8 @@ audio.mp3 ─► log-mel (64×T) ──────┐
 
 - **Signal channels** (`src/config.py`): v4 = **10** (onset, slider_hold, spinner_hold,
   new_combo, cursor_x/y, kiai_hold, whistle, finish, clap). **v5 = 17** (+6 slider-anchor
-  dx/dy + 1 slides). ~86 fps (sr 22050, hop 256). Encode/decode in `src/data/signal.py`.
+  dx/dy + 1 slides). **v7 = 18** (+1 `sv` timeline, `CH_SV`). ~86 fps (sr 22050, hop 256).
+  Encode/decode in `src/data/signal.py`; channel checks are index-based so old ckpts load.
 - **Diffusion**: DDPM (1000 steps, linear β), ε-prediction; DDIM sampler + CFG (`diffusion.py`).
 - **U-Net** (`unet.py`): base × (1,2,4,8), FiLM timestep emb, **QK-norm self-attention** at
   the `attn_levels` coarsest levels — do NOT remove QK-norm / learned temperature / zero-init
@@ -91,9 +92,12 @@ uv run python -m src.evaluate --audio song.mp3 --ckpt runs/<id>/ckpt/last.pt --s
 - **v7 ACTIVE = "patterns"** (RESEARCH §10.7). v6 play feedback: patterns are now the #1
   issue (beginner jumps/streams), + persistent weak hitsounds, fluctuating kiai, too-straight
   sliders. **Phase 1 finding:** patterns + straight-sliders = one root cause, **under-dispersion
-  from ε-MSE** (flow angles already ≈ real → attention is *not* the bottleneck). **Phase 2 DONE
-  (code):** v-prediction + zero-terminal-SNR (`--objective v --zero-snr`), hermetic-tested +
-  GPU-smoked. **Next: user trains base-128 v-pred, eval vs Phase-1 baselines** (`analyze_phase1.py`).
+  from ε-MSE** (flow angles already ≈ real → attention is *not* the bottleneck). **Phase 2 DONE**
+  (v-pred + zero-terminal-SNR; trained `runs/20260617-001225-v7-vpred`, partial win — spacing/
+  jumps toward real, but variety/streams/curvature flat → P4 B+C justified). **Phase 4-A DONE
+  (code, b49709f):** learned SV channel (17→18, `CH_SV`); `decode_sv` → stable green-line
+  sections; 17-ch ckpts still load (decode_sv→[]). **Next: P4-B/C channels, then reprocess
+  `gold-v7` (18-ch) + train.** Track with `analyze_phase1.py --ckpt …`.
 - **Env**: `uv` venv, **torch 2.11.0+cu128**. `--compile` wired but Windows-blocked (no MSVC).
   `data/processed/ranked-v5` (17-ch) on disk; `artifacts/reference_stats.json` = 31,362-map ref.
 - **Git**: I cannot push — the user pushes. Commit locally with descriptive messages.

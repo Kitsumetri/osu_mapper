@@ -723,7 +723,8 @@ are 80%**. Implications:
 ### P4 design draft — representation + SV channel (ONE reprocess → `gold-v7`)
 Decide the final channel set *after* P2 numbers (P2 may already fix dispersion). Order by
 confidence:
-- **A. Learned SV channel (the user's insight; highest priority).** Per-frame continuous
+- **A. Learned SV channel (the user's insight; highest priority). ✅ CODE DONE (b49709f).**
+  Per-frame continuous
   channel = the effective SV-multiplier *timeline* (from green lines + SliderMultiplier),
   piecewise-constant. Encode **log2(SV)** scaled+clamped to ~[0.25×,4×]→[-1,1] (multiplicative;
   the rare 10× burst is clipped so it doesn't compress the useful range). 17→18 ch. **Decode —
