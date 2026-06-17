@@ -228,3 +228,76 @@ def test_cursor_channels_track_positions(sample_osu):
     # cursor channels are continuous in [-1.2, 1.2]
     assert sig[4].min() >= -1.21 and sig[4].max() <= 1.21
     assert sig[5].min() >= -1.21 and sig[5].max() <= 1.21
+
+
+def test_sv_value_encode_decode_roundtrip():
+    from src.data.signal import _dec_sv, _enc_sv
+    assert abs(_enc_sv(1.0) - 0.0) < 1e-6        # SV 1.0 -> baseline 0
+    assert abs(_enc_sv(2.0) - 0.5) < 1e-6        # log2(2)/2
+    assert abs(_enc_sv(0.5) + 0.5) < 1e-6
+    for sv in (0.5, 1.0, 1.5, 2.0, 3.5):
+        assert abs(_dec_sv(_enc_sv(sv)) - sv) < 1e-3
+    assert _enc_sv(100.0) <= 1.0 and _enc_sv(0.001) >= -1.0  # clamped
+
+
+def test_sv_channel_roundtrip():
+    """A green-line SV section survives encode -> decode_sv as a stable section."""
+    import pathlib
+
+    from src.config import CH_SV
+    from src.data.signal import decode_sv
+    from src.parsing.beatmap import TYPE_CIRCLE, Beatmap, HitObject, TimingPoint
+    bm = Beatmap(path=pathlib.Path("x.osu"),
+                 timing_points=[TimingPoint(0, 400.0, 4, True),            # red, SV 1.0
+                                TimingPoint(4000, -50.0, 4, False),        # green, SV 2.0
+                                TimingPoint(8000, -100.0, 4, False)])      # green, SV 1.0
+    bm.hit_objects = [HitObject(x=100, y=100, time=t, type=TYPE_CIRCLE, end_time=t)
+                      for t in range(0, 10000, 200)]
+    n = int(AUDIO.time_to_frame(10000)) + 10
+    sig = encode_beatmap(bm, n)
+    assert sig.shape[0] == N_SIGNAL_CHANNELS
+    mid = int(AUDIO.time_to_frame(6000))
+    assert abs(sig[CH_SV, mid] - 0.5) < 1e-3      # SV 2.0 region encoded
+    secs = decode_sv(sig)
+    svs = [s for _, s in secs]
+    assert max(svs) >= 1.8                          # the 2.0 section recovered
+    on = [t for t, s in secs if s >= 1.8][0]
+    assert abs(on - 4000) < 700                     # ~right place (median-smoothed)
+
+
+def test_decode_sv_stable_and_capped():
+    from src.config import CH_SV
+    from src.data.signal import decode_sv
+    rng = np.random.default_rng(0)
+    sig = np.zeros((N_SIGNAL_CHANNELS, 6000), dtype=np.float32)
+    sig[CH_SV] = rng.uniform(-1, 1, 6000)          # pure noise
+    secs = decode_sv(sig, max_sections=8)
+    assert len(secs) <= 8                            # noise collapses, never per-frame
+    # a flat SV=1 channel yields a single (or no) trivial section
+    sig[CH_SV] = 0.0
+    assert len(decode_sv(sig)) <= 1
+
+
+def test_decode_sv_empty_for_pre_v7_signal():
+    from src.data.signal import decode_sv
+    bm = None  # noqa: F841 (only need a 17-ch array)
+    sig17 = np.zeros((N_SIGNAL_CHANNELS - 1, 2000), dtype=np.float32)
+    assert decode_sv(sig17) == []                    # no SV channel -> no sections
+
+
+def test_merge_green_lines_sv_and_kiai():
+    from src.generate import _merge_green_lines
+    from src.parsing.beatmap import TimingPoint
+    base = TimingPoint(0, 400.0, 4, True)
+    kiai = [(2000, 6000)]
+    sv = [(0, 1.0), (4000, 2.0)]
+    tps = _merge_green_lines(base, kiai, sv)
+    greens = [t for t in tps if not t.uninherited]
+    # kiai-on@2000 (SV1), SV2@4000 (kiai on), kiai-off@6000 (SV2)
+    by_t = {int(t.time): t for t in greens}
+    assert by_t[2000].kiai and abs(by_t[2000].sv - 1.0) < 1e-3
+    assert by_t[4000].kiai and abs(by_t[4000].sv - 2.0) < 1e-3
+    assert (not by_t[6000].kiai) and abs(by_t[6000].sv - 2.0) < 1e-3
+    # empty SV reduces to kiai-only green lines (back-compat)
+    only_kiai = [t for t in _merge_green_lines(base, kiai, []) if not t.uninherited]
+    assert len(only_kiai) == 2 and all(abs(t.sv - 1.0) < 1e-3 for t in only_kiai)

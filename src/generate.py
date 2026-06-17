@@ -15,7 +15,7 @@ import torch
 from .conditioning import CONTEXT_DIM, target_context, target_settings
 from .config import AUDIO, N_SIGNAL_CHANNELS
 from .data.audio import load_audio, log_mel
-from .data.signal import decode_kiai, decode_signal
+from .data.signal import decode_kiai, decode_signal, decode_sv
 from .data.timing import estimate_timing_point
 from .model.diffusion import GaussianDiffusion
 from .model.unet import UNet1d
@@ -34,6 +34,42 @@ LoadedModel = namedtuple("LoadedModel", "model diff ctx_dim device")
 PreparedAudio = namedtuple("PreparedAudio", "cond t_len t_full tp")
 
 
+def _active_sv(t_ms: float, sv_secs: list[tuple[int, float]]) -> float:
+    """SV multiplier active at time t (last section starting at/before t, else 1.0)."""
+    sv = 1.0
+    for start, s in sv_secs:
+        if start <= t_ms:
+            sv = s
+        else:
+            break
+    return sv
+
+
+def _merge_green_lines(base_tp, kiai_spans, sv_secs):
+    """Unify SV sections + kiai spans into inherited (green) timing points.
+
+    osu! carries both SV and kiai on the same green line, so at each change in either
+    we emit one line with the active SV (beat_length = -100/SV) and kiai flag (effects
+    bit 0), de-duplicating unchanged states. Green lines are clamped to just after the
+    red line. ``sv_secs=[]`` (pre-v7) reduces to the old kiai-only timing exactly.
+    """
+    events = sorted({a for a, _ in sv_secs} | {t for span in kiai_spans for t in span})
+    timing = [base_tp]
+    last = (-100.0, 1 if base_tp.kiai else 0)
+    for t in events:
+        gt = max(int(t), int(base_tp.time) + 1)
+        sv = _active_sv(gt, sv_secs)
+        kiai = any(a <= gt < b for a, b in kiai_spans)
+        bl = round(-100.0 / max(sv, 1e-3), 4)
+        eff = 1 if kiai else 0
+        if (bl, eff) == last:
+            continue
+        timing.append(TimingPoint(gt, bl, base_tp.meter, False, effects=eff))
+        last = (bl, eff)
+    timing.sort(key=lambda x: x.time)
+    return timing
+
+
 def load_model(ckpt_path, base=64, use_ema=True, device=None) -> LoadedModel:
     """Load a checkpoint into an eval-ready U-Net + diffusion sampler.
 
@@ -48,7 +84,10 @@ def load_model(ckpt_path, base=64, use_ema=True, device=None) -> LoadedModel:
     attn_levels = cargs.get("attn_levels", 2)  # old ckpts: 2 deepest levels
     adaln = cargs.get("adaln", False)          # pre-v6 ckpts used additive FiLM
     ctx_dim = CONTEXT_DIM if ("cfg_drop" in cargs or "ctx_dim" in cargs) else 0
-    model = UNet1d(N_SIGNAL_CHANNELS, AUDIO.n_mels, base=base, attn=attn,
+    # build the model with the checkpoint's own channel count so older 17-ch (v5/v6/v7)
+    # checkpoints still load under the v7 18-ch global (decode handles the missing SV).
+    n_sig = ckpt.get("sig_channels", N_SIGNAL_CHANNELS)
+    model = UNet1d(n_sig, AUDIO.n_mels, base=base, attn=attn,
                    ctx_dim=ctx_dim, attn_levels=attn_levels, adaln=adaln).to(device)
     weights = ckpt["ema"] if (use_ema and ckpt.get("ema")) else ckpt["model"]
     model.load_state_dict(weights)
@@ -101,7 +140,7 @@ def generate(audio_path, ckpt_path=None, out_path="generated.osu", steps=100, ba
         ctx = None
         if ctx_dim and sr_used is not None:
             ctx = torch.tensor([target_context(sr_used)], dtype=torch.float32, device=device)
-        sig = diff.ddim_sample(model, cond, (1, N_SIGNAL_CHANNELS, t_full),
+        sig = diff.ddim_sample(model, cond, (1, model.sig_channels, t_full),
                                steps=steps, ctx=ctx, guidance=guidance,
                                guidance_rescale=guidance_rescale)
         sig = sig[0, :, :T].float().cpu().numpy()
@@ -129,11 +168,10 @@ def generate(audio_path, ckpt_path=None, out_path="generated.osu", steps=100, ba
             snap_slider_ends(objects, tp, bm.slider_multiplier)  # snap slider ends (SV=1)
         clamp_slider_endpoints(objects)
         breaks = compute_breaks(objects)
-        timing = [tp]
-        for ks, ke in decode_kiai(sig):
-            timing.append(TimingPoint(ks, -100.0, tp.meter, False, effects=1))
-            timing.append(TimingPoint(ke, -100.0, tp.meter, False, effects=0))
-        timing.sort(key=lambda t: t.time)
+        # SV + kiai are both carried by green (inherited) lines, so merge them: each
+        # line sets the active SV (beat_length=-100/SV) and kiai flag. decode_sv is []
+        # for pre-v7 ckpts -> SV=1 everywhere -> identical to the old kiai-only timing.
+        timing = _merge_green_lines(tp, decode_kiai(sig), decode_sv(sig))
         write_osu(bm, objects, out_path, timing_points=timing, breaks=breaks)
         return objects
 

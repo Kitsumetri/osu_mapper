@@ -20,6 +20,7 @@ from ..config import (
     CH_CURY,
     CH_SLIDER_ANCHORS,
     CH_SLIDES,
+    CH_SV,
     N_SIGNAL_CHANNELS,
     N_SLIDER_ANCHORS,
 )
@@ -55,6 +56,11 @@ class OsuSignalDataset(Dataset):
         it = self.items[idx]
         mel = _load_mel_cached(str(self.dir / "mels" / f"{it['audio_id']}.npy"))  # (n_mels, T)
         sig = np.load(self.dir / "items" / f"{it['item_id']}.npz")["signal"].astype(np.float32)
+        # pad the channel dim for data preprocessed before a channel was added (e.g. the
+        # v7 SV channel): new trailing channels have baseline 0 (SV 1.0), so zero-pad.
+        if sig.shape[0] < N_SIGNAL_CHANNELS:
+            extra = np.zeros((N_SIGNAL_CHANNELS - sig.shape[0], sig.shape[1]), dtype=np.float32)
+            sig = np.concatenate([sig, extra], axis=0)
         T = min(mel.shape[1], sig.shape[1])
         mel, sig = mel[:, :T], sig[:, :T]
         L = self.crop
@@ -68,15 +74,16 @@ class OsuSignalDataset(Dataset):
             mel = np.pad(mel, ((0, 0), (0, pad)), constant_values=-1.0)
             sigpad = np.full((sig.shape[0], pad), -1.0, dtype=np.float32)
             sigpad[CH_CURX:CH_CURY + 1] = 0.0  # cursor centre
-            if sig.shape[0] >= N_SIGNAL_CHANNELS:
+            if sig.shape[0] > CH_SLIDES:
                 sigpad[CH_SLIDER_ANCHORS:CH_SLIDES] = 0.0  # anchor offsets baseline 0
+            sigpad[CH_SV] = 0.0  # SV baseline = SV 1.0
             sig = np.concatenate([sig, sigpad], axis=1)
         if self.augment:
             # cursor + slider-anchor channels are normalised so playfield centre is
             # 0; negating mirrors positions about the centre. Flipping must hit the
             # anchor dx/dy channels too, or slider geometry is corrupted.
             sig = sig.copy()
-            has_anchors = sig.shape[0] >= N_SIGNAL_CHANNELS
+            has_anchors = sig.shape[0] > CH_SLIDES
             if np.random.rand() < 0.5:  # horizontal flip -> negate all x channels
                 sig[CH_CURX] = -sig[CH_CURX]
                 if has_anchors:

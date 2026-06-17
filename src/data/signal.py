@@ -19,6 +19,7 @@ from ..config import (
     AUDIO,
     CH_SLIDER_ANCHORS,
     CH_SLIDES,
+    CH_SV,
     N_SIGNAL_CHANNELS,
     N_SLIDER_ANCHORS,
     AudioConfig,
@@ -39,6 +40,21 @@ ONSET_SIGMA_FRAMES = 1.2   # width of onset/new-combo bumps
 # treated as a *straight* (linear) slider rather than a curved bezier.
 SLIDER_STRAIGHT_RATIO = 1.06
 SPINNER_MERGE_MS = 800.0   # spinners within this gap are merged into one
+# SV channel: encode the multiplier as log2(SV) clamped to +/-SV_LOG2_CLAMP, scaled
+# to [-1, 1] (multiplicative & symmetric; 0 = SV 1.0). +/-2 covers 0.25x-4x; the rare
+# 10x burst is clipped so it doesn't compress the common range.
+SV_LOG2_CLAMP = 2.0
+
+
+def _enc_sv(sv: float) -> float:
+    """SV multiplier -> channel value in [-1, 1]."""
+    lg = np.log2(max(float(sv), 1e-3))
+    return float(np.clip(lg, -SV_LOG2_CLAMP, SV_LOG2_CLAMP) / SV_LOG2_CLAMP)
+
+
+def _dec_sv(v: float) -> float:
+    """Channel value in [-1, 1] -> SV multiplier."""
+    return float(2.0 ** (float(np.clip(v, -1.0, 1.0)) * SV_LOG2_CLAMP))
 
 
 def _gaussian_bump(signal: np.ndarray, center: float, sigma: float = ONSET_SIGMA_FRAMES):
@@ -95,6 +111,9 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
     # held over the slider span, + a repeat-count channel (baseline -1 = 1 slide).
     anchors = np.zeros((2 * N_SLIDER_ANCHORS, n_frames), dtype=np.float32)
     slides_ch = -np.ones(n_frames, dtype=np.float32)
+    # v7 SV timeline: piecewise-constant multiplier from the timing points (red lines
+    # reset to 1.0, green lines set their multiplier), held to the next change.
+    sv_ch = np.zeros(n_frames, dtype=np.float32)  # baseline 0 = SV 1.0
 
     # cursor key-frames (time_frame, x, y) for interpolation
     keys_t: list[float] = []
@@ -170,6 +189,17 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
         if b >= a:
             kiai[a:b + 1] = 1.0
 
+    # SV timeline: walk timing points in time order (red -> SV 1.0, green -> its
+    # multiplier) and hold each value until the next point.
+    tps = sorted(bm.timing_points, key=lambda t: t.time)
+    for i, tp in enumerate(tps):
+        sv = 1.0 if tp.uninherited else tp.sv
+        a = max(0, int(round(cfg.time_to_frame(tp.time))))
+        b = n_frames if i + 1 >= len(tps) else int(round(cfg.time_to_frame(tps[i + 1].time)))
+        b = min(max(a, b), n_frames)
+        if b > a:
+            sv_ch[a:b] = _enc_sv(sv)
+
     sig[0] = onset * 2 - 1
     sig[1] = slider
     sig[2] = spinner
@@ -182,6 +212,7 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
     sig[9] = clap * 2 - 1
     sig[CH_SLIDER_ANCHORS:CH_SLIDER_ANCHORS + 2 * N_SLIDER_ANCHORS] = anchors
     sig[CH_SLIDES] = slides_ch
+    sig[CH_SV] = sv_ch
     return sig
 
 
@@ -350,8 +381,9 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
     finish = sig[8] if has_accents else None
     clap = sig[9] if has_accents else None
     # v5 dedicated slider channels (anchors + repeat count); fall back to the
-    # cursor-traced shape for older 10-channel signals.
-    has_slider_ch = sig.shape[0] >= N_SIGNAL_CHANNELS
+    # cursor-traced shape for older 10-channel signals. Index-based so a 17-ch v5/v6
+    # signal still decodes anchors under the v7 18-ch global.
+    has_slider_ch = sig.shape[0] > CH_SLIDES
     _ar_end = CH_SLIDER_ANCHORS + 2 * N_SLIDER_ANCHORS
     anchor_ch = sig[CH_SLIDER_ANCHORS:_ar_end] if has_slider_ch else None
     slides_sig = sig[CH_SLIDES] if has_slider_ch else None
@@ -499,3 +531,62 @@ def decode_kiai(sig: np.ndarray, cfg: AudioConfig = AUDIO, threshold: float = 0.
     kept = sorted(kept[:max_spans])
     return [(int(round(cfg.frame_to_time(a))), int(round(cfg.frame_to_time(b))))
             for a, b in kept]
+
+
+def _median_filter1d(x: np.ndarray, k: int) -> np.ndarray:
+    pad = k // 2
+    xp = np.pad(x, pad, mode="edge")
+    return np.array([np.median(xp[i:i + k]) for i in range(len(x))])
+
+
+def _merge_smallest_sv(secs: list[list[float]]) -> list[list[float]]:
+    """Drop the boundary between the two adjacent sections closest in SV (log space)."""
+    best_i, best_d = 0, float("inf")
+    for i in range(len(secs) - 1):
+        d = abs(np.log2(max(secs[i + 1][1], 1e-3)) - np.log2(max(secs[i][1], 1e-3)))
+        if d < best_d:
+            best_d, best_i = d, i
+    return secs[:best_i + 1] + secs[best_i + 2:]
+
+
+def decode_sv(sig: np.ndarray, cfg: AudioConfig = AUDIO, min_section_s: float = 1.5,
+              max_sections: int = 8, hysteresis: float = 0.15, quant: float = 0.05,
+              smooth_ms: float = 500.0) -> list[tuple[int, float]]:
+    """Decode the SV channel into a few *stable* (start_ms, sv) sections.
+
+    SV is structural (a handful of green-line sections), so we smooth + quantise the
+    channel and only open a new section on a change >= ``hysteresis`` that also clears
+    a ``min_section_s`` minimum length, then cap the count. A wobbly channel collapses
+    to stable sections instead of per-slider noise (RESEARCH 10.7 P4-A). Returns [] for
+    pre-v7 signals without the SV channel.
+    """
+    if sig.shape[0] <= CH_SV:
+        return []
+    sv = np.array([_dec_sv(v) for v in sig[CH_SV]], dtype=np.float64)
+    n = len(sv)
+    if n == 0:
+        return []
+    k = max(1, int(round(cfg.time_to_frame(smooth_ms))) | 1)  # odd window
+    if k > 1 and n >= k:
+        sv = _median_filter1d(sv, k)
+    svq = np.round(sv / quant) * quant
+    min_len = max(1, int(round(min_section_s * cfg.frame_rate)))
+    # hysteresis + min-length: a change only registers once min_len has elapsed, so
+    # every section (bar the last) is >= min_len by construction.
+    secs: list[list[float]] = [[0, float(svq[0])]]
+    start = 0
+    for i in range(1, n):
+        if abs(svq[i] - secs[-1][1]) >= hysteresis and (i - start) >= min_len:
+            secs.append([i, float(svq[i])])
+            start = i
+    while len(secs) > max_sections:
+        secs = _merge_smallest_sv(secs)
+    # emit, dropping sections identical to the previous one
+    out: list[tuple[int, float]] = []
+    prev: float | None = None
+    for f, s in secs:
+        if prev is not None and abs(s - prev) < 1e-6:
+            continue
+        out.append((int(round(cfg.frame_to_time(f))), round(float(s), 3)))
+        prev = s
+    return out
