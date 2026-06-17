@@ -47,7 +47,7 @@ audio.mp3 ─► log-mel (64×T) ──────┐
 
 | Path | What |
 |------|------|
-| `src/config.py` | audio + signal channel config (10→17→**19**: `CH_SV`, `CH_CURVE`), frame↔time |
+| `src/config.py` | audio + signal channel config (10→17→19→**20**: `CH_SV`, `CH_CURVE`, `CH_CORNER`), frame↔time |
 | `src/conditioning.py` | difficulty context vector + `target_context` |
 | `src/difficulty.py` | star rating (rosu-pp) + SR bands |
 | `src/parsing/beatmap.py` | `.osu` parser + `write_osu` (bitflags, sliders, kiai, hitsounds, breaks, SV green lines) |
