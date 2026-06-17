@@ -330,6 +330,51 @@ def test_curve_cue_encode_reflects_sagitta():
     assert sag > 15                              # the slider's bow was encoded
 
 
+def test_has_red_points():
+    from src.data.signal import _has_red_points
+    assert _has_red_points([(1, 1), (1, 1), (2, 2)])        # doubled point = red corner
+    assert not _has_red_points([(1, 1), (2, 2), (3, 3)])
+
+
+def test_corner_cue_encode():
+    import pathlib
+
+    from src.config import CH_CORNER
+    from src.parsing.beatmap import TYPE_SLIDER, Beatmap, HitObject
+    bm = Beatmap(path=pathlib.Path("x.osu"))
+    mid = int(AUDIO.time_to_frame(200))
+    n = int(AUDIO.time_to_frame(400)) + 10
+    # red-point slider (doubled control point) -> corner cue 1
+    bm.hit_objects = [HitObject(x=100, y=100, time=0, type=TYPE_SLIDER, end_time=400,
+                               curve_type="B", curve_points=[(200, 200), (200, 200), (300, 100)],
+                               slides=1, length=300.0)]
+    assert encode_beatmap(bm, n)[CH_CORNER, mid] == 1.0
+    # smooth slider -> corner cue 0
+    bm.hit_objects = [HitObject(x=100, y=100, time=0, type=TYPE_SLIDER, end_time=400,
+                               curve_type="B", curve_points=[(150, 80), (250, 120), (300, 100)],
+                               slides=1, length=220.0)]
+    assert encode_beatmap(bm, n)[CH_CORNER, mid] == 0.0
+
+
+def test_corner_cue_decode_makes_red_corner():
+    from src.config import N_SLIDER_ANCHORS
+    from src.data.signal import _slider_from_anchors
+    # an L-shaped (90 deg) anchor polygon: head (256,192) -> (356,192) -> (356,292)
+    anchor_ch = np.zeros((2 * N_SLIDER_ANCHORS, 12), dtype=np.float32)
+    anchor_ch[0, :] = 100 / 512    # a1 = (356, 192)  (the corner)
+    anchor_ch[2, :] = 100 / 512    # a2 dx
+    anchor_ch[3, :] = 100 / 384    # a2 dy = (356, 292)  (the end)
+    anchor_ch[4, :] = 100 / 512    # a3 = a2 -> deduped (avoid looping back to head)
+    anchor_ch[5, :] = 100 / 384
+    start = (256, 192)
+    ct, pts, _ = _slider_from_anchors(start, anchor_ch, 0, 10, curve_cue=None, corner_cue=1.0)
+    assert ct == "B"
+    assert any(pts[i] == pts[i + 1] for i in range(len(pts) - 1))   # doubled = red corner
+    # corner cue off -> no doubling
+    _, pts2, _ = _slider_from_anchors(start, anchor_ch, 0, 10, curve_cue=None, corner_cue=0.0)
+    assert not any(pts2[i] == pts2[i + 1] for i in range(len(pts2) - 1))
+
+
 def test_curve_cue_bows_flat_anchors():
     """The decode realises a high cue as a visible bow even when anchors are collinear."""
     from src.config import N_SLIDER_ANCHORS

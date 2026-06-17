@@ -166,6 +166,31 @@ def test_unet_attention_upgrades_forward_and_grad():
         assert any(p.grad is not None for p in m.parameters())
 
 
+def test_min_snr_loss_weight():
+    diff = GaussianDiffusion(timesteps=100, device=DEV)  # eps
+    w = diff.loss_weight(torch.tensor([1, 50, 99]), gamma=5.0)
+    assert w.shape == (3,) and torch.isfinite(w).all() and (w > 0).all()
+    assert (w <= 1.0 + 1e-4).all()                     # eps: min(snr,g)/snr <= 1
+
+
+def test_diffusion_loss_helper():
+    from types import SimpleNamespace
+
+    from src.train import _diffusion_loss
+    diff = GaussianDiffusion(timesteps=100, device=DEV)
+    pred, target = torch.randn(2, C_SIG, T), torch.randn(2, C_SIG, T)
+    t = torch.tensor([10, 90])
+    mse = _diffusion_loss(pred, target, t, diff,
+                          SimpleNamespace(loss="mse", huber_beta=1.0, min_snr_gamma=0.0))
+    # default mse path matches plain mean MSE
+    assert abs(mse.item() - torch.nn.functional.mse_loss(pred, target).item()) < 1e-5
+    for kw in (dict(loss="huber", huber_beta=1.0, min_snr_gamma=0.0),
+               dict(loss="mse", huber_beta=1.0, min_snr_gamma=5.0),
+               dict(loss="huber", huber_beta=1.0, min_snr_gamma=5.0)):
+        v = _diffusion_loss(pred, target, t, diff, SimpleNamespace(**kw))
+        assert torch.isfinite(v) and v.item() >= 0
+
+
 def test_rope_is_parameter_free():
     # RoPE adds no parameters (so it never breaks loading an existing state_dict)
     base = UNet1d(C_SIG, C_COND, base=16, mults=(1, 2), t_dim=32, attn=True, rope=False)

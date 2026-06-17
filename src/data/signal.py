@@ -17,6 +17,7 @@ import numpy as np
 
 from ..config import (
     AUDIO,
+    CH_CORNER,
     CH_CURVE,
     CH_SLIDER_ANCHORS,
     CH_SLIDES,
@@ -87,6 +88,30 @@ def _polygon_sagitta(poly: list[tuple[float, float]]) -> float:
     return max(abs((px - ax) * dy - (py - ay) * dx) / chord for px, py in poly)
 
 
+# Corner cue: a real slider has a RED control point iff two consecutive control points
+# coincide (a doubled point splits the bezier into a sharp corner). Decode treats a cue
+# above CORNER_DECODE_THRESHOLD as angular -> doubles its sharp anchors. CORNER_TURN_DEG
+# is how sharp an anchor's turn must be to become a corner.
+CORNER_DECODE_THRESHOLD = 0.5
+CORNER_TURN_DEG = 25.0
+
+
+def _has_red_points(curve_points: list[tuple[int, int]]) -> bool:
+    """A red anchor = a doubled consecutive control point (sharp corner)."""
+    return any(curve_points[i] == curve_points[i + 1] for i in range(len(curve_points) - 1))
+
+
+def _turn_deg(a, b, c) -> float:
+    """Turn angle (deg) at b on the path a->b->c (0 = straight, 180 = reversal)."""
+    v1 = (b[0] - a[0], b[1] - a[1])
+    v2 = (c[0] - b[0], c[1] - b[1])
+    n1, n2 = float(np.hypot(*v1)), float(np.hypot(*v2))
+    if n1 < 1e-6 or n2 < 1e-6:
+        return 0.0
+    cos = max(-1.0, min(1.0, (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2)))
+    return float(np.degrees(np.arccos(cos)))
+
+
 def _gaussian_bump(signal: np.ndarray, center: float, sigma: float = ONSET_SIGMA_FRAMES):
     """Add a unit-height Gaussian centred at ``center`` (fractional frame)."""
     lo = int(np.floor(center - 4 * sigma))
@@ -142,6 +167,7 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
     anchors = np.zeros((2 * N_SLIDER_ANCHORS, n_frames), dtype=np.float32)
     slides_ch = -np.ones(n_frames, dtype=np.float32)
     curve_ch = np.zeros(n_frames, dtype=np.float32)  # v7 curvature cue, baseline 0 = straight
+    corner_ch = np.zeros(n_frames, dtype=np.float32)  # v7.5 corner cue, baseline 0 = smooth
     # v7 SV timeline: piecewise-constant multiplier from the timing points (red lines
     # reset to 1.0, green lines set their multiplier), held to the next change.
     sv_ch = np.zeros(n_frames, dtype=np.float32)  # baseline 0 = SV 1.0
@@ -191,6 +217,9 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
                 # curvature cue = the slider's true sagitta (bow off its chord), held
                 # over the span; an easy scalar the model can learn confidently.
                 curve_ch[a:b + 1] = _enc_curve(_polygon_sagitta([(obj.x, obj.y), *cps]))
+                # corner cue = 1 if the slider has red (doubled) control points (angular)
+                if _has_red_points(cps):
+                    corner_ch[a:b + 1] = 1.0
             # cursor end key-frame (flow into the next object) = last anchor
             ex, ey = anchor_pts[-1]
             keys_t.append(f_end)
@@ -248,6 +277,7 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
     sig[CH_SLIDES] = slides_ch
     sig[CH_SV] = sv_ch
     sig[CH_CURVE] = curve_ch
+    sig[CH_CORNER] = corner_ch
     return sig
 
 
@@ -353,7 +383,26 @@ def _bow_polygon(start, pts, target_px):
              int(np.clip(my + uy * target_px, 0, PLAYFIELD_H))), pts[-1]]
 
 
-def _slider_from_anchors(start, anchor_ch, p, end_frame, curve_cue=None):
+def _add_red_corners(start, pts):
+    """Double interior anchors with a sharp turn so osu! renders red corners (a doubled
+    control point splits the bezier into an angular kink). If the cue says angular but no
+    anchor is sharp, double the single sharpest so a corner still appears."""
+    poly = [start, *pts]
+    if len(poly) < 3:
+        return pts
+    turns = [(_turn_deg(poly[i - 1], poly[i], poly[i + 1]), i) for i in range(1, len(poly) - 1)]
+    sharp = {i for t, i in turns if t >= CORNER_TURN_DEG}
+    if not sharp and turns:
+        sharp = {max(turns)[1]}
+    out = []
+    for i in range(1, len(poly)):       # control points are everything after the head
+        out.append(poly[i])
+        if i in sharp:
+            out.append(poly[i])         # doubled -> red corner here
+    return out
+
+
+def _slider_from_anchors(start, anchor_ch, p, end_frame, curve_cue=None, corner_cue=None):
     """Build a slider curve from the v5 dedicated anchor channels.
 
     Each of the K anchors' offset is read as the *mean over the slider span*
@@ -396,6 +445,15 @@ def _slider_from_anchors(start, anchor_ch, p, end_frame, curve_cue=None):
     # the path/chord ratio (which the anchors' collapse renders ~1.0). Pre-v7 (cue
     # None): fall back to the geometric ratio.
     straight = float(np.hypot(simplified[-1][0] - sx, simplified[-1][1] - sy))
+    # v7.5: an "angular" corner cue takes precedence -> red corners (doubled anchors)
+    if (corner_cue is not None and corner_cue >= CORNER_DECODE_THRESHOLD
+            and len(simplified) >= 2):
+        pts = _add_red_corners((sx, sy), simplified)
+        prev, length = (sx, sy), 0.0
+        for q in pts:
+            length += float(np.hypot(q[0] - prev[0], q[1] - prev[1]))
+            prev = q
+        return "B", pts, max(10.0, length)
     if curve_cue is not None:
         curved = curve_cue >= CURVE_DECODE_THRESHOLD_PX
     else:
@@ -465,6 +523,7 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
     anchor_ch = sig[CH_SLIDER_ANCHORS:_ar_end] if has_slider_ch else None
     slides_sig = sig[CH_SLIDES] if has_slider_ch else None
     curve_sig = sig[CH_CURVE] if sig.shape[0] > CH_CURVE else None  # v7 curvature cue
+    corner_sig = sig[CH_CORNER] if sig.shape[0] > CH_CORNER else None  # v7.5 corner cue
     n = sig.shape[1]
 
     def _hit_sound(p: int) -> int:
@@ -544,7 +603,10 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
                 # v7: curvature cue (sagitta px) steers the curve/straight decision + bow.
                 cue = (_dec_curve(float(curve_sig[p:end_frame + 1].mean()))
                        if curve_sig is not None else None)
-                ctype, pts, length = _slider_from_anchors((x, y), anchor_ch, p, end_frame, cue)
+                corner = (float(corner_sig[p:end_frame + 1].mean())
+                          if corner_sig is not None else None)
+                ctype, pts, length = _slider_from_anchors((x, y), anchor_ch, p, end_frame,
+                                                          cue, corner)
                 sl = _dec_slides(float(slides_sig[p:end_frame + 1].mean()))
             else:
                 # legacy 10-channel: follow the cursor path during the hold

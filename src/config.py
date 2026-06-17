@@ -60,6 +60,11 @@ SIGNAL_CHANNELS = [
     # (straight). An easy-to-learn scalar that decouples curve *intent* from the precise
     # anchor offsets (which collapse to straight under MSE). Decode bows to it (P4-C).
     "curve",  # 18
+    # v7.5 corner cue: per-slider "angular" flag (held over the span, baseline 0). Real
+    # osu sliders use RED control points (sharp corners = doubled points); ~13% of
+    # sliders / ~75% of beziers are angular not smooth. High cue -> decode emits red
+    # corners (doubled anchors). RESEARCH 10.9.
+    "corner",  # 19
 ]
 N_SIGNAL_CHANNELS = len(SIGNAL_CHANNELS)
 
@@ -70,5 +75,6 @@ CH_SLIDER_ANCHORS = 10                       # first of 2*N_SLIDER_ANCHORS dx/dy
 CH_SLIDES = CH_SLIDER_ANCHORS + 2 * N_SLIDER_ANCHORS  # 16
 CH_SV = CH_SLIDES + 1                         # 17: slider-velocity timeline
 CH_CURVE = CH_SV + 1                          # 18: per-slider curvature cue
+CH_CORNER = CH_CURVE + 1                      # 19: per-slider red-corner cue
 
 AUDIO = AudioConfig()

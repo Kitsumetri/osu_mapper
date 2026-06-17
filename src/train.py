@@ -64,6 +64,20 @@ class EMA:
             s.copy_(p)
 
 
+def _diffusion_loss(pred, target, t, diff, args):
+    """Diffusion loss with optional Huber distance + Min-SNR-gamma weighting (computed
+    in fp32 for stability). reduction matches the old mean MSE when both are default."""
+    if args.loss == "huber":
+        per = torch.nn.functional.smooth_l1_loss(
+            pred.float(), target.float(), reduction="none", beta=args.huber_beta)
+    else:
+        per = (pred.float() - target.float()) ** 2
+    per = per.mean(dim=tuple(range(1, per.ndim)))     # per-sample (B,)
+    if args.min_snr_gamma > 0:
+        per = per * diff.loss_weight(t, args.min_snr_gamma)
+    return per.mean()
+
+
 def _git_commit() -> str:
     try:
         return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode().strip()
@@ -191,7 +205,7 @@ def train(args):
             target = diff.target(sig, t, noise)
             with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=device == "cuda"):
                 pred = model(x_t, mel, t, ctx=ctx)      # full conditioning (no CFG drop)
-                loss = torch.nn.functional.mse_loss(pred, target)
+            loss = _diffusion_loss(pred, target, t, diff, args)
             tot += loss.item()
             nb += 1
         model.train()
@@ -224,7 +238,7 @@ def train(args):
             target = diff.target(sig, t, noise)
             with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=device == "cuda"):
                 pred = fwd_model(x_t, mel, t, ctx=ctx, ctx_drop=ctx_drop)
-                loss = torch.nn.functional.mse_loss(pred, target) / args.accum
+            loss = _diffusion_loss(pred, target, t, diff, args) / args.accum
             scaler.scale(loss).backward()
             running += loss.item() * args.accum
             if (i + 1) % args.accum == 0:
@@ -312,6 +326,11 @@ def main():
                     help="prediction target: eps (v1-v6) or v (velocity, v7 sharpness fix)")
     ap.add_argument("--zero-snr", action="store_true",
                     help="rescale schedule to zero terminal SNR (requires --objective v)")
+    ap.add_argument("--loss", choices=["mse", "huber"], default="mse",
+                    help="pointwise distance on the diffusion target (huber = robust/sharper)")
+    ap.add_argument("--huber-beta", type=float, default=1.0, help="Huber transition point")
+    ap.add_argument("--min-snr-gamma", type=float, default=0.0,
+                    help="Min-SNR-gamma loss weighting (0 disables; ~5 typical)")
     ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--min-objects", type=int, default=50)

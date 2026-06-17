@@ -64,6 +64,16 @@ class GaussianDiffusion:
             return a * noise - s * x0
         return noise
 
+    def loss_weight(self, t, gamma: float):
+        """Per-sample Min-SNR-gamma loss weight (Hang et al. 2023): caps the loss on
+        easy low-noise steps so training balances across noise levels. Returns (B,)."""
+        acp = self.alphas_cumprod[t]
+        snr = acp / (1.0 - acp).clamp(min=1e-8)
+        capped = torch.clamp(snr, max=gamma)
+        if self.objective == "v":
+            return capped / (snr + 1.0)        # v-pred normalisation
+        return capped / snr.clamp(min=1e-8)    # eps
+
     def _to_x0_eps(self, out, x_t, a, s):
         """Convert a model output (eps or v) at scale (a=sqrt_acp, s=sqrt_1macp) to (x0, eps)."""
         if self.objective == "v":
