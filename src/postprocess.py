@@ -10,8 +10,15 @@ triplet rhythms).
 from __future__ import annotations
 
 from math import hypot
+from pathlib import Path
 
-from .parsing.beatmap import PLAYFIELD_H, PLAYFIELD_W, HitObject, TimingPoint
+from .parsing.beatmap import (
+    PLAYFIELD_H,
+    PLAYFIELD_W,
+    Beatmap,
+    HitObject,
+    TimingPoint,
+)
 
 
 def trim_isolated_ends(objects: list[HitObject], max_gap_ms: float = 3000.0,
@@ -144,32 +151,41 @@ def compute_breaks(objects: list[HitObject], min_gap_ms: float = 3500.0,
     return breaks
 
 
-def snap_slider_ends(objects: list[HitObject], tp: TimingPoint,
+def snap_slider_ends(objects: list[HitObject], tps: list[TimingPoint] | TimingPoint,
                      slider_multiplier: float, divisor: int = 4,
                      gap_frac: float = 0.88) -> int:
     """Snap slider *durations* to a clean beat-grid multiple (fixes off-rhythm
     slider ends), by adjusting each slider's pixel length.
 
-    osu! derives slider duration from length / velocity, so generated sliders end
-    at arbitrary sub-beat times. We round the duration to the nearest 1/``divisor``
-    beat multiple (>=1), keeping it short enough not to overlap the next object,
-    and recompute ``length`` and ``end_time`` to match. Returns sliders changed.
+    osu! derives slider duration from ``length / (SliderMultiplier*100*SV) * beat``,
+    so the pixel length needed for an on-grid duration depends on the **SV at the
+    slider's time**. Pass the *full* timing-point list (with the SV/kiai green lines)
+    — using SV=1 here while the green lines say otherwise is exactly what shifts every
+    slider off the grid. Rounds each duration to the nearest 1/``divisor`` beat
+    (>=1, kept inside the gap to the next object) and recomputes ``length``/``end_time``.
+    Returns sliders changed.
     """
-    if tp.beat_length <= 0:
+    tps = tps if isinstance(tps, list) else [tps]
+    red = next((t for t in tps if t.uninherited and t.beat_length > 0), None)
+    if red is None:
         return 0
-    beat = tp.beat_length
-    iv = beat / divisor
-    velocity = slider_multiplier * 100.0           # px per beat (SV=1)
+    helper = Beatmap(path=Path("."), slider_multiplier=slider_multiplier, timing_points=tps)
     objs = sorted(objects, key=lambda o: o.time)
     changed = 0
     for i, o in enumerate(objs):
         if not o.is_slider or o.length <= 0:
             continue
+        beat = helper._uninherited_at(o.time).beat_length
+        sv = helper._sv_at(o.time)
+        if beat <= 0 or sv <= 0:
+            continue
+        iv = beat / divisor
+        velocity = slider_multiplier * 100.0 * sv      # px per beat AT this slider's SV
         dur = o.end_time - o.time
         nxt = objs[i + 1].time if i + 1 < len(objs) else o.time + 10 * beat
         gap = max(iv, nxt - o.time)
         k = max(1, round(dur / iv))
-        while k > 1 and k * iv > gap * gap_frac:    # keep it inside the gap
+        while k > 1 and k * iv > gap * gap_frac:       # keep it inside the gap
             k -= 1
         new_dur = k * iv
         new_len = new_dur / beat * velocity / max(1, o.slides)

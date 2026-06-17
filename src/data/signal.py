@@ -630,9 +630,9 @@ def _merge_smallest_sv(secs: list[list[float]]) -> list[list[float]]:
     return secs[:best_i + 1] + secs[best_i + 2:]
 
 
-def decode_sv(sig: np.ndarray, cfg: AudioConfig = AUDIO, min_section_s: float = 1.5,
-              max_sections: int = 8, hysteresis: float = 0.15, quant: float = 0.05,
-              smooth_ms: float = 500.0) -> list[tuple[int, float]]:
+def decode_sv(sig: np.ndarray, cfg: AudioConfig = AUDIO, min_section_s: float = 3.0,
+              max_sections: int = 6, hysteresis: float = 0.2, quant: float = 0.1,
+              smooth_ms: float = 700.0) -> list[tuple[int, float]]:
     """Decode the SV channel into a few *stable* (start_ms, sv) sections.
 
     SV is structural (a handful of green-line sections), so we smooth + quantise the

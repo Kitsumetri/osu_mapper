@@ -145,6 +145,26 @@ def test_snap_slider_ends_to_grid():
     assert abs(dur - 200) <= 1     # nearest multiple of 100 to 230 is 200
 
 
+def test_snap_slider_ends_sv_aware():
+    """Under an SV green line, the snapped length must make osu's *recomputed*
+    duration (length/(SM*100*SV)*beat) land on the grid — not SV=1."""
+    from src.parsing.beatmap import TYPE_SLIDER
+    from src.postprocess import snap_slider_ends
+    red = TimingPoint(0, 400.0, 4, True)        # 1/4 = 100 ms
+    green = TimingPoint(0, -200.0, 4, False)    # SV 0.5
+    nxt = HitObject(x=0, y=0, time=1000, type=TYPE_CIRCLE, end_time=1000)
+    s = HitObject(x=0, y=0, time=0, type=TYPE_SLIDER, end_time=230, length=322.0,
+                  curve_type="L", curve_points=[(100, 0)], slides=1)
+    snap_slider_ends([s, nxt], [red, green], slider_multiplier=1.4)
+    osu_dur = s.length / (1.4 * 100 * 0.5) * 400.0      # what osu! will play
+    assert abs(osu_dur - 200) <= 1                       # on the 1/4 grid at the real SV
+    # the SV=0.5 length is half the SV=1 length (proves the SV was applied)
+    s1 = HitObject(x=0, y=0, time=0, type=TYPE_SLIDER, end_time=230, length=322.0,
+                   curve_type="L", curve_points=[(100, 0)], slides=1)
+    snap_slider_ends([s1, nxt], [red], slider_multiplier=1.4)
+    assert abs(s.length - s1.length * 0.5) < 1.0
+
+
 def test_preserves_slider_duration():
     from src.parsing.beatmap import TYPE_SLIDER
     tp = TimingPoint(0, 400.0, 4, True)

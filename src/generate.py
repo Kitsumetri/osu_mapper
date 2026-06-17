@@ -161,18 +161,20 @@ def generate(audio_path, ckpt_path=None, out_path="generated.osu", steps=100, ba
             bm.hp, bm.circle_size = s["hp"], s["cs"]
         else:
             bm.approach_rate, bm.overall_difficulty, bm.hp, bm.circle_size = 8.0, 7.0, 5.0, 4.0
+        # SV + kiai are both carried by green (inherited) lines, so merge them: each
+        # line sets the active SV (beat_length=-100/SV) and kiai flag. decode_sv is []
+        # for pre-v7 ckpts -> SV=1 everywhere -> identical to the old kiai-only timing.
+        # Built BEFORE snapping so slider-end snapping is SV-aware (else SV shifts ends
+        # off the grid — every slider's duration = length/SV).
+        timing = _merge_green_lines(tp, decode_kiai(sig), decode_sv(sig))
         if snap:
             # snap onsets to the nearest of 1/4, 1/8, 1/6 — the model places notes
             # on the 1/8 and 1/6 grids too, so a 1/4-only snap drags those onto the
             # wrong 1/4 line and wrecks the rhythm (play feedback).
             snap_to_grid(objects, tp, divisors=snap_divisors)
-            snap_slider_ends(objects, tp, bm.slider_multiplier)  # snap slider ends (SV=1)
+            snap_slider_ends(objects, timing, bm.slider_multiplier)  # SV-aware
         clamp_slider_endpoints(objects)
         breaks = compute_breaks(objects)
-        # SV + kiai are both carried by green (inherited) lines, so merge them: each
-        # line sets the active SV (beat_length=-100/SV) and kiai flag. decode_sv is []
-        # for pre-v7 ckpts -> SV=1 everywhere -> identical to the old kiai-only timing.
-        timing = _merge_green_lines(tp, decode_kiai(sig), decode_sv(sig))
         write_osu(bm, objects, out_path, timing_points=timing, breaks=breaks)
         return objects
 
