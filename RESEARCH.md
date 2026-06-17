@@ -865,6 +865,47 @@ frame grid — fit a grid to *its* onsets when no timing model is available.
 3. **Train bespoke only if pretrained falls short** — TCN first, transformer (+ our RoPE) for
    upside. Plenty of labelled data; augmentation-heavy.
 
+## 10.9 v7.5 — recover jumps + red/white slider points (design, 2026-06-17)
+
+### Why `--up-attn` killed jumps (analysis)
+v7-full bundled v-pred + SV + curve + **RoPE + up-path attention**; jumps collapsed
+(jump_ratio 0.145→0.048, mean-spacing 129.6→102.8, turn 88→77). Mechanism: **self-attention
+is a weighted *average* across time** — it pulls each frame's cursor value toward an attended
+mean, i.e. it *smooths* the spatial channels and reduces their variance. Jumps need exactly the
+opposite: high-variance, confident position changes. **Up-path** attention sits right before the
+output, so its smoothing hits the final positions directly. Under ε/v-MSE (which already rewards
+mean-prediction) the extra attention capacity is spent *averaging* → lower loss, less dispersion.
+The turn-angle drop (88→77 = more clustered) is the fingerprint. This matches the Phase-1 finding:
+flow angles were already ≈ real, so attention was **not** the bottleneck — adding it *actively
+hurt*. (The down+mid attention from v5/v6 was fine; only the new up-path layer is the suspect.)
+
+**Will ablating it just revert to v7-vpred?** No. Dropping `--rope --up-attn` returns attention
+to the proven v6/vpred config **while keeping the v-pred objective + the SV channel + the curve
+channel**. So it's vpred's jumps **plus** v7's working SV + curved sliders — strictly ahead of
+vpred (which had no SV and flat sliders), not a revert. The bundle confound means the SV/curve
+channels *could* share minor blame; the ablation is the definitive test, but the smoothing
+mechanism + metric direction strongly implicate up-attn.
+
+### Red vs white slider points (measured: real ranked, 250 maps)
+osu! sliders have **white** control points (smooth bezier) and **red** points (sharp corners).
+In the file a **red point = a doubled consecutive control point** (`B|a|b|b|c` → corner at `b`,
+splitting the bezier). **Data:** **12.7% of all sliders have ≥1 red point**, and since only ~17%
+are bezier, **~75% of bezier sliders are red-point/angular, not smooth** — i.e. most osu "curves"
+are *angular*, which our smooth-only decoder cannot produce. Median 1 red point per red-slider
+(mean 1.56, max 87 for zig-zags). So red points matter as much as smooth curves for slider style.
+
+### v7.5 design (one retrain)
+1. **Drop `--rope --up-attn`** → recover jumps (keep SV + curve channels + v-pred). A/B vs v7-full
+   + v7-vpred on jump_ratio/mean-spacing.
+2. **Corner cue channel** (+1, 19→20; mirrors the curvature cue): per-slider scalar = "angular"
+   (set from real red-point detection). **Encode:** detect doubled control points *before* RDP
+   (the current `_rdp` collapses duplicates → destroys corners — must preserve/mark them).
+   **Decode:** when the corner cue is high, emit the sharp-angle anchors as **red** (doubled
+   control points → corners); gentle anchors stay white/smooth (existing curve-cue bow). `write_osu`
+   already writes `curve_points` verbatim, so doubling them is enough — no writer change.
+3. Net v7.5 = jumps back + smooth *and* angular sliders. (Curve target 38-45% now splits into
+   smooth-curve vs red-angular; revisit the metric to count both.)
+
 ## 11. Audit follow-ups (external review 2026-06-14)
 
 A separate auditor read every `src/` file + re-derived the diffusion math (all
