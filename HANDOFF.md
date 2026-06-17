@@ -7,9 +7,10 @@
 Work autonomously: write code, run it (`uv run …`), fix errors, iterate. Be honest about
 quality — state metrics, don't oversell. **You cannot push**; commit locally with
 descriptive messages (`Co-Authored-By: Claude`), the user pushes + PRs to main. Trust the
-user's (`Kitsumetri`) in-game play/mapping feedback. **Next concrete step:** train the
-**v7 Phase 2** model (`--objective v --zero-snr`, base 128) and eval vs the Phase-1
-pattern baselines (RESEARCH §10.7); v6 is the current candidate awaiting that comparison.
+user's (`Kitsumetri`) in-game play/mapping feedback. **Next concrete step:** the **v7
+("patterns") code is all done** (objective + SV/curve channels + attention, §5/§6); the user
+is running the `gold-v7` reprocess + train, then will play-test `[AI-v7]`. When the v7 model
+lands: eval with `analyze_phase1.py --ckpt …` vs the Phase-1 baselines, then act on play feedback.
 
 ## 1. What this is
 
@@ -32,10 +33,11 @@ audio.mp3 ─► log-mel (64×T) ──────┐
   new_combo, cursor_x/y, kiai_hold, whistle, finish, clap). **v5 = 17** (+6 slider-anchor
   dx/dy + 1 slides). **v7 = 19** (+1 `sv` timeline `CH_SV`, +1 `curve` cue `CH_CURVE`). ~86 fps (sr 22050,
   hop 256). Encode/decode in `src/data/signal.py`; channel checks index-based so old ckpts load.
-- **Diffusion**: DDPM (1000 steps, linear β), ε-prediction; DDIM sampler + CFG (`diffusion.py`).
-- **U-Net** (`unet.py`): base × (1,2,4,8), FiLM timestep emb, **QK-norm self-attention** at
-  the `attn_levels` coarsest levels — do NOT remove QK-norm / learned temperature / zero-init
-  proj (the bf16-divergence fix, §7).
+- **Diffusion** (`diffusion.py`): DDPM (1000 steps, linear β); **ε- or v-prediction**
+  (`--objective`, v7 uses `v`) + optional **zero-terminal-SNR**; DDIM sampler + CFG (+rescale).
+- **U-Net** (`unet.py`): base × (1,2,4,8), **adaLN-zero** conditioning (v6+), **QK-norm
+  self-attention** at the `attn_levels` coarsest levels (+ optional `--rope`, `--up-attn`) —
+  do NOT remove QK-norm / learned temperature / zero-init proj (the bf16-divergence fix, §7).
 - **Conditioning** (`conditioning.py`): difficulty vector added to the time emb; CFG (train
   drops it 15%, sample guides).
 - **Star rating** (`difficulty.py`): exact via `rosu-pp-py` (don't reimplement).
@@ -44,36 +46,40 @@ audio.mp3 ─► log-mel (64×T) ──────┐
 
 | Path | What |
 |------|------|
-| `src/config.py` | audio + signal channel config (10→17), frame↔time |
+| `src/config.py` | audio + signal channel config (10→17→**19**: `CH_SV`, `CH_CURVE`), frame↔time |
 | `src/conditioning.py` | difficulty context vector + `target_context` |
 | `src/difficulty.py` | star rating (rosu-pp) + SR bands |
-| `src/parsing/beatmap.py` | `.osu` parser + `write_osu` (bitflags, sliders, kiai, hitsounds, breaks) |
-| `src/data/signal.py` | `encode_beatmap`, `decode_signal` (+ v5 slider anchors/slides), `decode_kiai` |
+| `src/parsing/beatmap.py` | `.osu` parser + `write_osu` (bitflags, sliders, kiai, hitsounds, breaks, SV green lines) |
+| `src/data/signal.py` | `encode_beatmap`, `decode_signal` (slider anchors/slides + curvature-cue bow), `decode_kiai`, `decode_sv` |
 | `src/data/osu_db.py` | parse `osu!.db` → ranked status; `ranked_osu_paths()` |
-| `src/data/{audio,timing,preprocess,dataset}.py` | log-mel / BPM est / crawl→manifest / torch Dataset (+flip aug) |
-| `src/model/{unet,diffusion}.py` | denoiser + DDPM/DDIM/CFG |
-| `src/train.py` | training loop (bf16, EMA, cosine LR, CFG drop, val split, resume, `--compile`) |
-| `src/generate.py` | audio→.osu (DDIM+CFG, `--sr`/`--guidance`/`--match-sr`/`--match-iter`/`--timing-from`); `load_model`+`prepare_audio` helpers let an SR sweep reuse one checkpoint/audio load |
+| `src/data/{audio,timing,preprocess,dataset}.py` | log-mel / BPM est / crawl→manifest / torch Dataset (+flip aug, channel-pad) |
+| `src/model/{unet,diffusion}.py` | denoiser (adaLN, QK-norm, RoPE, up-attn, grad-ckpt) + DDPM/DDIM/CFG (ε/v, zero-SNR) |
+| `src/train.py` | training loop (bf16, EMA, cosine LR, CFG drop, val split, resume; `--objective/--zero-snr/--rope/--up-attn/--grad-checkpoint/--compile`) |
+| `src/generate.py` | audio→.osu (DDIM+CFG, `--sr`/`--guidance`/`--match-sr`/`--match-iter`/`--timing-from`); `load_model`+`prepare_audio` let an SR sweep reuse one load |
 | `src/postprocess.py` | beat-snap, slider clamp, trim, `[Events]` breaks |
-| `src/{metrics,corpus_stats,evaluate,package_map}.py` | metrics / reference dists / SR-sweep eval / package a Songs folder |
-| `tests/` | 94 hermetic tests (no dataset/GPU) |
+| `src/{metrics,corpus_stats,evaluate,package_map}.py` | metrics (incl. `curved_slider_ratio`) / reference dists / SR-sweep eval / package a Songs folder |
+| `analyze_phase1.py` | real-vs-generated probe (curvature/spacing/flow/SV) — track per-version progress |
+| `tests/` | 116 hermetic tests (no dataset/GPU) |
 | `runs/<id>/`, `data/processed/<tag>/`, `artifacts/` | gitignored heavy outputs |
 
 ## 4. How to run (uv env: `uv run …` or activate `.venv`)
 
 ```bash
-uv run pytest                            # 94 hermetic tests
-uv run ruff check .
-uv run python -m src.data.preprocess --songs "C:/osu!/Songs" --out data/processed/<tag> --ranked-only --workers 10
-uv run python -m src.train --data data/processed/<tag> --tag <t> --base 128 --crop 4096 --attn-levels 3 --batch 16 --epochs 60 --save-every 5
-#   base 128 is the proven-stable size — base 160 + bf16 DIVERGES (§7). Resume: --resume runs/<id>/ckpt/last.pt
-#   v7 Phase 2 objective: add `--objective v --zero-snr` (v-loss is O(1), ~100x eps; LR/clip may want retuning)
-uv run python -m src.generate --audio song.mp3 --ckpt runs/<id>/ckpt/last.pt --sr 5 --match-sr --out out.osu
-uv run python analyze_phase1.py   # real-vs-generated curvature/spacing/SV probe (track v7 progress)
-uv run python -m src.evaluate --audio song.mp3 --ckpt runs/<id>/ckpt/last.pt --srs 2,3,4,5,6 --ref-stats artifacts/reference_stats.json
+uv run --extra dev pytest                # 116 hermetic tests
+uv run --extra dev ruff check .
+# v7: gold data -> 19-ch (--gold = ranked+kiai+single-BPM+hitsounds>=10%+1<SR<10)
+uv run python -m src.data.preprocess --songs "C:/osu!/Songs" --out data/processed/ranked-v7 --gold --workers 10
+# v7 train (base 128 stable; base 160 + bf16 DIVERGES, §7). Resume: --resume runs/<id>/ckpt/last.pt
+uv run python -m src.train --data data/processed/ranked-v7 --tag ranked-v7 --base 128 --crop 4096 \
+    --attn-levels 3 --batch 16 --epochs 60 --save-every 5 --augment true --val-frac 0.02 --workers 8 \
+    --objective v --zero-snr --rope --up-attn --grad-checkpoint
+#   v-loss is O(0.05) (~100x eps) -> NOT comparable to v6's 0.003; judge by trend.
+uv run python -m src.generate --audio song.mp3 --ckpt runs/<id>/ckpt/best.pt --sr 5 --match-sr --timing-from ref.osu --out out.osu
+uv run python analyze_phase1.py --ckpt runs/<id>/ckpt/best.pt --label <name>   # real-vs-gen probe
+uv run python -m src.evaluate --audio song.mp3 --ckpt runs/<id>/ckpt/best.pt --srs 2,3,4,5,6 --ref-stats artifacts/reference_stats.json
 ```
 
-## 5. Current state (2026-06-16)
+## 5. Current state (2026-06-17)
 
 - **Released = v5** (`runs/20260614-224107-ranked-v5/ckpt/best.pt`, **17-ch**, epoch 55,
   val 0.0033). 17-channel slider representation (anchor dx/dy + `slides`) on ranked-v5 data,
@@ -106,22 +112,26 @@ uv run python -m src.evaluate --audio song.mp3 --ckpt runs/<id>/ckpt/last.pt --s
   `data/processed/ranked-v5` (17-ch) on disk; `artifacts/reference_stats.json` = 31,362-map ref.
 - **Git**: I cannot push — the user pushes. Commit locally with descriptive messages.
 
-## 6. v6 batch — the next retrain (branch `feat/v6-sv-adaln`; design RESEARCH §10.6)
+## 6. v7 batch — "patterns" (active; design + Phase findings RESEARCH §10.7)
 
-One re-preprocess + fresh train bundling the model-side wins that v5's decode fixes can't reach:
-1. **Gold data** — `preprocess --gold` (ranked + kiai + single-BPM + hitsounds≥10% + 1<SR<10;
-   code DONE, manifest fields added). User refreshed `osu!.db` + added maps. *Re-preprocess
-   with the v6 encoding (below) when the channels are final.*
-2. ❌ **Slider velocity (SV)** — decode-side per-slider attempt REVERTED (too many SV sections;
-   SV is structural like kiai, not per-slider geometry). Proper SV = learned/structural, future
-   v6+ (RESEARCH §10.6.A).
-3. ✅ **adaLN-zero conditioning** — DONE (`--adaln`, default on). DiT per-block scale/shift/gate.
-4. ✅ **Gold data** — `preprocess --gold` (17-ch) → `ranked-v6` DONE. **Fresh train** (adaLN)
-   DONE 2026-06-16 (`runs/20260616-013932-ranked-v6`, val 0.00314). Eval + `[AI-v6]` packaged
-   (RESULTS v6). *Remaining: in-game play test → promote v6 to release if it beats v5.*
+Targets v6's #1 play-feedback gap (beginner-level patterns) + sliders/kiai/hitsounds. **All
+code is done and hermetic-tested; one reprocess + train remains (user runs it).** Bundled:
+- **P2 — objective** ✅ v-prediction + zero-terminal-SNR (`--objective v --zero-snr`). Trained
+  standalone (`runs/20260617-001225-v7-vpred`): stable, partial win (avg spacing/jumps toward
+  real; variety/streams/curvature flat) → motivates the channels below. Also unblocks base-160.
+- **P4-A — SV channel** ✅ (`CH_SV`): learns the SV-multiplier timeline; `decode_sv` emits a few
+  stable green lines (~6-8; median/quantize/hysteresis/min-section/cap). Slider duration follows
+  SV via `write_osu._sv_at`.
+- **P4-C — curvature cue** ✅ (`CH_CURVE`): per-slider sagitta; decode bows the polygon to the cue
+  so curves are *visible* even when anchors collapse flat (target 38-45%; `CURVE_DECODE_THRESHOLD_PX`).
+- **P3 — attention** ✅ `--rope` (relative-time, free), `--up-attn` (up-path, audit S-5),
+  `--grad-checkpoint` (memory). v7-draft fits 12 GB (probe: +up_attn 9.83 GB, +grad_ckpt 5.02;
+  full-res attn4 OOMs → not viable). *Demoted by the flow-angle finding but bundled per user.*
+- **P4-B — flow/Δpos** ⏸ HELD (low-confidence aux; decide from `[AI-v7]` play-test).
 
-Carry-over / parallel: SR-offset bake (§10.1.B), density conditioning for the 0.6–0.8 s gaps,
-a real timing model for novel songs ("super timing", §10.2), flow/pattern modelling (§10.2).
+Decode-only knobs already shipped (no retrain): rhythm snap {¼,⅛,⅙}, slider RDP, AR `7.75+0.25·sr`,
+intro trim, spinner merge, `--timing-from`. Parallel/later (RESEARCH §10.7 P5): kiai
+segmentation head, hitsound musicality, BPM/offset model. v5→v6 history in RESEARCH §10.5/§10.6.
 
 ## 7. Hard-won lessons (don't re-learn these)
 
@@ -142,6 +152,14 @@ a real timing model for novel songs ("super timing", §10.2), flow/pattern model
   `num_workers>0` on Windows spawn).
 - **My background processes get reaped** when the session goes idle (~observed) — long trains
   must be run by the user in their own terminal; I handle eval/codegen that fits a turn.
+- **Patterns + straight-sliders = one root cause: under-dispersion from ε-MSE** (spatial outputs
+  regress to the mean). v-pred helps avg magnitude, not variety/curvature. **Flow angles are
+  already ≈ real → attention is NOT the pattern bottleneck** (representation/objective > attention).
+- **Memory: activations are ~80% of the train footprint, weights ~5%** → fp8/fp4 weight quant is
+  the wrong lever; base-160 is *stability*-blocked not memory-blocked; grad-checkpointing is the
+  real memory lever. SDPA already uses the fused flash kernel → a standalone flash-attn build is
+  not worth it on this box (and prereqs/MSVC absent).
+- **v-loss is ~100× ε-loss** (O(0.05) vs 0.003) — never compare across objectives; judge by trend.
 
 ## 8. Conventions
 

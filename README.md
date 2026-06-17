@@ -21,7 +21,7 @@ audio.mp3 ──► log-mel (64×T) ──┐
                                ├─►  1D U-Net (DDIM denoise)  ──►  signal (C×T)  ──► decode ──► .osu
    noise (C×T) ────────────────┘     ▲ conditioned on mel + difficulty (SR/AR/OD/HP/CS/density)
 ```
-(C = 17 signal channels since v5, 10 on v4 — see below.)
+(C = 19 signal channels on v7, 17 on v5, 10 on v4 — see below.)
 
 ### Signal representation (`src/data/signal.py`)
 
@@ -31,6 +31,9 @@ spinner_hold, new_combo, cursor_x/y, kiai_hold, whistle/finish/clap. **v5 = 17**
 adds 6 slider-anchor `dx/dy` channels (control-point offsets held over the slider
 span) + a `slides` channel, so slider shape and reverse sliders are first-class
 rather than read off the noisy cursor path (see [`TECH_REPORT.md`](TECH_REPORT.md) §3.2).
+**v7 = 19**: adds an `sv` slider-velocity timeline and a per-slider `curve` cue.
+Channel checks are index-based (and the loader uses each checkpoint's own channel
+count), so older 17-ch checkpoints still load under the 19-ch build.
 
 Difficulty is supplied as an **input context vector** `[SR, AR, OD, HP, CS,
 density]` (conditioning, not a channel).
@@ -106,11 +109,11 @@ src/
     preprocess.py        library crawler -> deduped mels + items + manifest.json
     dataset.py           manifest-indexed, mel-deduped torch Dataset (+ flip aug)
   model/
-    unet.py              1D conditional U-Net (FiLM/adaLN time emb + QK-norm attention)
+    unet.py              1D conditional U-Net (adaLN, QK-norm attn, optional RoPE/up-attn)
     diffusion.py         Gaussian DDPM schedule, DDPM + DDIM + CFG sampling
   train.py               training loop (bf16, EMA, cosine LR, runs/ logging)
   generate.py            audio -> .osu inference (DDIM+CFG, EMA, --match-sr, --timing-from)
-tests/                   100 hermetic pytest tests (no dataset/GPU needed)
+tests/                   116 hermetic pytest tests (no dataset/GPU needed)
 main.py                  CLI dispatcher (preprocess | train | generate)
 ```
 
@@ -142,7 +145,7 @@ artifacts/                     # exported, shareable outputs (generated/packaged
 ## Development
 
 ```bash
-uv run pytest          # 100 hermetic tests
+uv run pytest          # 116 hermetic tests
 uv run ruff check .    # lint
 ```
 
@@ -182,13 +185,14 @@ deduped manifest preprocessing; conditional diffusion U-Net (base 128, QK-norm
 attn, bf16, EMA) + DDPM/DDIM/CFG; end-to-end `audio → .osu` + packaging; difficulty
 conditioning + adaLN-zero; kiai + hitsound channels; curved + reverse sliders;
 beat/slider snap; eval harness (`metrics`/`corpus_stats`/`evaluate` + `--match-sr`);
-ranked-only/gold data (osu!.db filter) + flip aug. **Releases: v5** (17-ch slider
-representation); **v6** (adaLN-zero + 25k-map gold data) trained, awaiting play test.
+ranked-only/gold data (osu!.db filter) + flip aug; v-prediction + zero-terminal-SNR;
+learned SV channel + curvature cue; RoPE / up-path attention / grad-checkpointing.
+**Releases: v5** (17-ch). v6 (adaLN + gold) and v7-Phase2 (v-pred) trained; **v7**
+("patterns": 19-ch SV+curve + attention) code done, reprocess+train pending.
 
-**Next** — see `RESEARCH.md §10` (full plan), `RESULTS.md` (history), `HANDOFF.md §6`
-(queue): structural slider-velocity (coarse song-structure sections, not per-slider);
-density conditioning for rhythm gaps; a real timing model for novel songs;
-flow/distance-snap pattern modelling.
+**Next** — see `RESEARCH.md §10.7` (full plan), `RESULTS.md` (history), `HANDOFF.md §6`
+(queue): the v7 reprocess+train + play-test; then flow/Δpos channels (P4-B),
+kiai segmentation head, hitsound musicality, and a BPM/offset model for novel songs.
 
 ## Prior art / credits
 
