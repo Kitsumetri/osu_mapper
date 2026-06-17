@@ -121,7 +121,8 @@ def test_accent_threshold_filters_weak_hitsounds():
 def test_curved_slider_from_anchor_channels():
     """v5: a slider whose dedicated anchor channels hold distinct offsets decodes
     to a multi-point Bezier (shape no longer rides the cursor channels)."""
-    from src.config import CH_SLIDER_ANCHORS, CH_SLIDES
+    from src.config import CH_CURVE, CH_SLIDER_ANCHORS, CH_SLIDES
+    from src.data.signal import _enc_curve
     n = 60
     sig = np.full((N_SIGNAL_CHANNELS, n), -1.0, dtype=np.float32)
     sig[4:6] = 0.0           # cursor centred (head at playfield centre)
@@ -136,6 +137,7 @@ def test_curved_slider_from_anchor_channels():
     sig[CH_SLIDER_ANCHORS + 3, span] = -0.2   # dy2
     sig[CH_SLIDER_ANCHORS + 4, span] = 0.6    # dx3
     sig[CH_SLIDER_ANCHORS + 5, span] = 0.1    # dy3
+    sig[CH_CURVE, span] = _enc_curve(45.0)    # v7 cue: this slider is curved
     dec = decode_signal(sig, onset_threshold=0.3, min_spinner_frames=100)
     sliders = [o for o in dec if o.is_slider]
     assert sliders, "expected a slider"
@@ -157,9 +159,10 @@ def test_nearby_spinners_are_merged():
 def test_collinear_anchors_decode_to_linear_slider():
     """v5: near-collinear anchor channels should decode to a *linear* slider, not
     a wasteful 3-point bezier (fb: a line built from curve points looks bad)."""
-    from src.config import CH_SLIDER_ANCHORS, CH_SLIDES
+    from src.config import CH_CURVE, CH_SLIDER_ANCHORS, CH_SLIDES
+    from src.data.signal import _enc_curve
 
-    def _slider_sig(anchors):
+    def _slider_sig(anchors, curve_px=0.0):
         n = 40
         sig = np.full((N_SIGNAL_CHANNELS, n), -1.0, dtype=np.float32)
         sig[4:6] = 0.0
@@ -170,15 +173,16 @@ def test_collinear_anchors_decode_to_linear_slider():
         for i, (dx, dy) in enumerate(anchors):
             sig[CH_SLIDER_ANCHORS + 2 * i, sp] = dx
             sig[CH_SLIDER_ANCHORS + 2 * i + 1, sp] = dy
+        sig[CH_CURVE, sp] = _enc_curve(curve_px)  # v7 cue drives straight/curved
         return sig
 
-    # collinear anchors along the diagonal -> linear
-    lin = decode_signal(_slider_sig([(0.1, 0.1), (0.2, 0.2), (0.3, 0.3)]),
+    # cue ~0 -> linear (the cue is authoritative over the collapsed anchors)
+    lin = decode_signal(_slider_sig([(0.1, 0.1), (0.2, 0.2), (0.3, 0.3)], curve_px=0.0),
                         onset_threshold=0.3, min_spinner_frames=100)
     s = [o for o in lin if o.is_slider][0]
     assert s.curve_type == "L"
-    # a zig-zag -> curved bezier
-    cur = decode_signal(_slider_sig([(0.3, -0.2), (0.1, 0.3), (0.4, 0.1)]),
+    # high cue -> curved bezier
+    cur = decode_signal(_slider_sig([(0.3, -0.2), (0.1, 0.3), (0.4, 0.1)], curve_px=45.0),
                         onset_threshold=0.3, min_spinner_frames=100)
     s = [o for o in cur if o.is_slider][0]
     assert s.curve_type == "B"
@@ -279,9 +283,9 @@ def test_decode_sv_stable_and_capped():
 
 
 def test_decode_sv_empty_for_pre_v7_signal():
+    from src.config import CH_SV
     from src.data.signal import decode_sv
-    bm = None  # noqa: F841 (only need a 17-ch array)
-    sig17 = np.zeros((N_SIGNAL_CHANNELS - 1, 2000), dtype=np.float32)
+    sig17 = np.zeros((CH_SV, 2000), dtype=np.float32)  # 17 ch, no SV channel
     assert decode_sv(sig17) == []                    # no SV channel -> no sections
 
 
@@ -301,3 +305,43 @@ def test_merge_green_lines_sv_and_kiai():
     # empty SV reduces to kiai-only green lines (back-compat)
     only_kiai = [t for t in _merge_green_lines(base, kiai, []) if not t.uninherited]
     assert len(only_kiai) == 2 and all(abs(t.sv - 1.0) < 1e-3 for t in only_kiai)
+
+
+def test_curve_value_encode_decode():
+    from src.data.signal import _dec_curve, _enc_curve
+    assert _enc_curve(0.0) == 0.0
+    assert _dec_curve(_enc_curve(40.0)) == 40.0
+    assert _enc_curve(10_000.0) <= 1.2          # clamped
+
+
+def test_curve_cue_encode_reflects_sagitta():
+    import pathlib
+
+    from src.config import CH_CURVE
+    from src.data.signal import _dec_curve
+    from src.parsing.beatmap import TYPE_SLIDER, Beatmap, HitObject
+    bm = Beatmap(path=pathlib.Path("x.osu"))
+    bm.hit_objects = [HitObject(x=100, y=100, time=0, type=TYPE_SLIDER, end_time=400,
+                               curve_type="B", curve_points=[(150, 80), (220, 40), (300, 100)],
+                               slides=1, length=220.0)]
+    n = int(AUDIO.time_to_frame(400)) + 10
+    sig = encode_beatmap(bm, n)
+    sag = _dec_curve(sig[CH_CURVE, int(AUDIO.time_to_frame(200))])
+    assert sag > 15                              # the slider's bow was encoded
+
+
+def test_curve_cue_bows_flat_anchors():
+    """The decode realises a high cue as a visible bow even when anchors are collinear."""
+    from src.config import N_SLIDER_ANCHORS
+    from src.data.signal import _polygon_sagitta, _slider_from_anchors
+    anchor_ch = np.zeros((2 * N_SLIDER_ANCHORS, 12), dtype=np.float32)
+    anchor_ch[0, :] = 0.2   # dx1  (all dy=0 -> collinear horizontal)
+    anchor_ch[2, :] = 0.4   # dx2
+    anchor_ch[4, :] = 0.4   # dx3
+    start = (256, 192)
+    ctype, pts, _ = _slider_from_anchors(start, anchor_ch, 0, 10, curve_cue=40.0)
+    assert ctype == "B"
+    assert _polygon_sagitta([start, *pts]) >= 30     # bowed to ~the cue
+    # a low cue keeps the same flat anchors straight
+    ctype2, _, _ = _slider_from_anchors(start, anchor_ch, 0, 10, curve_cue=2.0)
+    assert ctype2 == "L"

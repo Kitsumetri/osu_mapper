@@ -16,6 +16,7 @@ from torch.utils.data import Dataset
 
 from ..conditioning import context_from_manifest
 from ..config import (
+    CH_CURVE,
     CH_CURX,
     CH_CURY,
     CH_SLIDER_ANCHORS,
@@ -77,6 +78,7 @@ class OsuSignalDataset(Dataset):
             if sig.shape[0] > CH_SLIDES:
                 sigpad[CH_SLIDER_ANCHORS:CH_SLIDES] = 0.0  # anchor offsets baseline 0
             sigpad[CH_SV] = 0.0  # SV baseline = SV 1.0
+            sigpad[CH_CURVE] = 0.0  # curvature baseline = straight
             sig = np.concatenate([sig, sigpad], axis=1)
         if self.augment:
             # cursor + slider-anchor channels are normalised so playfield centre is

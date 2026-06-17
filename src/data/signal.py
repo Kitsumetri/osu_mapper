@@ -17,6 +17,7 @@ import numpy as np
 
 from ..config import (
     AUDIO,
+    CH_CURVE,
     CH_SLIDER_ANCHORS,
     CH_SLIDES,
     CH_SV,
@@ -55,6 +56,35 @@ def _enc_sv(sv: float) -> float:
 def _dec_sv(v: float) -> float:
     """Channel value in [-1, 1] -> SV multiplier."""
     return float(2.0 ** (float(np.clip(v, -1.0, 1.0)) * SV_LOG2_CLAMP))
+
+
+# Curvature cue: a slider's sagitta (max bow off the head->tail chord, px) encoded as
+# sagitta/CURVE_PX_SCALE. Decode treats a cue >= CURVE_DECODE_THRESHOLD_PX as a curve
+# and bows the polygon up to CURVE_MAX_BOW_PX. Threshold tunes the curved/straight mix
+# (real ranked ~38%; target 38-45%).
+CURVE_PX_SCALE = 80.0
+CURVE_DECODE_THRESHOLD_PX = 11.0
+CURVE_MAX_BOW_PX = 130.0
+
+
+def _enc_curve(sagitta_px: float) -> float:
+    return float(np.clip(sagitta_px / CURVE_PX_SCALE, 0.0, 1.2))
+
+
+def _dec_curve(v: float) -> float:
+    return float(max(0.0, v) * CURVE_PX_SCALE)
+
+
+def _polygon_sagitta(poly: list[tuple[float, float]]) -> float:
+    """Max perpendicular distance (px) of a control polygon off its head->tail chord."""
+    if len(poly) < 3:
+        return 0.0
+    (ax, ay), (bx, by) = poly[0], poly[-1]
+    dx, dy = bx - ax, by - ay
+    chord = float(np.hypot(dx, dy))
+    if chord < 1e-6:
+        return max(float(np.hypot(px - ax, py - ay)) for px, py in poly)
+    return max(abs((px - ax) * dy - (py - ay) * dx) / chord for px, py in poly)
 
 
 def _gaussian_bump(signal: np.ndarray, center: float, sigma: float = ONSET_SIGMA_FRAMES):
@@ -111,6 +141,7 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
     # held over the slider span, + a repeat-count channel (baseline -1 = 1 slide).
     anchors = np.zeros((2 * N_SLIDER_ANCHORS, n_frames), dtype=np.float32)
     slides_ch = -np.ones(n_frames, dtype=np.float32)
+    curve_ch = np.zeros(n_frames, dtype=np.float32)  # v7 curvature cue, baseline 0 = straight
     # v7 SV timeline: piecewise-constant multiplier from the timing points (red lines
     # reset to 1.0, green lines set their multiplier), held to the next change.
     sv_ch = np.zeros(n_frames, dtype=np.float32)  # baseline 0 = SV 1.0
@@ -157,6 +188,9 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
                     anchors[2 * i, a:b + 1] = dx
                     anchors[2 * i + 1, a:b + 1] = dy
                 slides_ch[a:b + 1] = _enc_slides(obj.slides)
+                # curvature cue = the slider's true sagitta (bow off its chord), held
+                # over the span; an easy scalar the model can learn confidently.
+                curve_ch[a:b + 1] = _enc_curve(_polygon_sagitta([(obj.x, obj.y), *cps]))
             # cursor end key-frame (flow into the next object) = last anchor
             ex, ey = anchor_pts[-1]
             keys_t.append(f_end)
@@ -213,6 +247,7 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
     sig[CH_SLIDER_ANCHORS:CH_SLIDER_ANCHORS + 2 * N_SLIDER_ANCHORS] = anchors
     sig[CH_SLIDES] = slides_ch
     sig[CH_SV] = sv_ch
+    sig[CH_CURVE] = curve_ch
     return sig
 
 
@@ -290,12 +325,42 @@ def _slider_path(start, cur_x, cur_y, p, end_frame, max_anchors: int = 8):
     return ctype, pts, max(10.0, length)
 
 
-def _slider_from_anchors(start, anchor_ch, p, end_frame):
+def _bow_polygon(start, pts, target_px):
+    """Push the apex control point perpendicular to the head->tail chord so the bow
+    reaches ~``target_px`` (keeps the model's lean direction; bounds-clamped). Used to
+    realise the curvature cue when the anchors collapsed to near-straight."""
+    sx, sy = start
+    ex, ey = pts[-1]
+    cx, cy = ex - sx, ey - sy
+    clen = float(np.hypot(cx, cy))
+    if clen < 1e-6 or target_px <= 0:
+        return pts
+    ux, uy = -cy / clen, cx / clen  # unit perpendicular to the chord
+    target_px = min(target_px, CURVE_MAX_BOW_PX)
+    mids = pts[:-1]
+    if mids:
+        def _perp(q):
+            return (q[0] - sx) * ux + (q[1] - sy) * uy
+        ai = max(range(len(mids)), key=lambda i: abs(_perp(mids[i])))
+        sign = 1.0 if _perp(mids[ai]) >= 0 else -1.0
+        delta = sign * target_px - _perp(mids[ai])
+        out = list(pts)
+        out[ai] = (int(np.clip(mids[ai][0] + ux * delta, 0, PLAYFIELD_W)),
+                   int(np.clip(mids[ai][1] + uy * delta, 0, PLAYFIELD_H)))
+        return out
+    mx, my = (sx + ex) / 2, (sy + ey) / 2
+    return [(int(np.clip(mx + ux * target_px, 0, PLAYFIELD_W)),
+             int(np.clip(my + uy * target_px, 0, PLAYFIELD_H))), pts[-1]]
+
+
+def _slider_from_anchors(start, anchor_ch, p, end_frame, curve_cue=None):
     """Build a slider curve from the v5 dedicated anchor channels.
 
     Each of the K anchors' offset is read as the *mean over the slider span*
     (robust to denoising noise), denormalised, and added to the head. Consecutive
-    duplicate anchors are dropped (padding / collapsed shapes). Returns
+    duplicate anchors are dropped (padding / collapsed shapes). ``curve_cue`` (v7, the
+    intended sagitta in px) steers the straight/curved choice and bows the polygon to
+    the target so curves are visible even when the anchors collapse. Returns
     ``(curve_type, control_points, length)``.
     """
     sx, sy = start
@@ -327,11 +392,23 @@ def _slider_from_anchors(start, anchor_ch, p, end_frame):
     for q in simplified:
         length += float(np.hypot(q[0] - prev[0], q[1] - prev[1]))
         prev = q
-    # straight-vs-curved: a near-collinear polygon is a *line* (emit linear, not a
-    # bezier). Path within ~6% of the straight distance => straight.
+    # straight-vs-curved. v7: trust the learned curvature cue (a robust scalar) over
+    # the path/chord ratio (which the anchors' collapse renders ~1.0). Pre-v7 (cue
+    # None): fall back to the geometric ratio.
     straight = float(np.hypot(simplified[-1][0] - sx, simplified[-1][1] - sy))
-    if len(simplified) < 2 or length <= straight * SLIDER_STRAIGHT_RATIO:
+    if curve_cue is not None:
+        curved = curve_cue >= CURVE_DECODE_THRESHOLD_PX
+    else:
+        curved = len(simplified) >= 2 and length > straight * SLIDER_STRAIGHT_RATIO
+    if not curved:
         return "L", [simplified[-1]], max(10.0, straight)
+    # curved: if the anchors didn't actually bow enough, realise the cue's sagitta
+    if curve_cue is not None and _polygon_sagitta([(sx, sy), *simplified]) < curve_cue:
+        simplified = _bow_polygon((sx, sy), simplified, curve_cue)
+        prev, length = (sx, sy), 0.0
+        for q in simplified:
+            length += float(np.hypot(q[0] - prev[0], q[1] - prev[1]))
+            prev = q
     return "B", simplified, max(10.0, length)
 
 
@@ -387,6 +464,7 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
     _ar_end = CH_SLIDER_ANCHORS + 2 * N_SLIDER_ANCHORS
     anchor_ch = sig[CH_SLIDER_ANCHORS:_ar_end] if has_slider_ch else None
     slides_sig = sig[CH_SLIDES] if has_slider_ch else None
+    curve_sig = sig[CH_CURVE] if sig.shape[0] > CH_CURVE else None  # v7 curvature cue
     n = sig.shape[1]
 
     def _hit_sound(p: int) -> int:
@@ -462,8 +540,11 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
         hs = _hit_sound(p)
         if win.size and win.max() > 0.0 and (end_frame - p) >= min_slider_frames:
             if has_slider_ch:
-                # v5: shape from dedicated anchor channels; repeat count from slides
-                ctype, pts, length = _slider_from_anchors((x, y), anchor_ch, p, end_frame)
+                # v5: shape from dedicated anchor channels; repeat count from slides.
+                # v7: curvature cue (sagitta px) steers the curve/straight decision + bow.
+                cue = (_dec_curve(float(curve_sig[p:end_frame + 1].mean()))
+                       if curve_sig is not None else None)
+                ctype, pts, length = _slider_from_anchors((x, y), anchor_ch, p, end_frame, cue)
                 sl = _dec_slides(float(slides_sig[p:end_frame + 1].mean()))
             else:
                 # legacy 10-channel: follow the cursor path during the hold

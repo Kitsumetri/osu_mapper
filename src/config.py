@@ -56,6 +56,10 @@ SIGNAL_CHANNELS = [
     # piecewise-constant like real green-line sections. Decode quantises it to a few
     # stable green lines (RESEARCH 10.7 P4-A). Appended -> 0-16 keep their meaning.
     "sv",  # 17
+    # v7 curvature cue: per-slider intended bow (sagitta) held over the span, baseline 0
+    # (straight). An easy-to-learn scalar that decouples curve *intent* from the precise
+    # anchor offsets (which collapse to straight under MSE). Decode bows to it (P4-C).
+    "curve",  # 18
 ]
 N_SIGNAL_CHANNELS = len(SIGNAL_CHANNELS)
 
@@ -65,5 +69,6 @@ CH_KIAI, CH_WHISTLE, CH_FINISH, CH_CLAP = 6, 7, 8, 9
 CH_SLIDER_ANCHORS = 10                       # first of 2*N_SLIDER_ANCHORS dx/dy channels
 CH_SLIDES = CH_SLIDER_ANCHORS + 2 * N_SLIDER_ANCHORS  # 16
 CH_SV = CH_SLIDES + 1                         # 17: slider-velocity timeline
+CH_CURVE = CH_SV + 1                          # 18: per-slider curvature cue
 
 AUDIO = AudioConfig()
