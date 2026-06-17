@@ -134,9 +134,11 @@ class GaussianDiffusion:
                 out = out_c = model(x, cond, t, ctx=ctx)
             x0, eps = self._to_x0_eps(out, x, a_t, s_t)
             if guidance_rescale > 0 and use_cfg:
+                # per-sample std (over channel+time) so rescaling is correct under
+                # batched sampling, not just the B=1 inference path.
                 x0_c, _ = self._to_x0_eps(out_c, x, a_t, s_t)
-                std_c = x0_c.std()
-                std_g = x0.std().clamp(min=1e-8)
+                std_c = x0_c.std(dim=(1, 2), keepdim=True)
+                std_g = x0.std(dim=(1, 2), keepdim=True).clamp(min=1e-8)
                 x0 = guidance_rescale * (x0 * std_c / std_g) + (1 - guidance_rescale) * x0
             x0 = x0.clamp(-1.5, 1.5)
             if k == 0:

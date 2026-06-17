@@ -167,10 +167,19 @@ def test_unet_attention_upgrades_forward_and_grad():
 
 
 def test_min_snr_loss_weight():
+    # eps loss is applied in noise-space (= SNR * x0-loss), so to get the Min-SNR
+    # effective x0-weight min(SNR,g) the eps weight must be min(SNR,g)/SNR (matches
+    # diffusers). NOT min(SNR,g) — that would double-count SNR. Lock the formula.
     diff = GaussianDiffusion(timesteps=100, device=DEV)  # eps
-    w = diff.loss_weight(torch.tensor([1, 50, 99]), gamma=5.0)
-    assert w.shape == (3,) and torch.isfinite(w).all() and (w > 0).all()
-    assert (w <= 1.0 + 1e-4).all()                     # eps: min(snr,g)/snr <= 1
+    t = torch.tensor([1, 50, 99])
+    snr = diff.alphas_cumprod[t] / (1 - diff.alphas_cumprod[t])
+    w = diff.loss_weight(t, gamma=5.0)
+    assert torch.allclose(w, torch.clamp(snr, max=5.0) / snr, atol=1e-5)
+    assert (w <= 1.0 + 1e-4).all()                     # min(snr,g)/snr <= 1
+    # v-prediction loss = (SNR+1)*x0-loss -> weight min(SNR,g)/(SNR+1)
+    dv = GaussianDiffusion(timesteps=100, device=DEV, objective="v")
+    wv = dv.loss_weight(t, gamma=5.0)
+    assert torch.allclose(wv, torch.clamp(snr, max=5.0) / (snr + 1), atol=1e-5)
 
 
 def test_diffusion_loss_helper():

@@ -88,7 +88,7 @@ def _git_commit() -> str:
 def _lr_at(step, total, warmup, base_lr):
     if step < warmup:
         return base_lr * step / max(1, warmup)
-    prog = (step - warmup) / max(1, total - warmup)
+    prog = min((step - warmup) / max(1, total - warmup), 1.0)  # clamp: never let LR rise back
     return 0.5 * base_lr * (1 + math.cos(math.pi * prog))
 
 
@@ -168,6 +168,8 @@ def train(args):
             ema.shadow.load_state_dict(resume_ck["ema"])
         if resume_ck.get("opt"):
             opt.load_state_dict(resume_ck["opt"])
+        if resume_ck.get("scaler") and use_scaler:
+            scaler.load_state_dict(resume_ck["scaler"])  # keep fp16 scale across resume
         start_epoch = int(resume_ck.get("epoch", -1)) + 1
         gstep = int(resume_ck.get("gstep", start_epoch * steps_per_epoch))
         best = float(resume_ck.get("best", best))
@@ -206,8 +208,8 @@ def train(args):
             with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=device == "cuda"):
                 pred = model(x_t, mel, t, ctx=ctx)      # full conditioning (no CFG drop)
             loss = _diffusion_loss(pred, target, t, diff, args)
-            tot += loss.item()
-            nb += 1
+            tot += loss.item() * b      # sample-weight so a smaller last batch isn't over-counted
+            nb += b
         model.train()
         return tot / max(1, nb)
 
@@ -273,6 +275,7 @@ def train(args):
             torch.save({"model": model.state_dict(),
                         "ema": ema.shadow.state_dict() if ema else None,
                         "opt": opt.state_dict(), "gstep": gstep, "best": best,
+                        "scaler": scaler.state_dict() if use_scaler else None,
                         "args": vars(args), "epoch": epoch,
                         "sig_channels": N_SIGNAL_CHANNELS,
                         "git_commit": config["git_commit"]}, path)
