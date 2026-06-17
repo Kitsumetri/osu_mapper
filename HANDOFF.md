@@ -98,7 +98,10 @@ uv run python -m src.evaluate --audio song.mp3 --ckpt runs/<id>/ckpt/last.pt --s
   (code):** SV channel (`CH_SV`, `decode_sv`→stable green lines) + curvature cue (`CH_CURVE`,
   decode bows to the cue → visible curves, target 38-45%). 17→**19 ch**. 17-ch ckpts still load
   (cue/SV dormant). **P4-B (flow/Δpos) HELD** pending `[AI-v7]` play-test (low-confidence aux).
-  **Next: reprocess `gold-v7` (19-ch) + train** (user). Track with `analyze_phase1.py --ckpt …`.
+  **P3 attention upgrade DONE (code, 6459ee7):** `--rope --up-attn --grad-checkpoint` (backward-
+  compatible). v7-draft memory probe: baseline 5.30 GB, +rope+up_attn 9.83, +grad_ckpt 5.02;
+  full-res attn4 OOMs (not viable). **Next: reprocess `gold-v7` (19-ch) + train** with
+  `--objective v --zero-snr --rope --up-attn` (user). Track with `analyze_phase1.py --ckpt …`.
 - **Env**: `uv` venv, **torch 2.11.0+cu128**. `--compile` wired but Windows-blocked (no MSVC).
   `data/processed/ranked-v5` (17-ch) on disk; `artifacts/reference_stats.json` = 31,362-map ref.
 - **Git**: I cannot push — the user pushes. Commit locally with descriptive messages.

@@ -674,8 +674,12 @@ visibly-curved (user's choice, just above the corpus ~38% upper bound; v6 is ~13
 - **P5** parallel tracks: kiai segmentation head (#4); hitsound musicality (#2); BPM/offset
   (try pretrained beat-trackers before a bespoke net).
 
-### P3 design draft — attention upgrade (cheap A/B; demoted by the flow-angle finding)
-Gate on whether it adds anything *on top of* P2; build nothing exotic.
+### P3 — attention upgrade ✅ CODE DONE (6459ee7); gate on whether it beats P2 in play
+Build nothing exotic. RoPE + up-path attention + grad-checkpointing implemented behind flags
+(`--rope --up-attn --grad-checkpoint`), backward-compatible. **v7 draft memory (base128, b16,
+crop4096, 19-ch):** baseline 5.30 GB · +rope 5.31 · +up_attn 9.83 · **+up_attn+grad_ckpt 5.02**
+(grad-checkpointing makes up-attention ~free) · attn4 (full-res O(T²)) OOMs → not viable.
+**Recommended config: `--rope --up-attn` (+`--grad-checkpoint` for headroom).** Details:
 - **RoPE in `AttnBlock1d`** — attention is currently pure content-based (no positional
   signal beyond conv locality); rotary embeddings inject *relative time* so the model can
   attend "N frames ago" (beats recur at a fixed frame stride, ~26 fr at 200 BPM/86 fps).
