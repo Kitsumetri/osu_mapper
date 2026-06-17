@@ -4,6 +4,35 @@ Training-run history + generated-map quality (metrics via `src/metrics.py`).
 **Current release: v5** (`runs/20260614-224107-ranked-v5/ckpt/best.pt`, 17-ch).
 **v6 + v7-Phase2 trained; v7 work in progress (RESEARCH §10.7).**
 
+## v7 full — SV + curve channels + attention (TRAINED 2026-06-17)
+
+`runs/20260617-083444-ranked-v7/ckpt/best.pt` (epoch ~56, **val 0.0457** v-scale). 19-ch
+`ranked-v7` gold data, base 128, `--objective v --zero-snr --rope --up-attn --grad-checkpoint`,
+60 ep, clean (no divergence, ~690 s/epoch = ~2× v6 from up-attention), 71.6 M params.
+
+**Phase-1 A/B** (`analyze_phase1.py`, real vs v6 vs v7-vpred vs v7-full; 10-map sweeps):
+| measure | real | v6 | v7-vpred | **v7-full** |
+|---|---|---|---|---|
+| SV non-trivial % | 83.9 | 0 | 0 | **100** ✅ |
+| SV changes/map | 10 | 0 | 0 | **5** ✅ (target ~6-8) |
+| visible-curve % (sagitta≥10) | 37.4 | 13.4 | 12.1 | **29.3** ✅ (target 38-45) |
+| mean spacing px | 133.6 | 119.7 | 129.6 | **102.8** ✗ |
+| jump_ratio | 0.207 | 0.119 | 0.145 | **0.048** ✗✗ |
+| std spacing px | 77.4 | 66.2 | 67.5 | **57.2** ✗ |
+| turn_deg | 88.6 | 85.1 | — | **76.8** ✗ |
+
+**Mixed result.** ✅ The **SV channel works** (0→5 sections/map, 100% non-trivial, sensible
+0.35–1.4× range — the stability-first decode landed in target) and **curvature jumped** 13→29%
+(toward 38-45; `CURVE_DECODE_THRESHOLD_PX` can push higher, decode-only). ✗ But **spacing/jumps
+REGRESSED hard** vs v7-vpred (jump 0.145→0.048, mean-spacing 129.6→102.8, turn 88→77) — the
+bundled SV+curve+attention cost the pattern dispersion v-pred had gained. Spacing is object
+*positions* (not affected by the SV/curve decode), so this is model-side. Prime suspect: the
+**attention add (rope/up-attn)** — it was demoted by the flow-angle finding (attention ≠ the
+bottleneck) and turn-angle dropping points to over-clustering. Bundling P2+P3+P4 lost attribution,
+as flagged. Packaged `[AI-v7full]` (SR4.8, 500 obj) for play-test. **Next: play-test feel, then
+likely ablate attention** (retrain v7 with `--objective v --zero-snr` only, no rope/up-attn) to
+confirm and recover jumps while keeping SV/curve.
+
 ## v7 Phase 2 — v-prediction + zero-terminal-SNR (TRAINED 2026-06-17)
 
 `runs/20260617-001225-v7-vpred/ckpt/best.pt` (epoch 59, **val 0.0507** — v-loss scale,
