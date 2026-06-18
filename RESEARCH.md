@@ -772,6 +772,13 @@ confidence:
   all under-produced. **Jumps have no decode lever** (unlike density) — spacing magnitude *is* the
   under-dispersion ceiling (~116px cap) → needs P4-B flow channels / representation work. Cheap
   no-retrain nudge to try: higher CFG `--guidance` (3-4, more committed/extreme outputs).
+- **Trailing-outro phantom (bug, v7.5 play feedback).** On "Happppy song" the gen put a circle at
+  318.82 s (audio 318.85 s; the ref mapper stopped at 316.9 s, leaving ~2 s outro) → autobot fails
+  on the last note. The model over-maps the low-energy outro; `trim_isolated_ends` only trims
+  ≥~2.2 s trailing gaps so ~1 s-gap tail notes survive. **Fix (decode, no retrain):** trim trailing
+  notes that fall after the last *dense* cluster / in the low-mel-energy tail (mirror of the #1
+  intro-empty issue — the model is unreliable in low-energy sections, under-firing in intros and
+  over-firing in outros). Cheap P0.
 - **Kiai segmentation head (#4 fluctuation).** Kiai is one stochastic channel → borderline
   sections flip per sample (eval saw kiai=0.00 at SR4). Train a small **supervised mel→kiai**
   1D-conv head (BCE vs real kiai labels) and use its *deterministic* output at decode (and/or as

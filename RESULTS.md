@@ -28,6 +28,14 @@ sections) and curves (28% visible). So v7.5 = v-pred's jumps + v7's SV + curves 
 **Red corners generate but under-produced (2% vs real ~13%)** — decode knob `CORNER_DECODE_THRESHOLD`
 (tunable, no retrain), to calibrate after play-test. Packaged `[AI-v75]` (SR4.9, 451 obj).
 
+**Play feedback (in-game, 2026-06-18) — best model so far:** rhythm 7/10 (still some gaps);
+hitsounds 4/10 (unstable song-to-song); sliders 6/10 (still many straight lines, but red-corner
+sliders work + short/long SV sliders appear — both new wins); patterns 6/10 (jumps sometimes
+good/sometimes nasty, streams clearly better — the SV-snap fix helped a lot). Bug: on "Happppy
+song" the **last circle sits in the dead outro** (audio 318.85s, real content ends ~316.9s, gen
+placed one at 318.82s) → autobot fails there → needs a stronger trailing trim (decode). Action
+plan in RESEARCH §10.7 P5 / HANDOFF.
+
 ## v7 full — SV + curve channels + attention (TRAINED 2026-06-17)
 
 `runs/20260617-083444-ranked-v7/ckpt/best.pt` (epoch ~56, **val 0.0457** v-scale). 19-ch
