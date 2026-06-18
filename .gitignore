@@ -30,3 +30,8 @@ generated*.osu
 # os
 Thumbs.db
 .DS_Store
+
+# agent-to-agent handoff: live working context, edited every session. Not versioned
+# (the durable tracked docs are README / RESEARCH / RESULTS / TECH_REPORT).
+/HANDOFF.md
+/NEW_AGENT_PROMPT.md

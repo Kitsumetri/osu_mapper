@@ -1,6 +1,8 @@
 # osu_mapper — audio → osu! beatmap generation
 
-> **Continuing this project? Start with [`HANDOFF.md`](HANDOFF.md).**
+> **Continuing this project?** If `HANDOFF.md` is present (the live, git-ignored agent
+> working context) read it first; otherwise this README + `RESEARCH.md` (design/roadmap)
+> + `RESULTS.md` (run history) are the tracked reference.
 
 A diffusion-based pipeline that learns to generate **osu!standard** beatmaps
 from raw audio, trained on a local osu! Songs library.
@@ -21,7 +23,7 @@ audio.mp3 ──► log-mel (64×T) ──┐
                                ├─►  1D U-Net (DDIM denoise)  ──►  signal (C×T)  ──► decode ──► .osu
    noise (C×T) ────────────────┘     ▲ conditioned on mel + difficulty (SR/AR/OD/HP/CS/density)
 ```
-(C = 19 signal channels on v7, 17 on v5, 10 on v4 — see below.)
+(C = 20 signal channels on v7.5, 17 on v5, 10 on v4 — see below.)
 
 ### Signal representation (`src/data/signal.py`)
 
@@ -115,7 +117,7 @@ src/
   train.py               training loop (bf16, EMA, cosine LR, runs/ logging)
   generate.py            audio -> .osu inference (DDIM+CFG, EMA, --match-sr, --timing-from)
   timing_model/          SEPARATE model: BPM/offset beat tracker (labels + eval; RESEARCH 10.8)
-tests/                   127 hermetic pytest tests (no dataset/GPU needed)
+tests/                   129 hermetic pytest tests (no dataset/GPU needed)
 main.py                  CLI dispatcher (preprocess | train | generate)
 ```
 
@@ -147,7 +149,7 @@ artifacts/                     # exported, shareable outputs (generated/packaged
 ## Development
 
 ```bash
-uv run pytest          # 127 hermetic tests
+uv run pytest          # 129 hermetic tests
 uv run ruff check .    # lint
 ```
 
