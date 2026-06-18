@@ -764,6 +764,14 @@ confidence:
   raising the **onset ceiling** (the same under-firing as the intro-gap/dropped-note #1/#6). Also a
   **circle/slider-balance** nudge (the slider bias crowds out stream circles). Highest-leverage for
   "match stream songs"; queue alongside the onset-decode fix.
+- **Extreme per-song STYLE, not just streams (jump test 2026-06-18, "Happppy song" [happy birthday
+  to me.], a jump map).** Same shape as the stream test on the other axis: ref jump_ratio 0.387 /
+  spacing 167, v7.5 made 0.129 / 116 — it matched aggregate stats (density 4.57≈4.12, slider 0.38≈0.38,
+  streams 0.17≈0.15) but **not the song's jump-spam**. General finding: **the model regresses to the
+  average map for the conditioned SR**; per-song extremes (deathstream, jump-spam, heavy-curve) are
+  all under-produced. **Jumps have no decode lever** (unlike density) — spacing magnitude *is* the
+  under-dispersion ceiling (~116px cap) → needs P4-B flow channels / representation work. Cheap
+  no-retrain nudge to try: higher CFG `--guidance` (3-4, more committed/extreme outputs).
 - **Kiai segmentation head (#4 fluctuation).** Kiai is one stochastic channel → borderline
   sections flip per sample (eval saw kiai=0.00 at SR4). Train a small **supervised mel→kiai**
   1D-conv head (BCE vs real kiai labels) and use its *deterministic* output at decode (and/or as
