@@ -64,7 +64,8 @@ def _dec_sv(v: float) -> float:
 # and bows the polygon up to CURVE_MAX_BOW_PX. Threshold tunes the curved/straight mix
 # (real ranked ~38%; target 38-45%).
 CURVE_PX_SCALE = 80.0
-CURVE_DECODE_THRESHOLD_PX = 11.0
+CURVE_DECODE_THRESHOLD_PX = 6.0    # lowered (v7.5 feedback: too many straight); curved sliders
+CURVE_MIN_BOW_PX = 14.0            # bow curved sliders to at least this, so they read as curved
 CURVE_MAX_BOW_PX = 130.0
 
 
@@ -92,7 +93,7 @@ def _polygon_sagitta(poly: list[tuple[float, float]]) -> float:
 # coincide (a doubled point splits the bezier into a sharp corner). Decode treats a cue
 # above CORNER_DECODE_THRESHOLD as angular -> doubles its sharp anchors. CORNER_TURN_DEG
 # is how sharp an anchor's turn must be to become a corner.
-CORNER_DECODE_THRESHOLD = 0.5
+CORNER_DECODE_THRESHOLD = 0.25    # lowered (v7.5 feedback: too few red corners, 2% vs ~13%)
 CORNER_TURN_DEG = 25.0
 
 
@@ -460,9 +461,11 @@ def _slider_from_anchors(start, anchor_ch, p, end_frame, curve_cue=None, corner_
         curved = len(simplified) >= 2 and length > straight * SLIDER_STRAIGHT_RATIO
     if not curved:
         return "L", [simplified[-1]], max(10.0, straight)
-    # curved: if the anchors didn't actually bow enough, realise the cue's sagitta
-    if curve_cue is not None and _polygon_sagitta([(sx, sy), *simplified]) < curve_cue:
-        simplified = _bow_polygon((sx, sy), simplified, curve_cue)
+    # curved: realise at least a visibly-curved bow (>=CURVE_MIN_BOW_PX) so a low cue
+    # near the threshold still reads as a curve, not a near-line.
+    bow_to = max(curve_cue, CURVE_MIN_BOW_PX) if curve_cue is not None else CURVE_MIN_BOW_PX
+    if _polygon_sagitta([(sx, sy), *simplified]) < bow_to:
+        simplified = _bow_polygon((sx, sy), simplified, bow_to)
         prev, length = (sx, sy), 0.0
         for q in simplified:
             length += float(np.hypot(q[0] - prev[0], q[1] - prev[1]))
@@ -490,6 +493,31 @@ def _pick_peaks(channel: np.ndarray, threshold: float, min_gap: int) -> list[int
             peaks.append(i)
             last = i
     return peaks
+
+
+def _recover_stream_gaps(peaks: list[int], channel: np.ndarray, threshold: float,
+                         min_gap: int, recover_frac: float = 0.5, tol: float = 0.34,
+                         max_run_frames: int = 14) -> list[int]:
+    """Recover a single onset dropped from an otherwise-regular run (the rare
+    ``c_*_c_c``): where a gap is ~2x the preceding small gap, probe the midpoint for a
+    *sub-threshold* local max and re-insert it. Gated by the channel actually having a
+    weak bump there, so it fills real holes without inventing notes (a genuine 1/2 gap
+    has no bump -> untouched)."""
+    if len(peaks) < 3:
+        return peaks
+    rec_thr = threshold * recover_frac
+    extra: list[int] = []
+    for i in range(1, len(peaks) - 1):
+        g_prev = peaks[i] - peaks[i - 1]
+        g_next = peaks[i + 1] - peaks[i]
+        if 0 < g_prev <= max_run_frames and abs(g_next - 2 * g_prev) <= g_prev * tol:
+            m = peaks[i] + g_prev                      # expected dropped-note frame
+            w = max(1, g_prev // 3)
+            lo, hi = max(0, m - w), min(len(channel) - 1, m + w)
+            j = lo + int(np.argmax(channel[lo:hi + 1]))
+            if channel[j] >= rec_thr and j - peaks[i] >= min_gap and peaks[i + 1] - j >= min_gap:
+                extra.append(j)
+    return sorted(set(peaks) | set(extra))
 
 
 def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
@@ -569,6 +597,7 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
         spinner_spans = [(a, b) for a, b in merged]
 
     peaks = _pick_peaks(onset, onset_threshold, min_gap_frames)
+    peaks = _recover_stream_gaps(peaks, onset, onset_threshold, min_gap_frames)
     for k, p in enumerate(peaks):
         # skip onsets that fall inside a spinner span
         if any(a <= p <= b for a, b in spinner_spans):

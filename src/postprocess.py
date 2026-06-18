@@ -9,6 +9,7 @@ triplet rhythms).
 """
 from __future__ import annotations
 
+import statistics
 from math import hypot
 from pathlib import Path
 
@@ -24,7 +25,9 @@ from .parsing.beatmap import (
 def trim_isolated_ends(objects: list[HitObject], max_gap_ms: float = 3000.0,
                        trail_gap_ms: float | None = None,
                        spinner_tail_ms: float = 1200.0,
-                       lead_cluster: int = 4) -> int:
+                       lead_cluster: int = 4,
+                       tail_outlier_ms: float = 700.0,
+                       tail_gap_mult: float = 6.0) -> int:
     """Drop leading/trailing objects separated from the body by a huge silent gap.
 
     Fixes the "one lone note seconds after the song ends" artefact: if the last
@@ -48,6 +51,16 @@ def trim_isolated_ends(objects: list[HitObject], max_gap_ms: float = 3000.0,
     while len(objs) >= 2 and objs[-1].time - objs[-2].end_time > trail_gap_ms:
         objs.pop()
         removed += 1
+    # density-adaptive trailing trim: the model over-maps low-energy outros, leaving
+    # phantom tail notes whose lead-in gap is below trail_gap_ms but a big outlier vs
+    # the map's typical spacing (autoplay fails on a lone circle in the dead outro).
+    gaps = [b.time - a.end_time for a, b in zip(objs, objs[1:]) if b.time - a.end_time >= 0]
+    if len(gaps) >= 8:
+        med = statistics.median(gaps)
+        floor = max(tail_outlier_ms, tail_gap_mult * med)
+        while len(objs) >= 2 and objs[-1].time - objs[-2].end_time > floor:
+            objs.pop()
+            removed += 1
     if (len(objs) >= 2 and objs[-1].is_circle and objs[-2].is_spinner
             and 0 <= objs[-1].time - objs[-2].end_time < spinner_tail_ms):
         objs.pop()

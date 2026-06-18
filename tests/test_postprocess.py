@@ -145,6 +145,19 @@ def test_snap_slider_ends_to_grid():
     assert abs(dur - 200) <= 1     # nearest multiple of 100 to 230 is 200
 
 
+def test_trim_trailing_outlier_tail():
+    """Phantom outro notes (gaps below trail_gap_ms but big outliers vs the body's
+    spacing) get trimmed by the density-adaptive tail trim (the autobot-fail bug)."""
+    from src.parsing.beatmap import TYPE_CIRCLE
+    from src.postprocess import trim_isolated_ends
+    objs = [HitObject(x=100, y=100, time=t, type=TYPE_CIRCLE, end_time=t)
+            for t in range(0, 2000, 100)]                      # dense body, 100 ms gaps
+    objs += [HitObject(x=100, y=100, time=2900, type=TYPE_CIRCLE, end_time=2900),
+             HitObject(x=100, y=100, time=3800, type=TYPE_CIRCLE, end_time=3800)]  # phantoms
+    removed = trim_isolated_ends(objs)
+    assert removed == 2 and objs[-1].time == 1900            # tail trimmed back to the body
+
+
 def test_snap_slider_ends_sv_aware():
     """Under an SV green line, the snapped length must make osu's *recomputed*
     duration (length/(SM*100*SV)*beat) land on the grid — not SV=1."""

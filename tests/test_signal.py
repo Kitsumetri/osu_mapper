@@ -330,6 +330,22 @@ def test_curve_cue_encode_reflects_sagitta():
     assert sag > 15                              # the slider's bow was encoded
 
 
+def test_recover_stream_gaps():
+    from src.data.signal import _recover_stream_gaps
+    ch = np.full(60, -1.0, dtype=np.float32)
+    for f in (0, 8, 16, 32):
+        ch[f] = 1.0
+    ch[24] = 0.2                       # weak sub-threshold bump = a dropped 1/4 note
+    out = _recover_stream_gaps([0, 8, 16, 32], ch, threshold=0.3, min_gap=2)
+    assert any(22 <= p <= 26 for p in out)            # hole recovered
+    # genuine 1/2 gap (no bump) must NOT be filled
+    ch2 = np.full(60, -1.0, dtype=np.float32)
+    for f in (0, 8, 16, 32):
+        ch2[f] = 1.0
+    out2 = _recover_stream_gaps([0, 8, 16, 32], ch2, threshold=0.3, min_gap=2)
+    assert not any(20 <= p <= 28 for p in out2 if p not in (0, 8, 16, 32))
+
+
 def test_has_red_points():
     from src.data.signal import _has_red_points
     assert _has_red_points([(1, 1), (1, 1), (2, 2)])        # doubled point = red corner
