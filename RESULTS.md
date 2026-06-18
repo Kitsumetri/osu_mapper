@@ -4,6 +4,30 @@ Training-run history + generated-map quality (metrics via `src/metrics.py`).
 **Current release: v5** (`runs/20260614-224107-ranked-v5/ckpt/best.pt`, 17-ch).
 **v6 + v7-Phase2 trained; v7 work in progress (RESEARCH §10.7).**
 
+## v7.5 — attention dropped + red points (TRAINED 2026-06-17, best so far)
+
+`runs/20260617-223917-ranked-v75/ckpt/best.pt` (val 0.0473 v-scale). 20-ch `ranked-v75`
+gold (+`corner` cue), `--objective v --zero-snr` **(no rope/up-attn)** `--compile`, 60 ep,
+clean. **~203 s/epoch (~3.4× faster than v7-full's 685 s** — dropping up-attn + `--compile`
+working now). 66.1 M params.
+
+**Phase-1 A/B — the attention ablation worked:**
+| measure | real | v7-vpred | v7-full | **v7.5** |
+|---|---|---|---|---|
+| jump_ratio | 0.207 | 0.145 | 0.048 | **0.131** |
+| mean spacing px | 133.6 | 129.6 | 102.8 | **123.9** |
+| std spacing px | 77.4 | 67.5 | 57.2 | **67.3** |
+| turn_deg | 88.6 | — | 76.8 | **89.8** |
+| visible-curve % | 37.4 | 12.1 | 29.3 | **28.4** |
+| SV changes/map | 10 | 0 | 5 | **4** |
+
+**Confirmed: up-path attention was killing jumps** (self-attention averages → compresses
+spatial variance). Dropping it recovered jump_ratio 0.048→0.131 (~v-pred level), mean-spacing
+and turn-angle back to ≈ real — **while keeping** the SV channel (90% non-trivial, ~4 stable
+sections) and curves (28% visible). So v7.5 = v-pred's jumps + v7's SV + curves = best combo yet.
+**Red corners generate but under-produced (2% vs real ~13%)** — decode knob `CORNER_DECODE_THRESHOLD`
+(tunable, no retrain), to calibrate after play-test. Packaged `[AI-v75]` (SR4.9, 451 obj).
+
 ## v7 full — SV + curve channels + attention (TRAINED 2026-06-17)
 
 `runs/20260617-083444-ranked-v7/ckpt/best.pt` (epoch ~56, **val 0.0457** v-scale). 19-ch
