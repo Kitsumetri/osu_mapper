@@ -1000,6 +1000,32 @@ compounding facts make the spatial channels the worst-hit:
   dropping up-attn (v7.5) recovered the rest of v-pred's level — both confirm the ceiling is the
   *representation*, not attention or the objective.
 
+### Which channels collapse, and why — *not all of them* (the three buckets)
+Mean-regression pulls **every** channel toward its conditional mean given (audio + difficulty);
+whether that hurts depends on what that mean *is* and how decode reads it. The governing rule:
+**a channel is endangered in proportion to how much its correct value depends on information NOT
+in the audio.** Three buckets:
+- **(1) Safe — the mean is the right answer (audio-determined).** `onset`, `slider_hold`,
+  `spinner_hold`, hitsound *count*. The mel strongly determines note *times*, so the onset bumps
+  stay at musical onsets (they don't wash to the −1 baseline *at notes*). This is why rhythm is the
+  model's best dimension (7/10) and slider/circle mix ≈ real. (Hitsound *quantity* is fine→over —
+  decode needs `accent_threshold` 0.85 because the channel **over-fires**, ~0.52→0.33; signal.py.
+  The 4/10 is placement/musicality + stability, a *different* problem.)
+- **(2) Collapse — a free creative choice the audio doesn't pin down (P4-B's family).**
+  `cursor_x/y` → centre → spacing collapses (116 vs 167). slider anchors → collinear (median
+  sagitta 0.0) → straight (partly rescued by the curve cue → 28%). `corner` → a **rare binary →
+  regresses to ~base-rate 0.13 → decode-thresholds to ~2%** — the clearest "washed to baseline"
+  case, and exactly *why* the corner cue under-fires. One shared root: a high-variance target the
+  audio doesn't determine.
+- **(3) Hurt by a *different* mechanism (not magnitude collapse).** `kiai` — structural,
+  few-count, boundary-ambiguous → under-confident → borderline sections flip per sample (eval saw
+  kiai 0.00 at SR4); fix = the supervised kiai head, not P4-B. `spinner` — under-produced from data
+  sparsity, not cancellation.
+
+**Takeaway:** bucket 2 is the single biggest gap and the shared cause of *both* the pattern and the
+straight-slider complaints — but it is **not** a whole-signal collapse. Bucket-1 channels working is
+exactly why the maps are playable. v8 targets bucket 2; bucket-3 items stay on their own tracks.
+
 ### The key correction to the §10.7-B draft (signed Δ does NOT fix it)
 The old draft proposed "add Δx/Δy (velocity) auxiliary targets." **Signed Δx/Δy mean-regress to
 ≈ 0** the same way absolute x/y regress to centre — jump *directions* are ~uniform, so the mean
@@ -1065,6 +1091,35 @@ free nudge: CFG `--guidance 3–4` (more committed/extreme) on the jump song.
   multiplier mappers actually use) instead of raw px — a more *stationary* target, but couples to
   timing at decode. Note for v9 if raw magnitude proves noisy.
 
+### v8 scope — cursor only, or anchors + corners too?
+All three bucket-2 channels collapse, but they need different amounts of *new* work, and the
+v7-full "bundling lost attribution" lesson has a sharper reading: **bundle changes whose metrics
+are DISJOINT (attribution survives); isolate changes that move the SAME metric.** v7-full's mistake
+was up-attn fighting SV/curve over the *same* spatial-dispersion metric. Here the candidate fixes
+touch disjoint metrics and most are **decode-tunable**, so a bundle is recoverable at eval time.
+- **Cursor x/y — core, new representation.** Spacing-magnitude channel + decode reconstruction.
+  Owns the headline metric (jump_ratio / mean-spacing). Decode-tunable via `--spacing-scale` α
+  (α=0 → today's behaviour) → its effect is attributable post-train *without a retrain*.
+- **Slider anchors — NO new representation; helped for free.** Curvature *magnitude* is already
+  the curve cue (the non-negative-scalar fix, working at 28%); the per-channel **loss up-weighting**
+  (a complementary v8 lever) also up-weights the anchor channels → extra push on straightness,
+  measured by `curved_slider_ratio` (disjoint from jump_ratio). A richer anchor-*shape* rep
+  (waves/blankets geometry) shares metrics with the curve cue and is a harder problem → **defer to
+  v9.**
+- **Corner — re-encode in place and bundle.** Same principle as the spacing channel: replace the
+  rare *binary* (ch 19) with a **graded scalar** = red-point *count* per slider, scaled+held (e.g.
+  `min(n,4)/4`), so it mean-regresses to a useful value instead of base-rate. Rides the *mandatory*
+  reprocess (≈ free), measured by an **orthogonal** metric (angular-slider ratio), and decode-tunable
+  (`CORNER_DECODE_THRESHOLD`). Note: decode-threshold alone was already tried (lowered to 0.25, still
+  ~2%) → the *trained channel value sits low* → re-encode + retrain is the real fix.
+
+**Decision: v8 = spacing-magnitude channel (cursor) + corner re-encode (graded) + spatial-channel
+loss up-weighting (cursor + anchors), one reprocess → `ranked-v8` (21-ch), one train.** Anchors get
+incidental help; a dedicated slider-shape rep waits for v9. Attribution holds because the metrics
+are disjoint *and* the channel/corner effects are decode-tunable (set α=0 / raise the corner
+threshold to isolate each at eval) — so the one baked-in change (loss weighting) can itself be
+isolated by toggling the decode knobs.
+
 ### Eval & acceptance
 `analyze_phase1.py` (real vs v7.5 vs v8): **mean-spacing toward 134, jump_ratio toward 0.20, std
 toward 77** without collapsing streams/turn-angle. Then the **Happppy jump-song A/B** (target
@@ -1078,7 +1133,9 @@ mitigated by NC re-anchor + reflection + the de-risk pass above; (2) over-spacin
 songs if the channel over-fires — mitigated by the `--spacing-scale` blend (decode-tunable);
 (3) stream interaction (don't inflate 1/4 spacing) — the magnitude is per-gap so streams (small
 gaps) keep small spacing by construction. Build order: spacing channel + decode reconstruction
-first (the representation fix), per-channel loss weighting bundled into the same train, A/B vs v7.5.
+first (the representation fix), then corner re-encode (graded) + per-channel loss up-weighting
+bundled into the same reprocess/train; A/B vs v7.5 on disjoint metrics (jump_ratio, angular-slider
+ratio, curved_slider_ratio), isolating each via its decode knob.
 
 ## 11. Audit follow-ups (external review 2026-06-14)
 
