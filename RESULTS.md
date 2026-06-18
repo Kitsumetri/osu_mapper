@@ -2,6 +2,127 @@
 
 Training-run history + generated-map quality (metrics via `src/metrics.py`).
 **Current release: v5** (`runs/20260614-224107-ranked-v5/ckpt/best.pt`, 17-ch).
+**v6 + v7-Phase2 trained; v7 work in progress (RESEARCH §10.7).**
+
+## v7.5 — attention dropped + red points (TRAINED 2026-06-17, best so far)
+
+`runs/20260617-223917-ranked-v75/ckpt/best.pt` (val 0.0473 v-scale). 20-ch `ranked-v75`
+gold (+`corner` cue), `--objective v --zero-snr` **(no rope/up-attn)** `--compile`, 60 ep,
+clean. **~203 s/epoch (~3.4× faster than v7-full's 685 s** — dropping up-attn + `--compile`
+working now). 66.1 M params.
+
+**Phase-1 A/B — the attention ablation worked:**
+| measure | real | v7-vpred | v7-full | **v7.5** |
+|---|---|---|---|---|
+| jump_ratio | 0.207 | 0.145 | 0.048 | **0.131** |
+| mean spacing px | 133.6 | 129.6 | 102.8 | **123.9** |
+| std spacing px | 77.4 | 67.5 | 57.2 | **67.3** |
+| turn_deg | 88.6 | — | 76.8 | **89.8** |
+| visible-curve % | 37.4 | 12.1 | 29.3 | **28.4** |
+| SV changes/map | 10 | 0 | 5 | **4** |
+
+**Confirmed: up-path attention was killing jumps** (self-attention averages → compresses
+spatial variance). Dropping it recovered jump_ratio 0.048→0.131 (~v-pred level), mean-spacing
+and turn-angle back to ≈ real — **while keeping** the SV channel (90% non-trivial, ~4 stable
+sections) and curves (28% visible). So v7.5 = v-pred's jumps + v7's SV + curves = best combo yet.
+**Red corners generate but under-produced (2% vs real ~13%)** — decode knob `CORNER_DECODE_THRESHOLD`
+(tunable, no retrain), to calibrate after play-test. Packaged `[AI-v75]` (SR4.9, 451 obj).
+
+**Play feedback (in-game, 2026-06-18) — best model so far:** rhythm 7/10 (still some gaps);
+hitsounds 4/10 (unstable song-to-song); sliders 6/10 (still many straight lines, but red-corner
+sliders work + short/long SV sliders appear — both new wins); patterns 6/10 (jumps sometimes
+good/sometimes nasty, streams clearly better — the SV-snap fix helped a lot). Bug: on "Happppy
+song" the **last circle sits in the dead outro** (audio 318.85s, real content ends ~316.9s, gen
+placed one at 318.82s) → autobot fails there → needs a stronger trailing trim (decode). Action
+plan in RESEARCH §10.7 P5 / HANDOFF.
+
+## v7 full — SV + curve channels + attention (TRAINED 2026-06-17)
+
+`runs/20260617-083444-ranked-v7/ckpt/best.pt` (epoch ~56, **val 0.0457** v-scale). 19-ch
+`ranked-v7` gold data, base 128, `--objective v --zero-snr --rope --up-attn --grad-checkpoint`,
+60 ep, clean (no divergence, ~690 s/epoch = ~2× v6 from up-attention), 71.6 M params.
+
+**Phase-1 A/B** (`analyze_phase1.py`, real vs v6 vs v7-vpred vs v7-full; 10-map sweeps):
+| measure | real | v6 | v7-vpred | **v7-full** |
+|---|---|---|---|---|
+| SV non-trivial % | 83.9 | 0 | 0 | **100** ✅ |
+| SV changes/map | 10 | 0 | 0 | **5** ✅ (target ~6-8) |
+| visible-curve % (sagitta≥10) | 37.4 | 13.4 | 12.1 | **29.3** ✅ (target 38-45) |
+| mean spacing px | 133.6 | 119.7 | 129.6 | **102.8** ✗ |
+| jump_ratio | 0.207 | 0.119 | 0.145 | **0.048** ✗✗ |
+| std spacing px | 77.4 | 66.2 | 67.5 | **57.2** ✗ |
+| turn_deg | 88.6 | 85.1 | — | **76.8** ✗ |
+
+**Mixed result.** ✅ The **SV channel works** (0→5 sections/map, 100% non-trivial, sensible
+0.35–1.4× range — the stability-first decode landed in target) and **curvature jumped** 13→29%
+(toward 38-45; `CURVE_DECODE_THRESHOLD_PX` can push higher, decode-only). ✗ But **spacing/jumps
+REGRESSED hard** vs v7-vpred (jump 0.145→0.048, mean-spacing 129.6→102.8, turn 88→77) — the
+bundled SV+curve+attention cost the pattern dispersion v-pred had gained. Spacing is object
+*positions* (not affected by the SV/curve decode), so this is model-side. Prime suspect: the
+**attention add (rope/up-attn)** — it was demoted by the flow-angle finding (attention ≠ the
+bottleneck) and turn-angle dropping points to over-clustering. Bundling P2+P3+P4 lost attribution,
+as flagged. Packaged `[AI-v7full]` (SR4.8, 500 obj) for play-test. **Next: play-test feel, then
+likely ablate attention** (retrain v7 with `--objective v --zero-snr` only, no rope/up-attn) to
+confirm and recover jumps while keeping SV/curve.
+
+## v7 Phase 2 — v-prediction + zero-terminal-SNR (TRAINED 2026-06-17)
+
+`runs/20260617-001225-v7-vpred/ckpt/best.pt` (epoch 59, **val 0.0507** — v-loss scale,
+~100x eps, NOT comparable to v6's 0.003). Same gold-v6 data + adaLN, base 128, 60 ep,
+`--objective v --zero-snr`. Clean convergence, no divergence (~329 s/epoch) — confirms the
+objective swap is stable and unblocks future base-160 scaling.
+
+**Phase-1 metric A/B** (`analyze_phase1.py`, real 397 vs v6 vs v7; 10-map sweeps):
+| measure | real | v6 | v7-vpred |
+|---|---|---|---|
+| mean spacing px | 133.5 | 119.7 | **129.6** |
+| jump_ratio | 0.205 | 0.119 | **0.145** |
+| std spacing px | 77.3 | 66.2 | 67.5 |
+| stream_ratio | 0.149 | 0.101 | 0.088 |
+| visible-curve % (sagitta≥10) | 38.1 | 13.4 | 12.1 |
+| median sagitta px | 4.8 | 0.0 | 0.0 |
+
+**Partial win:** v-pred closed ~70% of the mean-spacing gap and ~28% of the jump gap
+(bigger, more confident movements = the under-dispersion mechanism), but **did NOT improve
+spacing variety (std), streams, or slider curvature** (median slider still dead-straight).
+`guidance_rescale 0.7` didn't help → keep 0. Conclusion: objective fixes average *magnitude*,
+not *variety*/curvature → **P4 flow (B) + curvature-cue (C) channels now justified** (were
+conditional on P2). Packaged `[AI-v7]` (SR 5.18, 450 obj, 2-min set) for play test.
+
+## v6 — adaLN-zero + gold data (TRAINED 2026-06-16, awaiting play test)
+
+`runs/20260616-013932-ranked-v6/ckpt/best.pt` (epoch 59, **val 0.00314**). 17-ch,
+**adaLN-zero conditioning** (DiT per-block scale/shift/gate, `--adaln` default on) on
+**gold data** `data/processed/ranked-v6` (**25,073 maps**: ranked + 100% kiai + single-BPM
++ hitsounds≥10% + 1<SR<10), base 128 / crop 4096 / attn_levels 3 / batch 16 / 60 epochs,
+flip aug. Clean convergence, no divergence (~330 s/epoch); 66.1 M params.
+
+**Eval — SR sweep (Headphone Actor, vs `reference_stats.json`):**
+```
+ target  got SR   dens  strm  jump  grid   bez  kiai    hs  in-range
+    2.0    2.82   2.45  0.00  0.02  0.75  0.09  0.21  0.24  14/19
+    3.0    3.29   2.97  0.01  0.04  0.79  0.13  0.11  0.28  16/19
+    4.0    3.59   3.02  0.01  0.03  0.79  0.08  0.00  0.27  17/19
+    5.0    5.24   4.18  0.08  0.07  0.78  0.18  0.10  0.33  16/19
+    6.0    6.52   5.19  0.18  0.12  0.75  0.16  0.14  0.44  17/19
+```
+SR monotonic ✓. bez 0.75–0.79 (curved sliders solid). hitsounds 0.24→0.44 scale with SR
+(real ~0.33). **One flag: kiai 0.00 at SR4** (others 0.10–0.21) — watch in-game given
+gold is 100% kiai. Packaged `[AI-v6]` (target SR5, `--match-sr`→4.90, `--timing-from`
+Collab Expert, 926 obj, CS4/AR9).
+
+**A/B vs v5** (same audio/eval, v5 = `20260614-224107-ranked-v5/ckpt/best.pt`):
+```
+            target:  2.0   3.0   4.0   5.0   6.0
+got SR   v6 (adaLN) 2.82  3.29  3.59  5.24  6.52   in-range 14/16/17/16/17
+         v5         3.01  3.46  4.29  5.79  6.87   in-range 13/16/13/16/18
+```
+Sense-check: v6 SR calibration is **tighter to target** in the low/mid range (v5 over-shoots
+everywhere; v6 close except an SR4 dip), and **more consistent in-range** mid-curve (SR4
+17 vs 13). v5 has marginally more uniform kiai across SRs (0.15–0.23 vs v6's 0.00–0.21 with
+the SR4 outlier) and slightly higher hitsounds. **Static metrics are roughly a wash** — the
+adaLN difficulty-control + gold-data kiai/hitsound consistency wins are the kind that show
+up in play, not corpus stats. Promotion to release pending in-game feedback.
 
 ## v5 — slider-shape + reverse sliders (DONE 2026-06-15)
 

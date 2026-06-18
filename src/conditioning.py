@@ -47,12 +47,9 @@ def target_context(sr: float, ar: float | None = None, od: float | None = None,
     AR/OD/HP/CS/density default to ``target_settings(sr)`` when not given explicitly.
     """
     s = target_settings(sr)
-    ar = ar if ar is not None else s["ar"]
-    od = od if od is not None else s["od"]
-    hp = hp if hp is not None else s["hp"]
-    cs = cs if cs is not None else s["cs"]
-    density = density if density is not None else s["density"]
-    return context_vector(sr, ar, od, hp, cs, density)
+    overrides = {"ar": ar, "od": od, "hp": hp, "cs": cs, "density": density}
+    vals = {k: (s[k] if v is None else v) for k, v in overrides.items()}
+    return context_vector(sr, **vals)
 
 
 def context_from_manifest(item: dict) -> list[float]:

@@ -191,6 +191,17 @@ Each training step: sample a crop $\mathbf{x}_0$ and its aligned $\mathbf{c}$,
 draw $t$ uniformly and $\boldsymbol{\epsilon}$, form $\mathbf{x}_t$, and minimise
 the MSE between $\boldsymbol{\epsilon}$ and the network's prediction.
 
+**v-prediction + zero-terminal-SNR (v7 option, `--objective v --zero-snr`).** With
+$\alpha_t=\sqrt{\bar\alpha_t},\ \sigma_t=\sqrt{1-\bar\alpha_t}$, the network instead
+predicts the *velocity* $\mathbf{v}\equiv\alpha_t\boldsymbol{\epsilon}-\sigma_t\mathbf{x}_0$
+(Salimans & Ho, 2022); recover $\mathbf{x}_0=\alpha_t\mathbf{x}_t-\sigma_t\mathbf{v}$ and
+$\boldsymbol{\epsilon}=\sigma_t\mathbf{x}_t+\alpha_t\mathbf{v}$. The schedule is rescaled so
+$\bar\alpha_N=0$ (Lin et al., 2023), removing the train/test gap at the pure-noise step;
+this **requires** v-prediction ($\boldsymbol{\epsilon}$ is undefined at SNR 0). Motivation:
+ε-MSE under-disperses (regresses spatial channels to the mean → compressed spacing, flat
+sliders); v-pred is sharper at low SNR. Note the v-loss is ~100× the ε-loss scale, so the two
+are not directly comparable. See RESEARCH §10.7.
+
 ### 4.4 Conditioning
 
 Conditioning on audio is done by **channel-wise concatenation**: the denoiser
@@ -451,10 +462,10 @@ moved slider ends from ~55% off the ¼-grid to ~0%.
 | Group | Value |
 |-------|-------|
 | Audio | $f_s=22050$, $n_\text{fft}=1024$, hop $=256$, $F=64$ mels, $[20,11025]$ Hz |
-| Signal | $C=17$ channels (v5), frame rate $\approx 86$ Hz, crop $T=4096$ ($\approx 48$ s) |
-| Diffusion | $N=1000$, linear $\beta\in[10^{-4}, 2\times10^{-2}]$, $\epsilon$-prediction |
-| Sampler | DDIM, $S\approx100$, $\eta=0$ |
-| U-Net | base $=128$, mults $(1,2,4,8)$, $t$-dim $256$, attention (4 heads, QK-norm, `attn_levels=3`), $\approx$ 63 M params |
+| Signal | $C=17$ (v5) / $C=19$ (v7: +sv, +curve), frame rate $\approx 86$ Hz, crop $T=4096$ ($\approx 48$ s) |
+| Diffusion | $N=1000$, linear $\beta\in[10^{-4}, 2\times10^{-2}]$; $\epsilon$-prediction (v6) or $\mathbf{v}$-prediction + zero-terminal-SNR (v7) |
+| Sampler | DDIM, $S\approx100$, $\eta=0$ (+ optional CFG-rescale for v/zero-SNR) |
+| U-Net | base $=128$, mults $(1,2,4,8)$, $t$-dim $256$, adaLN, attention (4 heads, QK-norm, `attn_levels=3`; optional RoPE + up-path), $\approx$ 66 M params (72 M with up-attn) |
 | Optim | AdamW (fused), peak LR $1.2\times10^{-4}$, weight decay $10^{-4}$, warmup $1000$, cosine decay |
 | Stability | bf16 autocast, grad-clip $0.3$, EMA $\rho=0.999$. **base 160 + bf16 diverges — do not use** |
 
@@ -465,6 +476,9 @@ moved slider ends from ~55% off the ¼-grid to ~0%.
 - J. Ho, A. Jain, P. Abbeel. *Denoising Diffusion Probabilistic Models.* NeurIPS 2020.
 - J. Song, C. Meng, S. Ermon. *Denoising Diffusion Implicit Models (DDIM).* ICLR 2021.
 - A. Nichol, P. Dhariwal. *Improved Denoising Diffusion Probabilistic Models.* ICML 2021.
+- T. Salimans, J. Ho. *Progressive Distillation for Fast Sampling* (v-prediction). ICLR 2022.
+- S. Lin et al. *Common Diffusion Noise Schedules and Sample Steps are Flawed* (zero-terminal-SNR). WACV 2024.
 - Dehghani et al. *Scaling Vision Transformers to 22 Billion Parameters* (QK-normalisation). 2023.
+- Su et al. *RoFormer: Enhanced Transformer with Rotary Position Embedding* (RoPE). 2021.
 - jaswon. *osu!dreamer* — signal + diffusion approach for osu! maps.
 - osu! wiki — [.osu file format](https://osu.ppy.sh/wiki/en/Client/File_formats/osu_(file_format)).

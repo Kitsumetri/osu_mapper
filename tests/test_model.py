@@ -22,18 +22,27 @@ def test_unet_forward_with_attention():
 
 def test_unet_difficulty_conditioning():
     ctx_dim = 6
-    m = UNet1d(C_SIG, C_COND, base=16, mults=(1, 2), t_dim=32, attn=False, ctx_dim=ctx_dim)
     x, cond, t = torch.randn(B, C_SIG, T), torch.randn(B, C_COND, T), torch.randint(0, 1000, (B,))
     ctx = torch.rand(B, ctx_dim)
-    # conditioned, unconditioned (None), and CFG-dropped all run and match shape
-    assert m(x, cond, t, ctx=ctx).shape == (B, C_SIG, T)
-    assert m(x, cond, t, ctx=None).shape == (B, C_SIG, T)
     drop = torch.tensor([True, False])
-    assert m(x, cond, t, ctx=ctx, ctx_drop=drop).shape == (B, C_SIG, T)
-    # ctx changes the output (conditioning actually wired in)
-    a = m(x, cond, t, ctx=ctx)
-    b = m(x, cond, t, ctx=None)
-    assert not torch.allclose(a, b)
+    for adaln in (False, True):
+        m = UNet1d(C_SIG, C_COND, base=16, mults=(1, 2), t_dim=32, attn=False,
+                   ctx_dim=ctx_dim, adaln=adaln)
+        # conditioned, unconditioned (None), and CFG-dropped all run and match shape
+        assert m(x, cond, t, ctx=ctx).shape == (B, C_SIG, T)
+        assert m(x, cond, t, ctx=None).shape == (B, C_SIG, T)
+        assert m(x, cond, t, ctx=ctx, ctx_drop=drop).shape == (B, C_SIG, T)
+        if adaln:
+            # adaLN-zero gates conditioning to zero at init (it eases in during
+            # training), so perturb the ada projections to test the ctx wiring.
+            with torch.no_grad():
+                for mod in m.modules():
+                    if hasattr(mod, "ada"):
+                        mod.ada.weight.normal_(0, 0.1)
+        # ctx changes the output (conditioning actually wired in)
+        a = m(x, cond, t, ctx=ctx)
+        b = m(x, cond, t, ctx=None)
+        assert not torch.allclose(a, b), f"ctx has no effect (adaln={adaln})"
 
 
 def test_timestep_embedding_shape():
@@ -92,3 +101,108 @@ def test_ddim_deterministic_when_eta_zero():
     torch.manual_seed(123)
     b = diff.ddim_sample(m, cond, (1, C_SIG, T), steps=10, eta=0.0)
     assert torch.allclose(a, b)
+
+
+def test_v_objective_roundtrip():
+    # v target must invert back to the exact x0 and eps it was built from
+    import pytest
+    diff = GaussianDiffusion(timesteps=100, device=DEV, objective="v")
+    x0 = torch.randn(B, C_SIG, T)
+    noise = torch.randn_like(x0)
+    t = torch.randint(0, 100, (B,))
+    x_t = diff.q_sample(x0, t, noise)
+    v = diff.target(x0, t, noise)
+    a = diff.sqrt_acp[t][:, None, None]
+    s = diff.sqrt_one_minus_acp[t][:, None, None]
+    rec_x0, rec_eps = diff._to_x0_eps(v, x_t, a, s)
+    assert torch.allclose(rec_x0, x0, atol=1e-4)
+    assert torch.allclose(rec_eps, noise, atol=1e-4)
+    # eps objective target is just the noise
+    deps = GaussianDiffusion(timesteps=100, device=DEV, objective="eps")
+    assert torch.allclose(deps.target(x0, t, noise), noise)
+    with pytest.raises(ValueError):
+        GaussianDiffusion(timesteps=100, device=DEV, objective="eps", zero_snr=True)
+
+
+def test_zero_terminal_snr_schedule():
+    diff = GaussianDiffusion(timesteps=100, device=DEV, objective="v", zero_snr=True)
+    # terminal alpha_bar driven to 0 (pure noise at the last step); start preserved
+    assert diff.sqrt_acp[-1].abs() < 1e-6
+    base = GaussianDiffusion(timesteps=100, device=DEV)
+    assert torch.allclose(diff.sqrt_acp[0], base.sqrt_acp[0], atol=1e-5)
+    # cumprod stays monotonically non-increasing
+    assert (diff.alphas_cumprod[1:] <= diff.alphas_cumprod[:-1] + 1e-6).all()
+
+
+def test_ddim_v_zero_snr_finite():
+    m = _model()
+    diff = GaussianDiffusion(timesteps=100, device=DEV, objective="v", zero_snr=True)
+    cond = torch.randn(1, C_COND, T)
+    out = diff.ddim_sample(m, cond, (1, C_SIG, T), steps=10, ctx=None, guidance=1.0)
+    assert out.shape == (1, C_SIG, T)
+    assert torch.isfinite(out).all()
+
+
+def test_apply_rope_preserves_norm_and_is_positional():
+    from src.model.unet import _apply_rope
+    x = torch.randn(1, 2, 5, 8)  # (b, heads, t, d)
+    r = _apply_rope(x)
+    assert torch.allclose(x.norm(dim=-1), r.norm(dim=-1), atol=1e-4)  # rotation -> norm kept
+    assert torch.allclose(r[:, :, 0], x[:, :, 0], atol=1e-5)          # position 0 unrotated
+    assert not torch.allclose(r[:, :, 3], x[:, :, 3], atol=1e-3)      # later positions rotate
+
+
+def test_unet_attention_upgrades_forward_and_grad():
+    # RoPE, up-path attention, and grad checkpointing all run + backprop
+    for kw in ({"rope": True},
+               {"up_attn": True, "attn_levels": 1},
+               {"rope": True, "up_attn": True, "grad_ckpt": True, "attn_levels": 1}):
+        m = UNet1d(C_SIG, C_COND, base=16, mults=(1, 2), t_dim=32, attn=True, **kw)
+        m.train()
+        out = m(torch.randn(B, C_SIG, T), torch.randn(B, C_COND, T),
+                torch.randint(0, 1000, (B,)))
+        assert out.shape == (B, C_SIG, T)
+        out.mean().backward()
+        assert any(p.grad is not None for p in m.parameters())
+
+
+def test_min_snr_loss_weight():
+    # eps loss is applied in noise-space (= SNR * x0-loss), so to get the Min-SNR
+    # effective x0-weight min(SNR,g) the eps weight must be min(SNR,g)/SNR (matches
+    # diffusers). NOT min(SNR,g) — that would double-count SNR. Lock the formula.
+    diff = GaussianDiffusion(timesteps=100, device=DEV)  # eps
+    t = torch.tensor([1, 50, 99])
+    snr = diff.alphas_cumprod[t] / (1 - diff.alphas_cumprod[t])
+    w = diff.loss_weight(t, gamma=5.0)
+    assert torch.allclose(w, torch.clamp(snr, max=5.0) / snr, atol=1e-5)
+    assert (w <= 1.0 + 1e-4).all()                     # min(snr,g)/snr <= 1
+    # v-prediction loss = (SNR+1)*x0-loss -> weight min(SNR,g)/(SNR+1)
+    dv = GaussianDiffusion(timesteps=100, device=DEV, objective="v")
+    wv = dv.loss_weight(t, gamma=5.0)
+    assert torch.allclose(wv, torch.clamp(snr, max=5.0) / (snr + 1), atol=1e-5)
+
+
+def test_diffusion_loss_helper():
+    from types import SimpleNamespace
+
+    from src.train import _diffusion_loss
+    diff = GaussianDiffusion(timesteps=100, device=DEV)
+    pred, target = torch.randn(2, C_SIG, T), torch.randn(2, C_SIG, T)
+    t = torch.tensor([10, 90])
+    mse = _diffusion_loss(pred, target, t, diff,
+                          SimpleNamespace(loss="mse", huber_beta=1.0, min_snr_gamma=0.0))
+    # default mse path matches plain mean MSE
+    assert abs(mse.item() - torch.nn.functional.mse_loss(pred, target).item()) < 1e-5
+    for kw in (dict(loss="huber", huber_beta=1.0, min_snr_gamma=0.0),
+               dict(loss="mse", huber_beta=1.0, min_snr_gamma=5.0),
+               dict(loss="huber", huber_beta=1.0, min_snr_gamma=5.0)):
+        v = _diffusion_loss(pred, target, t, diff, SimpleNamespace(**kw))
+        assert torch.isfinite(v) and v.item() >= 0
+
+
+def test_rope_is_parameter_free():
+    # RoPE adds no parameters (so it never breaks loading an existing state_dict)
+    base = UNet1d(C_SIG, C_COND, base=16, mults=(1, 2), t_dim=32, attn=True, rope=False)
+    rope = UNet1d(C_SIG, C_COND, base=16, mults=(1, 2), t_dim=32, attn=True, rope=True)
+    assert (sum(p.numel() for p in base.parameters())
+            == sum(p.numel() for p in rope.parameters()))

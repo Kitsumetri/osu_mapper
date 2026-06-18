@@ -64,6 +64,20 @@ class EMA:
             s.copy_(p)
 
 
+def _diffusion_loss(pred, target, t, diff, args):
+    """Diffusion loss with optional Huber distance + Min-SNR-gamma weighting (computed
+    in fp32 for stability). reduction matches the old mean MSE when both are default."""
+    if args.loss == "huber":
+        per = torch.nn.functional.smooth_l1_loss(
+            pred.float(), target.float(), reduction="none", beta=args.huber_beta)
+    else:
+        per = (pred.float() - target.float()) ** 2
+    per = per.mean(dim=tuple(range(1, per.ndim)))     # per-sample (B,)
+    if args.min_snr_gamma > 0:
+        per = per * diff.loss_weight(t, args.min_snr_gamma)
+    return per.mean()
+
+
 def _git_commit() -> str:
     try:
         return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode().strip()
@@ -74,7 +88,7 @@ def _git_commit() -> str:
 def _lr_at(step, total, warmup, base_lr):
     if step < warmup:
         return base_lr * step / max(1, warmup)
-    prog = (step - warmup) / max(1, total - warmup)
+    prog = min((step - warmup) / max(1, total - warmup), 1.0)  # clamp: never let LR rise back
     return 0.5 * base_lr * (1 + math.cos(math.pi * prog))
 
 
@@ -126,11 +140,15 @@ def train(args):
               if val_ds is not None else None)
 
     model = UNet1d(N_SIGNAL_CHANNELS, AUDIO.n_mels, base=args.base, attn=args.attn,
-                   ctx_dim=CONTEXT_DIM, attn_levels=args.attn_levels).to(device)
+                   ctx_dim=CONTEXT_DIM, attn_levels=args.attn_levels,
+                   adaln=args.adaln, rope=args.rope, up_attn=args.up_attn,
+                   grad_ckpt=args.grad_checkpoint).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"model: {n_params / 1e6:.1f}M params (base={args.base}, attn={args.attn})")
     ema = EMA(model, decay=args.ema) if args.ema > 0 else None
-    diff = GaussianDiffusion(timesteps=args.timesteps, device=device)
+    diff = GaussianDiffusion(timesteps=args.timesteps, device=device,
+                             objective=args.objective, zero_snr=args.zero_snr)
+    print(f"diffusion: objective={args.objective} zero_snr={args.zero_snr}")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4,
                             fused=(device == "cuda"))
     bf16_ok = device == "cuda" and torch.cuda.is_bf16_supported()
@@ -150,6 +168,8 @@ def train(args):
             ema.shadow.load_state_dict(resume_ck["ema"])
         if resume_ck.get("opt"):
             opt.load_state_dict(resume_ck["opt"])
+        if resume_ck.get("scaler") and use_scaler:
+            scaler.load_state_dict(resume_ck["scaler"])  # keep fp16 scale across resume
         start_epoch = int(resume_ck.get("epoch", -1)) + 1
         gstep = int(resume_ck.get("gstep", start_epoch * steps_per_epoch))
         best = float(resume_ck.get("best", best))
@@ -184,11 +204,12 @@ def train(args):
             t = torch.randint(0, diff.timesteps, (b,), device=device, generator=g)
             noise = torch.randn(sig.shape, device=device, generator=g)
             x_t = diff.q_sample(sig, t, noise)
+            target = diff.target(sig, t, noise)
             with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=device == "cuda"):
                 pred = model(x_t, mel, t, ctx=ctx)      # full conditioning (no CFG drop)
-                loss = torch.nn.functional.mse_loss(pred, noise)
-            tot += loss.item()
-            nb += 1
+            loss = _diffusion_loss(pred, target, t, diff, args)
+            tot += loss.item() * b      # sample-weight so a smaller last batch isn't over-counted
+            nb += b
         model.train()
         return tot / max(1, nb)
 
@@ -216,9 +237,10 @@ def train(args):
             t = torch.randint(0, diff.timesteps, (b,), device=device)
             noise = torch.randn_like(sig)
             x_t = diff.q_sample(sig, t, noise)
+            target = diff.target(sig, t, noise)
             with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=device == "cuda"):
                 pred = fwd_model(x_t, mel, t, ctx=ctx, ctx_drop=ctx_drop)
-                loss = torch.nn.functional.mse_loss(pred, noise) / args.accum
+            loss = _diffusion_loss(pred, target, t, diff, args) / args.accum
             scaler.scale(loss).backward()
             running += loss.item() * args.accum
             if (i + 1) % args.accum == 0:
@@ -253,6 +275,7 @@ def train(args):
             torch.save({"model": model.state_dict(),
                         "ema": ema.shadow.state_dict() if ema else None,
                         "opt": opt.state_dict(), "gstep": gstep, "best": best,
+                        "scaler": scaler.state_dict() if use_scaler else None,
                         "args": vars(args), "epoch": epoch,
                         "sig_channels": N_SIGNAL_CHANNELS,
                         "git_commit": config["git_commit"]}, path)
@@ -283,6 +306,14 @@ def main():
     ap.add_argument("--attn-levels", type=int, default=2,
                     help="apply self-attention at the N deepest U-Net levels "
                          "(2=default; 3 gives finer-resolution pattern context)")
+    ap.add_argument("--adaln", type=lambda s: s.lower() != "false", default=True,
+                    help="adaLN-zero conditioning (v6 default; 'false' = additive FiLM)")
+    ap.add_argument("--rope", action="store_true",
+                    help="rotary position embeddings in attention (relative-time; free params)")
+    ap.add_argument("--up-attn", action="store_true",
+                    help="add symmetric attention on the up path (more attention; audit S-5)")
+    ap.add_argument("--grad-checkpoint", action="store_true",
+                    help="gradient-checkpoint blocks to fit finer attention / bigger nets in VRAM")
     ap.add_argument("--augment", type=lambda s: s.lower() != "false", default=True,
                     help="playfield h/v flip augmentation (default on; 'false' to disable)")
     ap.add_argument("--compile", action="store_true",
@@ -294,6 +325,15 @@ def main():
                     help="prob. of dropping difficulty context (classifier-free guidance)")
     ap.add_argument("--ema", type=float, default=0.999, help="EMA decay (0 disables)")
     ap.add_argument("--timesteps", type=int, default=1000)
+    ap.add_argument("--objective", choices=["eps", "v"], default="eps",
+                    help="prediction target: eps (v1-v6) or v (velocity, v7 sharpness fix)")
+    ap.add_argument("--zero-snr", action="store_true",
+                    help="rescale schedule to zero terminal SNR (requires --objective v)")
+    ap.add_argument("--loss", choices=["mse", "huber"], default="mse",
+                    help="pointwise distance on the diffusion target (huber = robust/sharper)")
+    ap.add_argument("--huber-beta", type=float, default=1.0, help="Huber transition point")
+    ap.add_argument("--min-snr-gamma", type=float, default=0.0,
+                    help="Min-SNR-gamma loss weighting (0 disables; ~5 typical)")
     ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--min-objects", type=int, default=50)

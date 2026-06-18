@@ -1,6 +1,8 @@
 # osu_mapper — audio → osu! beatmap generation
 
-> **Continuing this project? Start with [`HANDOFF.md`](HANDOFF.md).**
+> **Continuing this project?** If `HANDOFF.md` is present (the live, git-ignored agent
+> working context) read it first; otherwise this README + `RESEARCH.md` (design/roadmap)
+> + `RESULTS.md` (run history) are the tracked reference.
 
 A diffusion-based pipeline that learns to generate **osu!standard** beatmaps
 from raw audio, trained on a local osu! Songs library.
@@ -21,7 +23,7 @@ audio.mp3 ──► log-mel (64×T) ──┐
                                ├─►  1D U-Net (DDIM denoise)  ──►  signal (C×T)  ──► decode ──► .osu
    noise (C×T) ────────────────┘     ▲ conditioned on mel + difficulty (SR/AR/OD/HP/CS/density)
 ```
-(C = 17 signal channels on v5, 10 on v4 — see below.)
+(C = 20 signal channels on v7.5, 17 on v5, 10 on v4 — see below.)
 
 ### Signal representation (`src/data/signal.py`)
 
@@ -31,6 +33,10 @@ spinner_hold, new_combo, cursor_x/y, kiai_hold, whistle/finish/clap. **v5 = 17**
 adds 6 slider-anchor `dx/dy` channels (control-point offsets held over the slider
 span) + a `slides` channel, so slider shape and reverse sliders are first-class
 rather than read off the noisy cursor path (see [`TECH_REPORT.md`](TECH_REPORT.md) §3.2).
+**v7 = 19**: adds an `sv` slider-velocity timeline and a per-slider `curve` cue.
+**v7.5 = 20**: adds a `corner` cue for red (angular) control points. Channel checks
+are index-based (and the loader uses each checkpoint's own channel count), so older
+17-ch checkpoints still load under the newer builds.
 
 Difficulty is supplied as an **input context vector** `[SR, AR, OD, HP, CS,
 density]` (conditioning, not a channel).
@@ -48,14 +54,14 @@ With [uv](https://docs.astral.sh/uv/) (recommended) — the CUDA torch index is
 already wired up in `pyproject.toml`:
 
 ```bash
-uv sync --extra dev      # creates .venv and installs everything (incl. cu124 torch)
+uv sync --extra dev      # creates .venv and installs everything (incl. cu128 torch)
 uv run pytest            # run anything inside the env with `uv run ...`
 ```
 
 Or with pip:
 
 ```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu124
+pip install torch --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
 ```
 
@@ -71,6 +77,7 @@ uv run python -m src.train --data data/processed/ranked --tag mymodel \
     --base 128 --crop 4096 --attn-levels 3 --batch 16 --epochs 60 --save-every 5
 
 # 3. generate a .osu at a target star rating (DDIM + CFG, EMA, kiai + hitsounds, snapped)
+#    --match-sr iterates to hit the SR exactly; --timing-from <ref.osu> uses exact BPM/offset
 uv run python -m src.generate --audio song.mp3 --ckpt runs/<id>/ckpt/last.pt \
     --out generated.osu --sr 5 --match-sr --guidance 2.0
 ```
@@ -88,22 +95,29 @@ run layout" below.
 
 ```
 src/
-  config.py              audio/signal config + frame<->time helpers
+  config.py              audio/signal config (10->17 channels) + frame<->time helpers
+  conditioning.py        difficulty context vector [SR,AR,OD,HP,CS,density] + target_settings
+  difficulty.py          exact star rating via rosu-pp + SR bands
   metrics.py             pattern/quality metrics (density, stream/jump, on-grid, ...)
+  corpus_stats.py        reference distributions over the real library
+  evaluate.py            SR-sweep eval vs reference stats
+  postprocess.py         beat/slider snap, slider clamp, trim, [Events] breaks
+  package_map.py         build a playable osu! Songs folder from a generated map
   parsing/beatmap.py     robust .osu parser + writer (bitflags, sliders, spinners, kiai)
   data/
     audio.py             log-mel spectrogram extraction
     signal.py            beatmap <-> signal encode/decode (+ Bezier-slider decoder)
     timing.py            BPM + beat-offset estimation (librosa)
+    osu_db.py            parse osu!.db -> ranked status / gold-filter inputs
     preprocess.py        library crawler -> deduped mels + items + manifest.json
-    dataset.py           manifest-indexed, mel-deduped torch Dataset
+    dataset.py           manifest-indexed, mel-deduped torch Dataset (+ flip aug)
   model/
-    unet.py              1D conditional U-Net (FiLM time emb + QK-norm attention)
-    diffusion.py         Gaussian DDPM schedule, DDPM + DDIM sampling
+    unet.py              1D conditional U-Net (adaLN, QK-norm attn, optional RoPE/up-attn)
+    diffusion.py         Gaussian DDPM schedule, DDPM + DDIM + CFG sampling
   train.py               training loop (bf16, EMA, cosine LR, runs/ logging)
-  generate.py            audio -> .osu inference (DDIM, EMA, estimated timing)
-  package_map.py         build a playable osu! Songs folder from a generated map
-tests/                   hermetic pytest suite (no dataset/GPU needed)
+  generate.py            audio -> .osu inference (DDIM+CFG, EMA, --match-sr, --timing-from)
+  timing_model/          SEPARATE model: BPM/offset beat tracker (labels + eval; RESEARCH 10.8)
+tests/                   129 hermetic pytest tests (no dataset/GPU needed)
 main.py                  CLI dispatcher (preprocess | train | generate)
 ```
 
@@ -135,7 +149,7 @@ artifacts/                     # exported, shareable outputs (generated/packaged
 ## Development
 
 ```bash
-uv run pytest          # 94 hermetic tests
+uv run pytest          # 129 hermetic tests
 uv run ruff check .    # lint
 ```
 
@@ -172,15 +186,17 @@ live in `pyproject.toml` (`E,F,I,UP,B,SIM`, 100-col).
 
 **Shipped:** robust `.osu` parser/writer; near-lossless signal encode/decode;
 deduped manifest preprocessing; conditional diffusion U-Net (base 128, QK-norm
-attn, bf16, EMA) + DDPM/DDIM; end-to-end `audio → .osu` + packaging; difficulty
-conditioning + CFG; kiai + hitsound channels; curved sliders + beat/slider snap;
-eval harness (`metrics`/`corpus_stats`/`evaluate` + `--match-sr`); **ranked-only
-data** (osu!.db filter) + more context + flip aug (**v4b**, current release).
+attn, bf16, EMA) + DDPM/DDIM/CFG; end-to-end `audio → .osu` + packaging; difficulty
+conditioning + adaLN-zero; kiai + hitsound channels; curved + reverse sliders;
+beat/slider snap; eval harness (`metrics`/`corpus_stats`/`evaluate` + `--match-sr`);
+ranked-only/gold data (osu!.db filter) + flip aug; v-prediction + zero-terminal-SNR;
+learned SV channel + curvature cue; RoPE / up-path attention / grad-checkpointing.
+**Releases: v5** (17-ch). v6 (adaLN + gold) and v7-Phase2 (v-pred) trained; **v7**
+("patterns": 19-ch SV+curve + attention) code done, reprocess+train pending.
 
-**Next** — see `RESEARCH.md §10` (full plan), `RESULTS.md` (history), `HANDOFF.md §6`
-(queue): v5 17-channel slider representation (curves + reverse sliders, code done,
-train pending); rhythm fix (v4b regressed onsets off ¼ → 1/6·1/8); adaLN-zero;
-flow/distance-snap modelling; multi-section BPM timing.
+**Next** — see `RESEARCH.md §10.7` (full plan), `RESULTS.md` (history), `HANDOFF.md §6`
+(queue): the v7 reprocess+train + play-test; then flow/Δpos channels (P4-B),
+kiai segmentation head, hitsound musicality, and a BPM/offset model for novel songs.
 
 ## Prior art / credits
 

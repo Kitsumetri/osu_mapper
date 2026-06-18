@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 
 from .difficulty import sr_bucket, star_rating
-from .generate import generate
+from .generate import generate, load_model, prepare_audio
 from .metrics import compute_metrics_for_osu, score_against_reference
 
 REPORT_KEYS = ["density_per_s", "stream_ratio", "jump_ratio", "on_quarter_grid_ratio",
@@ -28,10 +28,15 @@ def evaluate(audio, ckpt, srs, ref_stats_path=None, out_dir="artifacts/eval",
     out_dir.mkdir(parents=True, exist_ok=True)
     ref = json.loads(Path(ref_stats_path).read_text()) if ref_stats_path else None
 
+    # load the checkpoint + decode the audio once, reuse for every target SR
+    loaded = load_model(ckpt)
+    prepared = prepare_audio(audio, loaded.device)
+
     rows = []
     for sr in srs:
         out = out_dir / f"sr{sr}.osu"
-        generate(audio, ckpt, out, steps=steps, sr=sr, guidance=guidance)
+        generate(audio, out_path=out, steps=steps, sr=sr, guidance=guidance,
+                 loaded=loaded, prepared=prepared)
         m = compute_metrics_for_osu(out)
         achieved = star_rating(out)
         in_range = None

@@ -11,6 +11,7 @@ dependencies = [
     "soundfile>=0.13",
     "tqdm>=4.66",
     "rosu-pp-py>=1.0",
+    "psutil>=7.2.2",
 ]
 
 [project.optional-dependencies]

@@ -52,6 +52,19 @@ SIGNAL_CHANNELS = [
     "slider_dx3",  # 14
     "slider_dy3",  # 15
     "slides",  # 16: repeat count held over the slider span (reverse sliders)
+    # v7 slider-velocity: the SV multiplier timeline (log2(SV)/2, baseline 0 = SV 1.0),
+    # piecewise-constant like real green-line sections. Decode quantises it to a few
+    # stable green lines (RESEARCH 10.7 P4-A). Appended -> 0-16 keep their meaning.
+    "sv",  # 17
+    # v7 curvature cue: per-slider intended bow (sagitta) held over the span, baseline 0
+    # (straight). An easy-to-learn scalar that decouples curve *intent* from the precise
+    # anchor offsets (which collapse to straight under MSE). Decode bows to it (P4-C).
+    "curve",  # 18
+    # v7.5 corner cue: per-slider "angular" flag (held over the span, baseline 0). Real
+    # osu sliders use RED control points (sharp corners = doubled points); ~13% of
+    # sliders / ~75% of beziers are angular not smooth. High cue -> decode emits red
+    # corners (doubled anchors). RESEARCH 10.9.
+    "corner",  # 19
 ]
 N_SIGNAL_CHANNELS = len(SIGNAL_CHANNELS)
 
@@ -60,5 +73,8 @@ CH_ONSET, CH_SLIDER, CH_SPINNER, CH_NEWCOMBO, CH_CURX, CH_CURY = 0, 1, 2, 3, 4, 
 CH_KIAI, CH_WHISTLE, CH_FINISH, CH_CLAP = 6, 7, 8, 9
 CH_SLIDER_ANCHORS = 10                       # first of 2*N_SLIDER_ANCHORS dx/dy channels
 CH_SLIDES = CH_SLIDER_ANCHORS + 2 * N_SLIDER_ANCHORS  # 16
+CH_SV = CH_SLIDES + 1                         # 17: slider-velocity timeline
+CH_CURVE = CH_SV + 1                          # 18: per-slider curvature cue
+CH_CORNER = CH_CURVE + 1                      # 19: per-slider red-corner cue
 
 AUDIO = AudioConfig()

@@ -17,8 +17,11 @@ import numpy as np
 
 from ..config import (
     AUDIO,
+    CH_CORNER,
+    CH_CURVE,
     CH_SLIDER_ANCHORS,
     CH_SLIDES,
+    CH_SV,
     N_SIGNAL_CHANNELS,
     N_SLIDER_ANCHORS,
     AudioConfig,
@@ -39,6 +42,75 @@ ONSET_SIGMA_FRAMES = 1.2   # width of onset/new-combo bumps
 # treated as a *straight* (linear) slider rather than a curved bezier.
 SLIDER_STRAIGHT_RATIO = 1.06
 SPINNER_MERGE_MS = 800.0   # spinners within this gap are merged into one
+# SV channel: encode the multiplier as log2(SV) clamped to +/-SV_LOG2_CLAMP, scaled
+# to [-1, 1] (multiplicative & symmetric; 0 = SV 1.0). +/-2 covers 0.25x-4x; the rare
+# 10x burst is clipped so it doesn't compress the common range.
+SV_LOG2_CLAMP = 2.0
+
+
+def _enc_sv(sv: float) -> float:
+    """SV multiplier -> channel value in [-1, 1]."""
+    lg = np.log2(max(float(sv), 1e-3))
+    return float(np.clip(lg, -SV_LOG2_CLAMP, SV_LOG2_CLAMP) / SV_LOG2_CLAMP)
+
+
+def _dec_sv(v: float) -> float:
+    """Channel value in [-1, 1] -> SV multiplier."""
+    return float(2.0 ** (float(np.clip(v, -1.0, 1.0)) * SV_LOG2_CLAMP))
+
+
+# Curvature cue: a slider's sagitta (max bow off the head->tail chord, px) encoded as
+# sagitta/CURVE_PX_SCALE. Decode treats a cue >= CURVE_DECODE_THRESHOLD_PX as a curve
+# and bows the polygon up to CURVE_MAX_BOW_PX. Threshold tunes the curved/straight mix
+# (real ranked ~38%; target 38-45%).
+CURVE_PX_SCALE = 80.0
+CURVE_DECODE_THRESHOLD_PX = 6.0    # lowered (v7.5 feedback: too many straight); curved sliders
+CURVE_MIN_BOW_PX = 14.0            # bow curved sliders to at least this, so they read as curved
+CURVE_MAX_BOW_PX = 130.0
+
+
+def _enc_curve(sagitta_px: float) -> float:
+    return float(np.clip(sagitta_px / CURVE_PX_SCALE, 0.0, 1.2))
+
+
+def _dec_curve(v: float) -> float:
+    return float(max(0.0, v) * CURVE_PX_SCALE)
+
+
+def _polygon_sagitta(poly: list[tuple[float, float]]) -> float:
+    """Max perpendicular distance (px) of a control polygon off its head->tail chord."""
+    if len(poly) < 3:
+        return 0.0
+    (ax, ay), (bx, by) = poly[0], poly[-1]
+    dx, dy = bx - ax, by - ay
+    chord = float(np.hypot(dx, dy))
+    if chord < 1e-6:
+        return max(float(np.hypot(px - ax, py - ay)) for px, py in poly)
+    return max(abs((px - ax) * dy - (py - ay) * dx) / chord for px, py in poly)
+
+
+# Corner cue: a real slider has a RED control point iff two consecutive control points
+# coincide (a doubled point splits the bezier into a sharp corner). Decode treats a cue
+# above CORNER_DECODE_THRESHOLD as angular -> doubles its sharp anchors. CORNER_TURN_DEG
+# is how sharp an anchor's turn must be to become a corner.
+CORNER_DECODE_THRESHOLD = 0.25    # lowered (v7.5 feedback: too few red corners, 2% vs ~13%)
+CORNER_TURN_DEG = 25.0
+
+
+def _has_red_points(curve_points: list[tuple[int, int]]) -> bool:
+    """A red anchor = a doubled consecutive control point (sharp corner)."""
+    return any(curve_points[i] == curve_points[i + 1] for i in range(len(curve_points) - 1))
+
+
+def _turn_deg(a, b, c) -> float:
+    """Turn angle (deg) at b on the path a->b->c (0 = straight, 180 = reversal)."""
+    v1 = (b[0] - a[0], b[1] - a[1])
+    v2 = (c[0] - b[0], c[1] - b[1])
+    n1, n2 = float(np.hypot(*v1)), float(np.hypot(*v2))
+    if n1 < 1e-6 or n2 < 1e-6:
+        return 0.0
+    cos = max(-1.0, min(1.0, (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2)))
+    return float(np.degrees(np.arccos(cos)))
 
 
 def _gaussian_bump(signal: np.ndarray, center: float, sigma: float = ONSET_SIGMA_FRAMES):
@@ -95,6 +167,11 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
     # held over the slider span, + a repeat-count channel (baseline -1 = 1 slide).
     anchors = np.zeros((2 * N_SLIDER_ANCHORS, n_frames), dtype=np.float32)
     slides_ch = -np.ones(n_frames, dtype=np.float32)
+    curve_ch = np.zeros(n_frames, dtype=np.float32)  # v7 curvature cue, baseline 0 = straight
+    corner_ch = np.zeros(n_frames, dtype=np.float32)  # v7.5 corner cue, baseline 0 = smooth
+    # v7 SV timeline: piecewise-constant multiplier from the timing points (red lines
+    # reset to 1.0, green lines set their multiplier), held to the next change.
+    sv_ch = np.zeros(n_frames, dtype=np.float32)  # baseline 0 = SV 1.0
 
     # cursor key-frames (time_frame, x, y) for interpolation
     keys_t: list[float] = []
@@ -138,6 +215,12 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
                     anchors[2 * i, a:b + 1] = dx
                     anchors[2 * i + 1, a:b + 1] = dy
                 slides_ch[a:b + 1] = _enc_slides(obj.slides)
+                # curvature cue = the slider's true sagitta (bow off its chord), held
+                # over the span; an easy scalar the model can learn confidently.
+                curve_ch[a:b + 1] = _enc_curve(_polygon_sagitta([(obj.x, obj.y), *cps]))
+                # corner cue = 1 if the slider has red (doubled) control points (angular)
+                if _has_red_points(cps):
+                    corner_ch[a:b + 1] = 1.0
             # cursor end key-frame (flow into the next object) = last anchor
             ex, ey = anchor_pts[-1]
             keys_t.append(f_end)
@@ -170,6 +253,17 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
         if b >= a:
             kiai[a:b + 1] = 1.0
 
+    # SV timeline: walk timing points in time order (red -> SV 1.0, green -> its
+    # multiplier) and hold each value until the next point.
+    tps = sorted(bm.timing_points, key=lambda t: t.time)
+    for i, tp in enumerate(tps):
+        sv = 1.0 if tp.uninherited else tp.sv
+        a = max(0, int(round(cfg.time_to_frame(tp.time))))
+        b = n_frames if i + 1 >= len(tps) else int(round(cfg.time_to_frame(tps[i + 1].time)))
+        b = min(max(a, b), n_frames)
+        if b > a:
+            sv_ch[a:b] = _enc_sv(sv)
+
     sig[0] = onset * 2 - 1
     sig[1] = slider
     sig[2] = spinner
@@ -182,6 +276,9 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
     sig[9] = clap * 2 - 1
     sig[CH_SLIDER_ANCHORS:CH_SLIDER_ANCHORS + 2 * N_SLIDER_ANCHORS] = anchors
     sig[CH_SLIDES] = slides_ch
+    sig[CH_SV] = sv_ch
+    sig[CH_CURVE] = curve_ch
+    sig[CH_CORNER] = corner_ch
     return sig
 
 
@@ -259,12 +356,61 @@ def _slider_path(start, cur_x, cur_y, p, end_frame, max_anchors: int = 8):
     return ctype, pts, max(10.0, length)
 
 
-def _slider_from_anchors(start, anchor_ch, p, end_frame):
+def _bow_polygon(start, pts, target_px):
+    """Push the apex control point perpendicular to the head->tail chord so the bow
+    reaches ~``target_px`` (keeps the model's lean direction; bounds-clamped). Used to
+    realise the curvature cue when the anchors collapsed to near-straight."""
+    sx, sy = start
+    ex, ey = pts[-1]
+    cx, cy = ex - sx, ey - sy
+    clen = float(np.hypot(cx, cy))
+    if clen < 1e-6 or target_px <= 0:
+        return pts
+    ux, uy = -cy / clen, cx / clen  # unit perpendicular to the chord
+    target_px = min(target_px, CURVE_MAX_BOW_PX)
+    mids = pts[:-1]
+    if mids:
+        def _perp(q):
+            return (q[0] - sx) * ux + (q[1] - sy) * uy
+        ai = max(range(len(mids)), key=lambda i: abs(_perp(mids[i])))
+        sign = 1.0 if _perp(mids[ai]) >= 0 else -1.0
+        delta = sign * target_px - _perp(mids[ai])
+        out = list(pts)
+        out[ai] = (int(np.clip(mids[ai][0] + ux * delta, 0, PLAYFIELD_W)),
+                   int(np.clip(mids[ai][1] + uy * delta, 0, PLAYFIELD_H)))
+        return out
+    mx, my = (sx + ex) / 2, (sy + ey) / 2
+    return [(int(np.clip(mx + ux * target_px, 0, PLAYFIELD_W)),
+             int(np.clip(my + uy * target_px, 0, PLAYFIELD_H))), pts[-1]]
+
+
+def _add_red_corners(start, pts):
+    """Double interior anchors with a sharp turn so osu! renders red corners (a doubled
+    control point splits the bezier into an angular kink). If the cue says angular but no
+    anchor is sharp, double the single sharpest so a corner still appears."""
+    poly = [start, *pts]
+    if len(poly) < 3:
+        return pts
+    turns = [(_turn_deg(poly[i - 1], poly[i], poly[i + 1]), i) for i in range(1, len(poly) - 1)]
+    sharp = {i for t, i in turns if t >= CORNER_TURN_DEG}
+    if not sharp and turns:
+        sharp = {max(turns)[1]}
+    out = []
+    for i in range(1, len(poly)):       # control points are everything after the head
+        out.append(poly[i])
+        if i in sharp:
+            out.append(poly[i])         # doubled -> red corner here
+    return out
+
+
+def _slider_from_anchors(start, anchor_ch, p, end_frame, curve_cue=None, corner_cue=None):
     """Build a slider curve from the v5 dedicated anchor channels.
 
     Each of the K anchors' offset is read as the *mean over the slider span*
     (robust to denoising noise), denormalised, and added to the head. Consecutive
-    duplicate anchors are dropped (padding / collapsed shapes). Returns
+    duplicate anchors are dropped (padding / collapsed shapes). ``curve_cue`` (v7, the
+    intended sagitta in px) steers the straight/curved choice and bows the polygon to
+    the target so curves are visible even when the anchors collapse. Returns
     ``(curve_type, control_points, length)``.
     """
     sx, sy = start
@@ -296,11 +442,34 @@ def _slider_from_anchors(start, anchor_ch, p, end_frame):
     for q in simplified:
         length += float(np.hypot(q[0] - prev[0], q[1] - prev[1]))
         prev = q
-    # straight-vs-curved: a near-collinear polygon is a *line* (emit linear, not a
-    # bezier). Path within ~6% of the straight distance => straight.
+    # straight-vs-curved. v7: trust the learned curvature cue (a robust scalar) over
+    # the path/chord ratio (which the anchors' collapse renders ~1.0). Pre-v7 (cue
+    # None): fall back to the geometric ratio.
     straight = float(np.hypot(simplified[-1][0] - sx, simplified[-1][1] - sy))
-    if len(simplified) < 2 or length <= straight * SLIDER_STRAIGHT_RATIO:
+    # v7.5: an "angular" corner cue takes precedence -> red corners (doubled anchors)
+    if (corner_cue is not None and corner_cue >= CORNER_DECODE_THRESHOLD
+            and len(simplified) >= 2):
+        pts = _add_red_corners((sx, sy), simplified)
+        prev, length = (sx, sy), 0.0
+        for q in pts:
+            length += float(np.hypot(q[0] - prev[0], q[1] - prev[1]))
+            prev = q
+        return "B", pts, max(10.0, length)
+    if curve_cue is not None:
+        curved = curve_cue >= CURVE_DECODE_THRESHOLD_PX
+    else:
+        curved = len(simplified) >= 2 and length > straight * SLIDER_STRAIGHT_RATIO
+    if not curved:
         return "L", [simplified[-1]], max(10.0, straight)
+    # curved: realise at least a visibly-curved bow (>=CURVE_MIN_BOW_PX) so a low cue
+    # near the threshold still reads as a curve, not a near-line.
+    bow_to = max(curve_cue, CURVE_MIN_BOW_PX) if curve_cue is not None else CURVE_MIN_BOW_PX
+    if _polygon_sagitta([(sx, sy), *simplified]) < bow_to:
+        simplified = _bow_polygon((sx, sy), simplified, bow_to)
+        prev, length = (sx, sy), 0.0
+        for q in simplified:
+            length += float(np.hypot(q[0] - prev[0], q[1] - prev[1]))
+            prev = q
     return "B", simplified, max(10.0, length)
 
 
@@ -324,6 +493,31 @@ def _pick_peaks(channel: np.ndarray, threshold: float, min_gap: int) -> list[int
             peaks.append(i)
             last = i
     return peaks
+
+
+def _recover_stream_gaps(peaks: list[int], channel: np.ndarray, threshold: float,
+                         min_gap: int, recover_frac: float = 0.5, tol: float = 0.34,
+                         max_run_frames: int = 14) -> list[int]:
+    """Recover a single onset dropped from an otherwise-regular run (the rare
+    ``c_*_c_c``): where a gap is ~2x the preceding small gap, probe the midpoint for a
+    *sub-threshold* local max and re-insert it. Gated by the channel actually having a
+    weak bump there, so it fills real holes without inventing notes (a genuine 1/2 gap
+    has no bump -> untouched)."""
+    if len(peaks) < 3:
+        return peaks
+    rec_thr = threshold * recover_frac
+    extra: list[int] = []
+    for i in range(1, len(peaks) - 1):
+        g_prev = peaks[i] - peaks[i - 1]
+        g_next = peaks[i + 1] - peaks[i]
+        if 0 < g_prev <= max_run_frames and abs(g_next - 2 * g_prev) <= g_prev * tol:
+            m = peaks[i] + g_prev                      # expected dropped-note frame
+            w = max(1, g_prev // 3)
+            lo, hi = max(0, m - w), min(len(channel) - 1, m + w)
+            j = lo + int(np.argmax(channel[lo:hi + 1]))
+            if channel[j] >= rec_thr and j - peaks[i] >= min_gap and peaks[i + 1] - j >= min_gap:
+                extra.append(j)
+    return sorted(set(peaks) | set(extra))
 
 
 def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
@@ -350,11 +544,14 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
     finish = sig[8] if has_accents else None
     clap = sig[9] if has_accents else None
     # v5 dedicated slider channels (anchors + repeat count); fall back to the
-    # cursor-traced shape for older 10-channel signals.
-    has_slider_ch = sig.shape[0] >= N_SIGNAL_CHANNELS
+    # cursor-traced shape for older 10-channel signals. Index-based so a 17-ch v5/v6
+    # signal still decodes anchors under the v7 18-ch global.
+    has_slider_ch = sig.shape[0] > CH_SLIDES
     _ar_end = CH_SLIDER_ANCHORS + 2 * N_SLIDER_ANCHORS
     anchor_ch = sig[CH_SLIDER_ANCHORS:_ar_end] if has_slider_ch else None
     slides_sig = sig[CH_SLIDES] if has_slider_ch else None
+    curve_sig = sig[CH_CURVE] if sig.shape[0] > CH_CURVE else None  # v7 curvature cue
+    corner_sig = sig[CH_CORNER] if sig.shape[0] > CH_CORNER else None  # v7.5 corner cue
     n = sig.shape[1]
 
     def _hit_sound(p: int) -> int:
@@ -400,6 +597,7 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
         spinner_spans = [(a, b) for a, b in merged]
 
     peaks = _pick_peaks(onset, onset_threshold, min_gap_frames)
+    peaks = _recover_stream_gaps(peaks, onset, onset_threshold, min_gap_frames)
     for k, p in enumerate(peaks):
         # skip onsets that fall inside a spinner span
         if any(a <= p <= b for a, b in spinner_spans):
@@ -430,8 +628,14 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
         hs = _hit_sound(p)
         if win.size and win.max() > 0.0 and (end_frame - p) >= min_slider_frames:
             if has_slider_ch:
-                # v5: shape from dedicated anchor channels; repeat count from slides
-                ctype, pts, length = _slider_from_anchors((x, y), anchor_ch, p, end_frame)
+                # v5: shape from dedicated anchor channels; repeat count from slides.
+                # v7: curvature cue (sagitta px) steers the curve/straight decision + bow.
+                cue = (_dec_curve(float(curve_sig[p:end_frame + 1].mean()))
+                       if curve_sig is not None else None)
+                corner = (float(corner_sig[p:end_frame + 1].mean())
+                          if corner_sig is not None else None)
+                ctype, pts, length = _slider_from_anchors((x, y), anchor_ch, p, end_frame,
+                                                          cue, corner)
                 sl = _dec_slides(float(slides_sig[p:end_frame + 1].mean()))
             else:
                 # legacy 10-channel: follow the cursor path during the hold
@@ -499,3 +703,62 @@ def decode_kiai(sig: np.ndarray, cfg: AudioConfig = AUDIO, threshold: float = 0.
     kept = sorted(kept[:max_spans])
     return [(int(round(cfg.frame_to_time(a))), int(round(cfg.frame_to_time(b))))
             for a, b in kept]
+
+
+def _median_filter1d(x: np.ndarray, k: int) -> np.ndarray:
+    pad = k // 2
+    xp = np.pad(x, pad, mode="edge")
+    return np.array([np.median(xp[i:i + k]) for i in range(len(x))])
+
+
+def _merge_smallest_sv(secs: list[list[float]]) -> list[list[float]]:
+    """Drop the boundary between the two adjacent sections closest in SV (log space)."""
+    best_i, best_d = 0, float("inf")
+    for i in range(len(secs) - 1):
+        d = abs(np.log2(max(secs[i + 1][1], 1e-3)) - np.log2(max(secs[i][1], 1e-3)))
+        if d < best_d:
+            best_d, best_i = d, i
+    return secs[:best_i + 1] + secs[best_i + 2:]
+
+
+def decode_sv(sig: np.ndarray, cfg: AudioConfig = AUDIO, min_section_s: float = 3.0,
+              max_sections: int = 6, hysteresis: float = 0.2, quant: float = 0.1,
+              smooth_ms: float = 700.0) -> list[tuple[int, float]]:
+    """Decode the SV channel into a few *stable* (start_ms, sv) sections.
+
+    SV is structural (a handful of green-line sections), so we smooth + quantise the
+    channel and only open a new section on a change >= ``hysteresis`` that also clears
+    a ``min_section_s`` minimum length, then cap the count. A wobbly channel collapses
+    to stable sections instead of per-slider noise (RESEARCH 10.7 P4-A). Returns [] for
+    pre-v7 signals without the SV channel.
+    """
+    if sig.shape[0] <= CH_SV:
+        return []
+    sv = np.array([_dec_sv(v) for v in sig[CH_SV]], dtype=np.float64)
+    n = len(sv)
+    if n == 0:
+        return []
+    k = max(1, int(round(cfg.time_to_frame(smooth_ms))) | 1)  # odd window
+    if k > 1 and n >= k:
+        sv = _median_filter1d(sv, k)
+    svq = np.round(sv / quant) * quant
+    min_len = max(1, int(round(min_section_s * cfg.frame_rate)))
+    # hysteresis + min-length: a change only registers once min_len has elapsed, so
+    # every section (bar the last) is >= min_len by construction.
+    secs: list[list[float]] = [[0, float(svq[0])]]
+    start = 0
+    for i in range(1, n):
+        if abs(svq[i] - secs[-1][1]) >= hysteresis and (i - start) >= min_len:
+            secs.append([i, float(svq[i])])
+            start = i
+    while len(secs) > max_sections:
+        secs = _merge_smallest_sv(secs)
+    # emit, dropping sections identical to the previous one
+    out: list[tuple[int, float]] = []
+    prev: float | None = None
+    for f, s in secs:
+        if prev is not None and abs(s - prev) < 1e-6:
+            continue
+        out.append((int(round(cfg.frame_to_time(f))), round(float(s), 3)))
+        prev = s
+    return out

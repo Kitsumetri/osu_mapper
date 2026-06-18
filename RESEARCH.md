@@ -597,6 +597,385 @@ multi-BPM timing yet) + real hitsound density + sane SR removes the weakest trai
 signal. User has new ranked/loved maps to add → refresh `osu!.db` (open osu!) then
 `preprocess --gold` → retrain v6.
 
+## 10.6 v6 batch — design (ACTIVE, branch `feat/v6-sv-adaln`)
+
+One re-preprocess + fresh train. Targets the v5 model-side residue: same-speed sliders,
+inconsistent kiai, weak hitsounds, density gaps. Three changes:
+
+### A. Slider velocity (SV) — REVERTED (the decode-side approach was wrong)
+First attempt derived SV per-slider from geometry/duration and "sectioned" it — but that gave
+~24 SVs / 77 points (user: *"terrible"*). **Why it's wrong:** SV is **not** a per-slider
+geometric consequence; it's a **structural/stylistic** choice mappers make in a few **coarse
+sections, like kiai** (per user, an experienced mapper): *slow part → low SV; drop → SV≈1 or
+above; most of the map ≈1; occasional **fast 1–6 s burst** when the song calls for fast
+sliders.* Real maps have **few** SV sections, tied to **song structure**, not per-slider noise.
+Reverted to clean SV=1 (`snap_slider_ends`, v5 behaviour).
+
+**The right way (future v6+):** SV must be **learned/structural**, e.g. (a) an **SV channel**
+the model learns (it reproduces where real mappers put coarse SV changes — naturally sparse),
+or (b) a **structural heuristic** tied to mel energy / kiai (low SV in quiet intros/breakdowns,
+≈1 elsewhere, rare fast burst). Either way: **coarse, few sections, structure-aligned.** Analyse
+real SV maps for the typical section count/diversity first. Not in this v6 batch.
+
+### B. adaLN-zero conditioning
+Replace the additive FiLM (`h += time(t_emb)`) with **DiT adaLN-zero**: each `ResBlock1d`
+predicts `(scale, shift, gate)` from the conditioning embedding (`SiLU→Linear`, gate
+**zero-init** so blocks start as identity), modulating `h = norm(h)·(1+scale)+shift` and gating
+the residual `x + gate·block(...)`. Gives difficulty multiplicative control; the 2026-survey
+contained upgrade. Model-only change (hermetic-testable); fresh train (can't load v5 ckpt).
+
+### C. Gold data
+`preprocess --gold` (code DONE), 17-ch → `ranked-v6`.
+
+### Order / status
+✅ **B (adaLN-zero)** DONE. ❌ **A (SV)** reverted (structural-SV deferred, see above).
+✅ Re-preprocessed `ranked-v6` (gold, 17-ch) → trained (adaLN) → eval/packaged `[AI-v6]`. DONE.
+
+## 10.7 v7 batch — "patterns" (ACTIVE, design 2026-06-16)
+
+**v6 play feedback:** (1) rhythm better than v5, still imperfect; (2) hitsounds 5/10
+(persistent every version); (3) **patterns now the #1 issue** — beginner-level jumps/
+streams; (4) kiai fluctuates run-to-run; (5) too many straight line-sliders (user wants
+~50-65% curved).
+
+### Phase 1 analysis — measure before building (`analyze_phase1.py`, real 397 vs v6 sweep)
+| measure | real | v6 | |
+|---|---|---|---|
+| mean / std spacing px | 133.5 / 77.3 | 119.7 / 66.2 | compressed |
+| jump_ratio / stream_ratio | 0.205 / 0.149 | 0.119 / 0.101 | ~½–⅔ of real |
+| turn angle° / reversal | 88.4 / 0.123 | 85.1 / 0.118 | **≈ real** |
+| visible-curve % (sagitta≥10px) | 38.1 | 13.4 | ~⅓ of real |
+| median slider sagitta px | 4.8 | **0.0** | collapsed straight |
+| SV distinct vals / changes per map | 5 / 10 | 1 / 0 | v6 = none |
+
+**Root cause (key):** patterns (#3) and straight sliders (#5) are the **same bug —
+under-dispersion from ε-MSE** (the model regresses spatial outputs toward the mean →
+compressed spacing *and* collinear slider anchors). **Flow angles are already ≈ real**, so
+**attention is NOT the bottleneck** — objective/representation > attention. Decode can't fix
+sliders (the type-B classifier already matches visible curvature; the model just makes few
+curves). Real SV is **structured + sparse** (~5 vals / ~10 changes per map, mostly ≤1.2×
+with a rare 10× burst) → validates a **learned SV channel**. Curve target set to **38-45%**
+visibly-curved (user's choice, just above the corpus ~38% upper bound; v6 is ~13%). Added
+`metrics.curved_slider_ratio` (sagitta-based) to track it.
+
+### Phased plan (one variable at a time; P1 gates the rest)
+- **P0** ✅ slider-mix decode probe → concluded decode-bound is wrong lever; added curvature metric.
+- **P1** ✅ analysis above.
+- **P2** ✅ **v-prediction + zero-terminal-SNR** (`--objective v --zero-snr`, §11 5.3) — attacks
+  under-dispersion directly + doubles as the base-160 unblock. Done + hermetic-tested +
+  GPU-smoked (v-loss O(1), ~100× ε scale → not comparable to v6 0.003; LR/grad-clip may
+  want retuning). **NEXT: user trains base-128 v-pred, eval vs Phase-1 baselines.**
+- **P3** attention (RoPE / up-path S-5 / one finer level + grad-checkpointing) — *demoted*
+  by the flow-angle finding; cheap A/B only. Build flash-attn-2 wheel **only if** this makes
+  attention dominate FLOPs (else SDPA's fused backend already suffices, §10.2). fp8/fp4 not
+  worth it (weights ≈0.25 GB; activations are the cost → grad-checkpointing instead).
+- **P4** representation reprocess (ONE pass): flow/Δpos channels + **learned SV channel** +
+  optional curvature cue → `gold-v7` (~18-20 ch); retrain best P2/P3 config.
+- **P5** parallel tracks: kiai segmentation head (#4); hitsound musicality (#2); BPM/offset
+  (try pretrained beat-trackers before a bespoke net).
+
+### P3 — attention upgrade ✅ CODE DONE (6459ee7); gate on whether it beats P2 in play
+Build nothing exotic. RoPE + up-path attention + grad-checkpointing implemented behind flags
+(`--rope --up-attn --grad-checkpoint`), backward-compatible. **v7 draft memory (base128, b16,
+crop4096, 19-ch):** baseline 5.30 GB · +rope 5.31 · +up_attn 9.83 · **+up_attn+grad_ckpt 5.02**
+(grad-checkpointing makes up-attention ~free) · attn4 (full-res O(T²)) OOMs → not viable.
+**Recommended config: `--rope --up-attn` (+`--grad-checkpoint` for headroom).** Details:
+- **RoPE in `AttnBlock1d`** — attention is currently pure content-based (no positional
+  signal beyond conv locality); rotary embeddings inject *relative time* so the model can
+  attend "N frames ago" (beats recur at a fixed frame stride, ~26 fr at 200 BPM/86 fps).
+  Apply rotary to q,k after QK-norm (rotation preserves unit norm); head_dim is even.
+  Use the per-level local frame index. Cost negligible; flag `--rope`, store in ckpt args.
+- **Up-path attention (audit S-5)** — attention currently only on down-path + mid; add it
+  to the symmetric up blocks for extra refinement during upsampling. Moderate cost.
+- **Finer-level attention** — the finest (full-res 4096) level has no attention; adding it
+  is O(T²) memory — *only* here is grad-checkpointing/FA relevant. Defer unless RoPE+up-path
+  move metrics.
+- **Gradient checkpointing (`--grad-checkpoint`)** — wrap down/up res+attn blocks in
+  `torch.utils.checkpoint`; the real memory enabler for finer attention / base-160 within
+  12 GB (FA2 standalone is redundant — `AttnBlock1d` already uses SDPA's fused flash kernel).
+- **Measure:** A/B (P2) vs (P2+RoPE+up-path) on jump/stream/curvature via `analyze_phase1.py`.
+
+### Memory & precision for scaling — the fp8/fp4 question (MEASURED 2026-06-16)
+Probed the real training footprint (base 128, batch 16, crop 4096, bf16 autocast, fused AdamW):
+| component | size | share of peak |
+|---|---|---|
+| **activations** (transient, fwd+bwd) | **~4.26 GB** | **~80%** |
+| Adam states (m,v fp32) | 0.55 GB | 10% |
+| weights (fp32 master) | 0.25 GB | 5% |
+| grads (fp32) | 0.25 GB | 5% |
+| **peak total** | **5.3 GB** / 12 | |
+
+**Conclusion — weight quantization is the wrong lever here.** fp32→fp8 weights saves 0.18 GB
+(3.5% of peak), fp4 saves 0.22 GB — negligible, because weights are 5% of memory; **activations
+are 80%**. Implications:
+- **base-160 is NOT memory-blocked** (5.3 GB peak leaves ~6.7 GB free) — it's **stability**-blocked
+  (bf16 divergence, §7). The real "scaling" fix is **P2 (v-pred/zero-SNR) + per-channel
+  standardisation (§11 5.2)**, not quantization.
+- To cut the 80% that matters (activations, e.g. when P3 adds full-res O(T²) attention): **gradient
+  checkpointing** (lossless), gradient accumulation (`--accum`, already present), or smaller crop —
+  never weight dtype.
+- **fp8 *training*** on Ada (sm_89): immature (PyTorch fp8 is Hopper-focused, needs amax scaling)
+  and it would compound our existing bf16 instability → **not now**. **fp4** is Blackwell-era → N/A.
+- Minor real option: **8-bit Adam** (bitsandbytes) trims the 0.55 GB optimizer state to ~0.15 GB,
+  but it's Windows-finicky and irrelevant at base 128 (plenty of headroom). Revisit only if a much
+  bigger net is memory-bound.
+- **dtype policy that helps:** keep bf16 autocast for bulk matmuls but **fp32 for norms / attention
+  softmax / the v-target** (stability), which we largely already do via autocast + QK-norm.
+- **Inference quantization** (fp8/int8 ckpt) is feasible and mature-ish but inference isn't a
+  bottleneck (ckpt ~1 GB, generation fast) → low priority.
+
+### P4 design draft — representation + SV channel (ONE reprocess → `gold-v7`)
+Decide the final channel set *after* P2 numbers (P2 may already fix dispersion). Order by
+confidence:
+- **A. Learned SV channel (the user's insight; highest priority). ✅ CODE DONE (b49709f).**
+  Per-frame continuous
+  channel = the effective SV-multiplier *timeline* (from green lines + SliderMultiplier),
+  piecewise-constant. Encode **log2(SV)** scaled+clamped to ~[0.25×,4×]→[-1,1] (multiplicative;
+  the rare 10× burst is clipped so it doesn't compress the useful range). 17→18 ch. **Decode —
+  stability over fidelity (user choice 2026-06-16): target ~6-8 sections** (between coarse ~4 and
+  real ~10), never noise. Robustness chain: (1) median-filter the raw channel; (2) quantise SV to
+  a coarse grid (~0.1); (3) **hysteresis** — only open a new section on ΔSV ≥ ~0.15 (kills tiny
+  wobbles); (4) **min section length ~1-2 s**; (5) hard cap (~8 sections) keeping the largest
+  changes if over budget. Then **slider duration = pixel_len/(100·SliderMultiplier·SV)·beat** —
+  resolves the geometry-vs-duration tension (same anchors, SV sets speed → duration follows).
+  Hermetic-testable (SV timeline encode→decode round-trip; a noisy channel must collapse to ≤8
+  stable sections). Naturally sparse because trained on real sparse SV.
+- **B. Flow/Δposition (conditional on P2).** If v-pred doesn't fully widen spacing, add Δx/Δy
+  (velocity) as **auxiliary** prediction targets (extra supervision; decode keeps absolute x/y)
+  rather than replacing the representation. +2 ch. Skip if P2 suffices.
+- **C. Curvature cue. ✅ CODE DONE (0c78502)** (sliders stayed flat after P2, so confirmed).
+  Per-slider intended-
+  sagitta scalar (held over the span) so the model signals curve-vs-straight intent decoupled
+  from anchor MSE; decode scales L/B + displacement from it. **Target 38-45% visibly-curved**
+  (user's choice, just above the corpus ~38% upper bound) → bias this cue / decode threshold
+  once curvature is honest. +1 ch.
+- Bundle whichever of A/B/C survive → `gold-v7` (18-21 ch); retrain best P2/P3 config.
+
+### P5 design draft — parallel tracks (independent; fit between trains)
+- **Stream density (measured 2026-06-18, stream test on "Everything will freeze" [Extra], a
+  deathstream).** v7.5 is **stream-shy**: on a 53%-stream / 7.1-dens song it made stream_ratio
+  0.17, density 5.06, slider_ratio 0.61 (vs ref 0.535 / 7.1 / 0.30) — i.e. an *average* SR6 map,
+  not the song's character. **Decode levers added + tested** (`generate --density`, `--onset-threshold`):
+  raising the conditioned density 4.8→7.5 lifted streams **0.17→0.28** *and* fixed the slider bias
+  (0.61→0.38 toward real); lower onset threshold added a little more (→0.305) at an on-grid cost.
+  So streams are **partly gated by conditioning (fixable now via `--density`)** — but the model
+  **caps ~6.2 dens even when asked 7.5**, so the rest needs model-side work: **density conditioning**
+  (condition on a per-song density inferred from the audio's onset rate, not the SR default) +
+  raising the **onset ceiling** (the same under-firing as the intro-gap/dropped-note #1/#6). Also a
+  **circle/slider-balance** nudge (the slider bias crowds out stream circles). Highest-leverage for
+  "match stream songs"; queue alongside the onset-decode fix.
+- **Extreme per-song STYLE, not just streams (jump test 2026-06-18, "Happppy song" [happy birthday
+  to me.], a jump map).** Same shape as the stream test on the other axis: ref jump_ratio 0.387 /
+  spacing 167, v7.5 made 0.129 / 116 — it matched aggregate stats (density 4.57≈4.12, slider 0.38≈0.38,
+  streams 0.17≈0.15) but **not the song's jump-spam**. General finding: **the model regresses to the
+  average map for the conditioned SR**; per-song extremes (deathstream, jump-spam, heavy-curve) are
+  all under-produced. **Jumps have no decode lever** (unlike density) — spacing magnitude *is* the
+  under-dispersion ceiling (~116px cap) → needs P4-B flow channels / representation work. Cheap
+  no-retrain nudge to try: higher CFG `--guidance` (3-4, more committed/extreme outputs).
+- **Trailing-outro phantom (bug, v7.5 play feedback).** On "Happppy song" the gen put a circle at
+  318.82 s (audio 318.85 s; the ref mapper stopped at 316.9 s, leaving ~2 s outro) → autobot fails
+  on the last note. The model over-maps the low-energy outro; `trim_isolated_ends` only trims
+  ≥~2.2 s trailing gaps so ~1 s-gap tail notes survive. **Fix (decode, no retrain):** trim trailing
+  notes that fall after the last *dense* cluster / in the low-mel-energy tail (mirror of the #1
+  intro-empty issue — the model is unreliable in low-energy sections, under-firing in intros and
+  over-firing in outros). Cheap P0.
+- **Kiai segmentation head (#4 fluctuation).** Kiai is one stochastic channel → borderline
+  sections flip per sample (eval saw kiai=0.00 at SR4). Train a small **supervised mel→kiai**
+  1D-conv head (BCE vs real kiai labels) and use its *deterministic* output at decode (and/or as
+  conditioning), replacing the noisy generated channel. Analyse real kiai vs mel energy first.
+- **Hitsound musicality (#2, persistent 5/10).** whistle/finish/clap are per-frame independent
+  accents, uncorrelated with percussion. Analyse where each type lands vs beat phase + audio
+  onset bands (claps on backbeats, finish on downbeats/cymbal onsets). Start **rule-based** from
+  beat phase + per-band onsets (deterministic, no retrain); model-side percussion conditioning
+  is the fallback.
+- **BPM/offset detection for novel songs (expanded).** The timing problem decomposes into
+  **tempo** (BPM; ~74% of gold maps single-BPM, ~26% variable), **offset** (the ms position of the
+  beat grid's phase — the hard part: a correct BPM with a wrong offset shifts *every* object;
+  osu! wants ~5 ms accuracy), and **downbeat/meter** (measure starts, for kiai/section edges).
+  librosa gives tempo+beats but rough phase (~28% exact). **Our unfair advantage: ground truth** —
+  the corpus has human-verified BPM+offset in every `.osu` timing point → both a *benchmark* and a
+  *training set*. Plan, cheap→involved:
+  1. **Benchmark first** (mirrors Phase 1 "measure before building"): score pretrained trackers
+     against corpus ground truth — BPM within 0.1, offset within ~10 ms — on osu!'s music
+     distribution (anime/electronic/fast; general trackers train on other genres). Candidates:
+     **beat_this** (2024 ISMIR, transformer, SOTA, pip+torch), **BeatNet** (CRNN+particle filter,
+     joint beat/downbeat/tempo). *madmom is strong but has Python-3.12/Windows install pain — try
+     last.* Decisive and cheap; tells us if any tool is good enough as-is.
+  2. **Offset refinement** (regardless of tracker): cross-correlate the onset-strength envelope
+     with a click train at the estimated BPM; the lag maximising correlation = offset. Plus
+     **"super timing"** (§10.2): aggregate estimates over many windows / runs → median for stability.
+  3. **Bespoke downbeat net** *only if* pretrained falls short on osu! music: a small TCN/CRNN
+     `mel → (beat, downbeat) activation` trained on the ~25 k-song labelled corpus (reuse our mel
+     pipeline); extract BPM via tempogram/autocorrelation + offset via the activation phase.
+  4. **Novel self-consistent angle:** our model already emits an **onset channel on the audio frame
+     grid**, and generated onsets cluster on beats — so we can *fit* a BPM+offset grid to the
+     model's own onset output as a post-hoc refinement (no extra net). Worth a quick test.
+  Keep `--timing-from <ref.osu>` for known songs (always exact). Independent of the patterns work.
+
+## 10.8 Timing model — BPM + offset for novel songs (design, 2026-06-17)
+
+Replaces the librosa estimate (~28% exact) for songs with no reference `.osu`. `--timing-from`
+stays the exact path for known songs. This is the P5 timing track, fully specified here.
+
+### The problem (and what "offset" is)
+osu! timing = an **uninherited (red) timing point** `(time, beat_length, meter)`: `beat_length =
+60000/BPM`, beats at `time + k·beat_length`, downbeats every `meter` beats. So we need three
+things: **tempo** (BPM), **phase/offset** (the ms of the anchor **downbeat** — convention: first
+strong downbeat near the song start; needs ~5-10 ms accuracy or every object drifts), and
+**downbeat** (which beat is bar-1, for meter + to put the offset on a downbeat). I.e. classic
+**beat + downbeat + tempo tracking**. Gold maps are single-BPM (one grid); variable-BPM (~26%)
+is a later extension — filter to single-BPM + meter 4 for v1.
+
+### Our unfair advantage: a huge in-distribution labelled set
+The corpus (~6k unique audios, ~25k difficulties) ships **human-verified BPM+offset+meter** in
+every map's timing points → free, large, and **in osu!'s distribution** (anime/electronic/
+J-core, often 180-250 BPM) where general trackers (trained on Ballroom/GTZAN/Hainsworth) may be
+out of distribution. Use it as both **benchmark** and **training set**. Split by `audio_id`
+(difficulties share audio → leakage otherwise; we already dedup mels per audio_id).
+
+### SOTA survey (2024-25; confirmed via web search)
+- **Beat This!** (Foscarin et al., ISMIR 2024) — **transformer, current SOTA, no DBN
+  post-processing** (minimal peak-pick); generalises across styles incl. tempo changes. The
+  reference arch. Key tricks: mel front-end, **wide-tolerance** framewise targets, heavy
+  augmentation (esp. tempo-stretch), shift-tolerant BCE.
+- **Beat Transformer** (Zhao et al. 2022) — dilated self-attention + demixed (HPSS/stem)
+  spectrograms.
+- **BEAST** (2023) — online streaming transformer (beat F1 ~80, downbeat ~47, <50 ms latency).
+- **madmom** RNN/TCN + **DBN bar-pointer** — long-standing strong baseline; Python-3.12/Windows
+  install pain → benchmark last. **BeatNet** CRNN + particle filter (pip+torch). **librosa**
+  (onset env + DP + tempogram) = our current ~28%-exact baseline.
+
+### Recommended architecture
+Two viable routes; we have the mel pipeline + RoPE + 1D-conv infra to reuse:
+- **SOTA upside — small transformer (Beat This!-style):** conv mel front-end → transformer
+  encoder (reuse our **RoPE**) → two linear heads (beat, downbeat) → peak-pick. Generalises best,
+  data-hungry → lean on augmentation.
+- **Pragmatic — TCN (Davies & Böck 2019):** dilated 1D convs (large receptive field) → beat/
+  downbeat heads. Lighter, robust, less data/compute; the recommended **first** bespoke model.
+- **Input:** log-mel (reuse `src/data/audio.py`) but at a **finer hop** than the diffusion 86 fps
+  (offset needs ~5-10 ms; use ~100 fps / 10 ms hop) + **sub-frame parabolic interpolation** of the
+  activation peak for the final offset.
+- **Targets:** two framewise activations in [0,1], `beat[t]`/`downbeat[t]`, each a **widened
+  window** (Gaussian / ±1-2 frames) around the ground-truth times. **Loss:** framewise BCE
+  (positive-weighted/focal — beats are sparse), shift-tolerant.
+- **Training:** AdamW + cosine (our infra). **Augmentation is load-bearing** — tempo-stretch
+  (transforms BPM *and* labels → BPM-range coverage + invariance), pitch-shift (label-invariant),
+  noise, mix. Eval F-measure on val each epoch.
+
+### Inference (osu-specific) — global grid fit
+For single-BPM maps the cleanest output is **one (BPM, offset)** that best aligns the grid to the
+beat activation: tempogram/autocorrelation → BPM candidates; for each, phase-align by
+cross-correlating a click train with the activation; pick the best; take the offset on a
+**downbeat** (downbeat head) and refine sub-frame. This beats per-beat peak-picking for the
+constant-tempo case and yields a precise pair. **"Super timing":** ensemble over windows / a few
+stochastic passes → median, for stability. A DBN bar-pointer (madmom) is the heavier alternative.
+A neat **self-consistent fallback:** our diffusion model already emits an onset channel on the
+frame grid — fit a grid to *its* onsets when no timing model is available.
+
+### Correctness checking
+- **MIR (`mir_eval.beat`):** F-measure (±70 ms), Cemgil, CMLt/CMLc, **AMLt/AMLc** (tolerates
+  octave 2×/½× errors → separates "metrically plausible" from phase errors).
+- **osu exact-match (the one that matters; we have ground truth):** BPM within **0.1** (count
+  octave errors 2×/½×/1.5×/⅔× separately — plausible but wrong for osu); **offset error mod
+  beat_length** (the grid repeats, so phase is what matters) bucketed **<5 ms excellent / <10 good
+  / <20 playable**; **whole-song grid drift** (max deviation of predicted vs true beats — compounds
+  BPM+offset error). Test split by `audio_id`.
+- **Practical:** drop the predicted timing into a generated map, eyeball in the osu! editor.
+
+### Plan (CPU/no-GPU first; train only if needed)
+1. ✅ **Dataset extractor + eval harness DONE** (CPU, `src/timing_model/`, 1d71d60): `labels.py`
+   (osu timing → beat/downbeat/BPM/offset) + `metrics.py` (native F-measure + osu exact-match) +
+   6 tests. Separate package from the diffusion sources.
+2. **Benchmark pretrained** (Beat This! → BeatNet → librosa; madmom last) on the corpus → know the
+   real exact-match on osu! music. Decisive — may make training unnecessary. *(Needs the tracker
+   libs + `mir_eval`; light inference. Next step when GPU/libs available.)*
+3. **Train bespoke only if pretrained falls short** — TCN first, transformer (+ our RoPE) for
+   upside. Plenty of labelled data; augmentation-heavy.
+
+## 10.9 v7.5 — recover jumps + red/white slider points (design, 2026-06-17)
+
+### Why `--up-attn` killed jumps (analysis)
+v7-full bundled v-pred + SV + curve + **RoPE + up-path attention**; jumps collapsed
+(jump_ratio 0.145→0.048, mean-spacing 129.6→102.8, turn 88→77). Mechanism: **self-attention
+is a weighted *average* across time** — it pulls each frame's cursor value toward an attended
+mean, i.e. it *smooths* the spatial channels and reduces their variance. Jumps need exactly the
+opposite: high-variance, confident position changes. **Up-path** attention sits right before the
+output, so its smoothing hits the final positions directly. Under ε/v-MSE (which already rewards
+mean-prediction) the extra attention capacity is spent *averaging* → lower loss, less dispersion.
+The turn-angle drop (88→77 = more clustered) is the fingerprint. This matches the Phase-1 finding:
+flow angles were already ≈ real, so attention was **not** the bottleneck — adding it *actively
+hurt*. (The down+mid attention from v5/v6 was fine; only the new up-path layer is the suspect.)
+
+**Will ablating it just revert to v7-vpred?** No. Dropping `--rope --up-attn` returns attention
+to the proven v6/vpred config **while keeping the v-pred objective + the SV channel + the curve
+channel**. So it's vpred's jumps **plus** v7's working SV + curved sliders — strictly ahead of
+vpred (which had no SV and flat sliders), not a revert. The bundle confound means the SV/curve
+channels *could* share minor blame; the ablation is the definitive test, but the smoothing
+mechanism + metric direction strongly implicate up-attn.
+
+### Red vs white slider points (measured: real ranked, 250 maps)
+osu! sliders have **white** control points (smooth bezier) and **red** points (sharp corners).
+In the file a **red point = a doubled consecutive control point** (`B|a|b|b|c` → corner at `b`,
+splitting the bezier). **Data:** **12.7% of all sliders have ≥1 red point**, and since only ~17%
+are bezier, **~75% of bezier sliders are red-point/angular, not smooth** — i.e. most osu "curves"
+are *angular*, which our smooth-only decoder cannot produce. Median 1 red point per red-slider
+(mean 1.56, max 87 for zig-zags). So red points matter as much as smooth curves for slider style.
+
+### v7.5 design (one retrain)
+1. **Drop `--rope --up-attn`** → recover jumps (keep SV + curve channels + v-pred). A/B vs v7-full
+   + v7-vpred on jump_ratio/mean-spacing.
+2. **Corner cue channel** (+1, 19→20; mirrors the curvature cue): per-slider scalar = "angular"
+   (set from real red-point detection). **Encode:** detect doubled control points *before* RDP
+   (the current `_rdp` collapses duplicates → destroys corners — must preserve/mark them).
+   **Decode:** when the corner cue is high, emit the sharp-angle anchors as **red** (doubled
+   control points → corners); gentle anchors stay white/smooth (existing curve-cue bow). `write_osu`
+   already writes `curve_points` verbatim, so doubling them is enough — no writer change.
+3. Net v7.5 = jumps back + smooth *and* angular sliders. (Curve target 38-45% now splits into
+   smooth-curve vs red-angular; revisit the metric to count both.)
+
+## 10.10 Loss function — options & analysis (2026-06-17)
+
+**Framing.** Diffusion trains on **MSE between predicted and true noise** (ε, or v for v-pred).
+This isn't an arbitrary "choice" — it's the denoising score-matching objective (the ELBO
+reduction), and it's what makes diffusion train stably. So we don't *replace* it wholesale; we
+either swap the pointwise distance (L1/Huber) or add **auxiliary** terms. Important: the loss is
+on the *noise*, not on an image, and our target is a 19-ch time-series, not pixels — so
+image-specific perceptual losses don't transfer directly.
+
+**Per the user's ideas:**
+- **LPIPS (perceptual) — doesn't transfer.** LPIPS = distance in a pretrained *image* CNN's
+  feature space (VGG on ImageNet). There's no pretrained "beatmap-signal" perceptual net, and our
+  target isn't an image. The domain analog would be matching our hand-crafted `metrics.py` stats
+  (density/spacing/…), but those are computed on *decoded* objects → non-differentiable → can't
+  backprop. Skip, unless we ever train a learned beatmap encoder (overkill).
+- **Gram-matrix style loss — literal form doesn't transfer, but the *idea* does.** Gram = feature
+  correlations (image texture/style). The useful kernel: match **statistical moments** rather than
+  pointwise values. Our version = a **variance/auto-correlation matching** auxiliary on the
+  predicted x0: penalise the cursor channels' *variance* being below real (directly = more jumps),
+  or match the onset channel's autocorrelation (rhythm regularity). This attacks under-dispersion,
+  but it's the highest-risk term (adds a non-standard objective; tune carefully).
+- **Weighted MSE — the most promising, and domain-appropriate.** Two distinct flavours:
+  (a) **per-channel weighting** — our 19 channels differ in *difficulty*, not scale (true ε is
+  unit-Gaussian per channel). The easy piecewise channels (SV, curve, hitsounds) are "solved"
+  early while the hard **cursor/anchor** channels stay underfit → the model hedges to the mean →
+  under-dispersion. Up-weighting the spatial channels focuses gradient where patterns live.
+  (b) **active-frame weighting** — most frames are empty baseline; weighting frames near onsets
+  concentrates learning on the notes.
+
+**Other principled options (not mentioned, but better fits):**
+- **L1 / Pseudo-Huber on ε/v** — cheapest, lowest-risk swap; some diffusion/consistency works
+  report sharper, more robust results than L2. Easy A/B (`--loss {mse,huber}`). **Try first.**
+- **Min-SNR-γ timestep weighting** (Hang et al. 2023) — reweight per-timestep loss to balance the
+  multi-task denoising; faster convergence + better quality. Established, low-risk.
+- **Per-channel input standardisation** (§11 #5.2, already queued) — different from (a): zero-mean/
+  unit-var the *input* channels for stability (a base-160 unblock candidate), not loss weighting.
+
+**Honest priority.** The loss is a *secondary* lever for our dispersion problem — the data showed
+representation (flow channels) and *avoiding over-smoothing* (drop attention, §10.9) matter more,
+and v-pred already moved the objective. But cheap, stable nudges are worth A/B-ing, one at a time
+(we value stability — base-160 already diverges): **(1) Pseudo-Huber, (2) min-SNR-γ, (3) per-channel
+loss weighting on cursor/anchors.** Skip LPIPS/Gram-literal/adversarial (don't transfer / destabilise).
+
 ## 11. Audit follow-ups (external review 2026-06-14)
 
 A separate auditor read every `src/` file + re-derived the diffusion math (all
@@ -647,3 +1026,11 @@ config as "current" → now base-128/0.3) + the v5 decode (§8.2) + README chann
 - [Farm map (1-2 jumps, Sotarks)](https://osu.miraheze.org/wiki/Farm_map)
 - [Star patterns (forum)](https://osu.ppy.sh/community/forums/topics/292689)
 - [Burst vs alt maps (forum)](https://osu.ppy.sh/community/forums/topics/1763755)
+- Timing model (§10.8): Beat This! (accurate beat tracking w/o DBN, ISMIR 2024 —
+  [researchgate](https://www.researchgate.net/publication/382739081_Beat_this_Accurate_beat_tracking_without_DBN_postprocessing))
+  · [Beat Transformer (dilated self-attn), 2022](https://arxiv.org/pdf/2209.07140)
+  · [BEAST — online streaming transformer, 2023](https://arxiv.org/abs/2312.17156)
+  · Davies & Böck, *TCN for beat tracking*, EUSIPCO 2019 · `mir_eval.beat` metrics
+- Loss options (§10.10): Hang et al., *Efficient Diffusion Training via Min-SNR Weighting*,
+  ICCV 2023 · Pseudo-Huber loss (Song & Dhariwal, *Improved Techniques for Consistency
+  Models*, 2023) · Gatys et al., *Neural Style Transfer* (Gram matrices) — image-only, doesn't transfer.
