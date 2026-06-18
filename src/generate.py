@@ -129,7 +129,7 @@ def prepare_audio(audio_path, device, timing_ref=None) -> PreparedAudio:
 def generate(audio_path, ckpt_path=None, out_path="generated.osu", steps=100, base=64,
              use_ema=True, snap=True, sr=None, guidance=2.0, match_sr=False, max_iter=3,
              tol=0.4, snap_divisors=(4, 8, 6), timing_ref=None, loaded=None, prepared=None,
-             guidance_rescale=0.0):
+             guidance_rescale=0.0, density=None, onset_threshold=0.3):
     if loaded is None:
         loaded = load_model(ckpt_path, base=base, use_ema=use_ema)
     model, diff, ctx_dim, device = loaded
@@ -140,12 +140,15 @@ def generate(audio_path, ckpt_path=None, out_path="generated.osu", steps=100, ba
     def _one_pass(sr_used):
         ctx = None
         if ctx_dim and sr_used is not None:
-            ctx = torch.tensor([target_context(sr_used)], dtype=torch.float32, device=device)
+            # density override conditions the model denser/sparser than the SR default
+            # (e.g. to push streams on a stream-heavy song).
+            ctx = torch.tensor([target_context(sr_used, density=density)],
+                               dtype=torch.float32, device=device)
         sig = diff.ddim_sample(model, cond, (1, model.sig_channels, t_full),
                                steps=steps, ctx=ctx, guidance=guidance,
                                guidance_rescale=guidance_rescale)
         sig = sig[0, :, :T].float().cpu().numpy()
-        objects = decode_signal(sig)
+        objects = decode_signal(sig, onset_threshold=onset_threshold)
         trim_isolated_ends(objects)
         bm = Beatmap(path=Path(out_path))
         bm.audio_filename = Path(audio_path).name
@@ -223,6 +226,10 @@ def main():
     ap.add_argument("--guidance", type=float, default=2.0, help="classifier-free guidance scale")
     ap.add_argument("--guidance-rescale", type=float, default=0.0,
                     help="rescale guided x0 toward conditional std (0-1; for v/zero-SNR ckpts)")
+    ap.add_argument("--density", type=float, default=None,
+                    help="override conditioned objects/sec (default SR-based; raise for streams)")
+    ap.add_argument("--onset-threshold", type=float, default=0.3,
+                    help="decode onset peak threshold (lower = more notes / denser streams)")
     ap.add_argument("--timing-from", default=None,
                     help="read exact BPM+offset from this reference .osu instead of "
                          "estimating (use when the song already has a known map)")
@@ -235,7 +242,8 @@ def main():
     generate(args.audio, args.ckpt, args.out, steps=args.steps, snap=not args.no_snap,
              sr=args.sr, guidance=args.guidance, match_sr=args.match_sr,
              max_iter=args.match_iter, timing_ref=args.timing_from,
-             guidance_rescale=args.guidance_rescale)
+             guidance_rescale=args.guidance_rescale, density=args.density,
+             onset_threshold=args.onset_threshold)
 
 
 if __name__ == "__main__":

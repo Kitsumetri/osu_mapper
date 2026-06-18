@@ -752,6 +752,18 @@ confidence:
 - Bundle whichever of A/B/C survive → `gold-v7` (18-21 ch); retrain best P2/P3 config.
 
 ### P5 design draft — parallel tracks (independent; fit between trains)
+- **Stream density (measured 2026-06-18, stream test on "Everything will freeze" [Extra], a
+  deathstream).** v7.5 is **stream-shy**: on a 53%-stream / 7.1-dens song it made stream_ratio
+  0.17, density 5.06, slider_ratio 0.61 (vs ref 0.535 / 7.1 / 0.30) — i.e. an *average* SR6 map,
+  not the song's character. **Decode levers added + tested** (`generate --density`, `--onset-threshold`):
+  raising the conditioned density 4.8→7.5 lifted streams **0.17→0.28** *and* fixed the slider bias
+  (0.61→0.38 toward real); lower onset threshold added a little more (→0.305) at an on-grid cost.
+  So streams are **partly gated by conditioning (fixable now via `--density`)** — but the model
+  **caps ~6.2 dens even when asked 7.5**, so the rest needs model-side work: **density conditioning**
+  (condition on a per-song density inferred from the audio's onset rate, not the SR default) +
+  raising the **onset ceiling** (the same under-firing as the intro-gap/dropped-note #1/#6). Also a
+  **circle/slider-balance** nudge (the slider bias crowds out stream circles). Highest-leverage for
+  "match stream songs"; queue alongside the onset-decode fix.
 - **Kiai segmentation head (#4 fluctuation).** Kiai is one stochastic channel → borderline
   sections flip per sample (eval saw kiai=0.00 at SR4). Train a small **supervised mel→kiai**
   1D-conv head (BCE vs real kiai labels) and use its *deterministic* output at decode (and/or as
