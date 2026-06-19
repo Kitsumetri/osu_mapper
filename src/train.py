@@ -23,7 +23,15 @@ import torch
 from torch.utils.data import DataLoader, Subset
 
 from .conditioning import CONTEXT_DIM
-from .config import AUDIO, N_SIGNAL_CHANNELS
+from .config import (
+    AUDIO,
+    CH_CURX,
+    CH_CURY,
+    CH_SLIDER_ANCHORS,
+    CH_SLIDES,
+    CH_SPACING,
+    N_SIGNAL_CHANNELS,
+)
 from .data.dataset import OsuSignalDataset
 from .model.diffusion import GaussianDiffusion
 from .model.unet import UNet1d
@@ -64,18 +72,34 @@ class EMA:
             s.copy_(p)
 
 
-def _diffusion_loss(pred, target, t, diff, args):
+def _diffusion_loss(pred, target, t, diff, args, channel_w=None):
     """Diffusion loss with optional Huber distance + Min-SNR-gamma weighting (computed
-    in fp32 for stability). reduction matches the old mean MSE when both are default."""
+    in fp32 for stability). reduction matches the old mean MSE when all are default.
+    ``channel_w`` (1,C,1) up-weights chosen channels before the spatial reduction."""
     if args.loss == "huber":
         per = torch.nn.functional.smooth_l1_loss(
             pred.float(), target.float(), reduction="none", beta=args.huber_beta)
     else:
         per = (pred.float() - target.float()) ** 2
+    if channel_w is not None:
+        per = per * channel_w                         # (B,C,T) * (1,C,1): up-weight spatial
     per = per.mean(dim=tuple(range(1, per.ndim)))     # per-sample (B,)
     if args.min_snr_gamma > 0:
         per = per * diff.loss_weight(t, args.min_snr_gamma)
     return per.mean()
+
+
+def _spatial_channel_weights(weight: float, n_channels: int = N_SIGNAL_CHANNELS):
+    """Per-channel loss-weight vector (mean 1) that up-weights the **spatial** channels —
+    cursor x/y, the slider anchor offsets, and the v8 spacing magnitude — by ``weight``.
+    The easy piecewise channels (SV/curve/corner/hitsounds/holds) are 'solved' early and
+    dominate the averaged MSE, so the hard position channels stay underfit and the model
+    hedges them to the mean -> under-dispersion (RESEARCH 10.10/10.11). Renormalised so the
+    mean weight is 1 (overall loss scale unchanged). ``weight=1.0`` -> all ones (no-op)."""
+    w = torch.ones(n_channels)
+    spatial = [CH_CURX, CH_CURY, *range(CH_SLIDER_ANCHORS, CH_SLIDES), CH_SPACING]
+    w[spatial] = weight
+    return w * n_channels / w.sum()
 
 
 def _git_commit() -> str:
@@ -149,6 +173,12 @@ def train(args):
     diff = GaussianDiffusion(timesteps=args.timesteps, device=device,
                              objective=args.objective, zero_snr=args.zero_snr)
     print(f"diffusion: objective={args.objective} zero_snr={args.zero_snr}")
+    # v8: optionally up-weight the spatial channels (cursor/anchors/spacing) so patterns
+    # aren't hedged to the mean. None (weight 1.0) keeps the exact old unweighted loss.
+    channel_w = (None if args.spatial_loss_weight == 1.0 else
+                 _spatial_channel_weights(args.spatial_loss_weight).to(device).view(1, -1, 1))
+    if channel_w is not None:
+        print(f"spatial loss weight: {args.spatial_loss_weight}x on cursor/anchors/spacing")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4,
                             fused=(device == "cuda"))
     bf16_ok = device == "cuda" and torch.cuda.is_bf16_supported()
@@ -207,7 +237,7 @@ def train(args):
             target = diff.target(sig, t, noise)
             with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=device == "cuda"):
                 pred = model(x_t, mel, t, ctx=ctx)      # full conditioning (no CFG drop)
-            loss = _diffusion_loss(pred, target, t, diff, args)
+            loss = _diffusion_loss(pred, target, t, diff, args, channel_w)
             tot += loss.item() * b      # sample-weight so a smaller last batch isn't over-counted
             nb += b
         model.train()
@@ -240,7 +270,7 @@ def train(args):
             target = diff.target(sig, t, noise)
             with torch.amp.autocast("cuda", dtype=amp_dtype, enabled=device == "cuda"):
                 pred = fwd_model(x_t, mel, t, ctx=ctx, ctx_drop=ctx_drop)
-            loss = _diffusion_loss(pred, target, t, diff, args) / args.accum
+            loss = _diffusion_loss(pred, target, t, diff, args, channel_w) / args.accum
             scaler.scale(loss).backward()
             running += loss.item() * args.accum
             if (i + 1) % args.accum == 0:
@@ -334,6 +364,9 @@ def main():
     ap.add_argument("--huber-beta", type=float, default=1.0, help="Huber transition point")
     ap.add_argument("--min-snr-gamma", type=float, default=0.0,
                     help="Min-SNR-gamma loss weighting (0 disables; ~5 typical)")
+    ap.add_argument("--spatial-loss-weight", type=float, default=1.0,
+                    help="up-weight the spatial channels (cursor/anchors/spacing) in the "
+                         "loss so patterns aren't hedged to the mean (1.0=off; ~3 typical)")
     ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--min-objects", type=int, default=50)
