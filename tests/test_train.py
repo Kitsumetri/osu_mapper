@@ -2,7 +2,7 @@ import argparse
 
 import torch
 
-from src.config import CH_CURX, CH_SPACING, N_SIGNAL_CHANNELS
+from src.config import CH_CORNER, CH_CURX, CH_SPACING, N_SIGNAL_CHANNELS
 from src.model.diffusion import GaussianDiffusion
 from src.train import _diffusion_loss, _spatial_channel_weights
 
@@ -14,6 +14,7 @@ def test_spatial_channel_weights_mean_one_and_upweights():
     assert abs(float(w3.mean()) - 1.0) < 1e-6                     # overall scale preserved
     assert float(w3[CH_CURX]) > float(w3[0])                      # cursor > onset (non-spatial)
     assert float(w3[CH_SPACING]) > 1.0                            # spacing up-weighted
+    assert float(w3[CH_CORNER]) > 1.0  # corner up-weighted in the loss, not re-encoded
 
 
 def test_diffusion_loss_channel_weight_raises_spatial_error():

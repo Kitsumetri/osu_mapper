@@ -25,6 +25,7 @@ from torch.utils.data import DataLoader, Subset
 from .conditioning import CONTEXT_DIM
 from .config import (
     AUDIO,
+    CH_CORNER,
     CH_CURX,
     CH_CURY,
     CH_SLIDER_ANCHORS,
@@ -90,15 +91,18 @@ def _diffusion_loss(pred, target, t, diff, args, channel_w=None):
 
 
 def _spatial_channel_weights(weight: float, n_channels: int = N_SIGNAL_CHANNELS):
-    """Per-channel loss-weight vector (mean 1) that up-weights the **spatial** channels —
-    cursor x/y, the slider anchor offsets, and the v8 spacing magnitude — by ``weight``.
-    The easy piecewise channels (SV/curve/corner/hitsounds/holds) are 'solved' early and
-    dominate the averaged MSE, so the hard position channels stay underfit and the model
-    hedges them to the mean -> under-dispersion (RESEARCH 10.10/10.11). Renormalised so the
-    mean weight is 1 (overall loss scale unchanged). ``weight=1.0`` -> all ones (no-op)."""
+    """Per-channel loss-weight vector (mean 1) that up-weights the **under-fit** channels —
+    cursor x/y, the slider anchor offsets, the v8 spacing magnitude, and the corner cue — by
+    ``weight``. The easy piecewise channels (SV/curve/hitsounds/holds) are 'solved' early and
+    dominate the averaged MSE, so these hard channels stay underfit and the model hedges them
+    toward the mean -> spacing collapse + corner under-fire (RESEARCH 10.10/10.11). Corner is
+    included here rather than re-encoded by red-point count: under mean-regression a lower
+    encoded value clears the decode threshold *less* often, so count-scaling worsens the
+    under-fire; up-weighting its loss (sharper fit) raises firing instead. Renormalised so the
+    mean weight stays 1 (overall loss scale unchanged). ``weight=1.0`` -> all ones (no-op)."""
     w = torch.ones(n_channels)
-    spatial = [CH_CURX, CH_CURY, *range(CH_SLIDER_ANCHORS, CH_SLIDES), CH_SPACING]
-    w[spatial] = weight
+    hard = [CH_CURX, CH_CURY, *range(CH_SLIDER_ANCHORS, CH_SLIDES), CH_SPACING, CH_CORNER]
+    w[hard] = weight
     return w * n_channels / w.sum()
 
 
@@ -365,8 +369,8 @@ def main():
     ap.add_argument("--min-snr-gamma", type=float, default=0.0,
                     help="Min-SNR-gamma loss weighting (0 disables; ~5 typical)")
     ap.add_argument("--spatial-loss-weight", type=float, default=1.0,
-                    help="up-weight the spatial channels (cursor/anchors/spacing) in the "
-                         "loss so patterns aren't hedged to the mean (1.0=off; ~3 typical)")
+                    help="up-weight the under-fit channels (cursor/anchors/spacing/corner) in "
+                         "the loss so patterns aren't hedged to the mean (1.0=off; ~3 typical)")
     ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--min-objects", type=int, default=50)

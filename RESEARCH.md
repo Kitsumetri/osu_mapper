@@ -1079,10 +1079,10 @@ the *channel* learns honest per-song magnitudes — which is what the train test
 free nudge: CFG `--guidance 3–4` (more committed/extreme) on the jump song.
 
 ### Complementary levers (ride the same train; one variable tracked at a time)
-- **Per-channel loss up-weighting** (§10.10(a)) — now co-primary, not a nudge: weight cursor/anchor
-  **and the new spacing channel** above the easy piecewise channels in `_diffusion_loss` (currently
-  an unweighted mean over all channels). Directly counters the "2-of-20 underfit" mechanism. Small,
-  reversible code change; add `--channel-weights`.
+- **Per-channel loss up-weighting** (§10.10(a)) — now co-primary, not a nudge: `--spatial-loss-weight`
+  weights cursor/anchors/**spacing**/**corner** above the easy piecewise channels in `_diffusion_loss`
+  (was an unweighted mean over all channels), renormalised to mean 1 so the overall scale is unchanged.
+  Directly counters the "2-of-21 underfit" mechanism (and corner's under-fire). Small, reversible.
 - **Per-channel target standardisation** (§11 5.2) — zero-mean/unit-var the channels so the spatial
   channels aren't drowned by the −1-baseline binaries; also a base-160 stability candidate.
 - **Variance-matching auxiliary** (§10.10 Gram-idea) — penalise predicted cursor-channel variance
@@ -1106,19 +1106,22 @@ touch disjoint metrics and most are **decode-tunable**, so a bundle is recoverab
   measured by `curved_slider_ratio` (disjoint from jump_ratio). A richer anchor-*shape* rep
   (waves/blankets geometry) shares metrics with the curve cue and is a harder problem → **defer to
   v9.**
-- **Corner — re-encode in place and bundle.** Same principle as the spacing channel: replace the
-  rare *binary* (ch 19) with a **graded scalar** = red-point *count* per slider, scaled+held (e.g.
-  `min(n,4)/4`), so it mean-regresses to a useful value instead of base-rate. Rides the *mandatory*
-  reprocess (≈ free), measured by an **orthogonal** metric (angular-slider ratio), and decode-tunable
-  (`CORNER_DECODE_THRESHOLD`). Note: decode-threshold alone was already tried (lowered to 0.25, still
-  ~2%) → the *trained channel value sits low* → re-encode + retrain is the real fix.
+- **Corner — loss up-weight, NOT count re-encode (corrected during implementation 2026-06-19).**
+  The drafted "scale by red-point count" would make the under-fire *worse*. Under mean-regression a
+  generated slider's corner value ≈ `e·P(angular|context)` where `e` is the encoded value; decode
+  fires when that ≥ `CORNER_DECODE_THRESHOLD` (0.25). The binary uses `e=1.0`; count-scaling drops a
+  1-red slider (the median) to `e=0.33`, so it clears the threshold *less* often → **fewer** corners,
+  not more. The binary's higher margin is exactly why it fires more. So the firing rate is raised the
+  same way as spatial dispersion — **up-weight the corner channel in the loss** (sharper fit →
+  P(angular|context) less hedged → more high-confidence fires) — plus post-train threshold tuning.
+  Encoding stays binary; corner joins the `--spatial-loss-weight` set. Orthogonal metric
+  (angular-slider ratio), decode-tunable threshold → attribution intact.
 
-**Decision: v8 = spacing-magnitude channel (cursor) + corner re-encode (graded) + spatial-channel
-loss up-weighting (cursor + anchors), one reprocess → `ranked-v8` (21-ch), one train.** Anchors get
-incidental help; a dedicated slider-shape rep waits for v9. Attribution holds because the metrics
-are disjoint *and* the channel/corner effects are decode-tunable (set α=0 / raise the corner
-threshold to isolate each at eval) — so the one baked-in change (loss weighting) can itself be
-isolated by toggling the decode knobs.
+**Decision: v8 = spacing-magnitude channel (cursor) + per-channel loss up-weighting on the under-fit
+channels (cursor/anchors/spacing/corner), one reprocess → `ranked-v8` (21-ch), one train.** Anchors
++ corner get fixed by the loss lever (no new/changed encoding); a dedicated slider-shape rep waits
+for v9. Attribution holds because the metrics are disjoint *and* the spacing effect is decode-tunable
+(set α=0 to isolate the loss-weighting's contribution from the channel's at eval, no retrain).
 
 ### Eval & acceptance
 `analyze_phase1.py` (real vs v7.5 vs v8): **mean-spacing toward 134, jump_ratio toward 0.20, std
@@ -1133,9 +1136,9 @@ mitigated by NC re-anchor + reflection + the de-risk pass above; (2) over-spacin
 songs if the channel over-fires — mitigated by the `--spacing-scale` blend (decode-tunable);
 (3) stream interaction (don't inflate 1/4 spacing) — the magnitude is per-gap so streams (small
 gaps) keep small spacing by construction. Build order: spacing channel + decode reconstruction
-first (the representation fix), then corner re-encode (graded) + per-channel loss up-weighting
+first (the representation fix), then per-channel loss up-weighting on cursor/anchors/spacing/corner
 bundled into the same reprocess/train; A/B vs v7.5 on disjoint metrics (jump_ratio, angular-slider
-ratio, curved_slider_ratio), isolating each via its decode knob.
+ratio, curved_slider_ratio), isolating the spacing channel via its `--spacing-scale` knob.
 
 ## 11. Audit follow-ups (external review 2026-06-14)
 
