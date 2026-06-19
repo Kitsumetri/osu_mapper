@@ -282,7 +282,10 @@ def train(args):
                 for g in opt.param_groups:
                     g["lr"] = lr
                 scaler.unscale_(opt)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                # capture the *pre-clip* grad norm: a climbing grad-norm is the early
+                # warning of the base-160 bf16 divergence (precursor before the loss blows
+                # up), so log it to judge whether a bigger base has a healthy curve.
+                gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
                 scaler.step(opt)
                 scaler.update()
                 opt.zero_grad(set_to_none=True)
@@ -291,7 +294,8 @@ def train(args):
                 gstep += 1
                 if gstep % args.log_every == 0:
                     cur = loss.item() * args.accum
-                    print(f"  e{epoch} step {gstep}/{total_steps} loss {cur:.4f} lr {lr:.2e}")
+                    print(f"  e{epoch} step {gstep}/{total_steps} loss {cur:.4f} "
+                          f"lr {lr:.2e} gnorm {float(gnorm):.2f}")
         avg = running / max(1, len(dl))
         val = _validate()
         dt = time.time() - t0
