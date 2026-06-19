@@ -406,3 +406,51 @@ def test_curve_cue_bows_flat_anchors():
     # a low cue keeps the same flat anchors straight
     ctype2, _, _ = _slider_from_anchors(start, anchor_ch, 0, 10, curve_cue=2.0)
     assert ctype2 == "L"
+
+
+def test_spacing_value_encode_decode():
+    from src.data.signal import SPACING_ENC_CLAMP, _dec_spacing, _enc_spacing
+    assert _enc_spacing(0.0) == 0.0
+    assert _dec_spacing(0.0) == 0.0
+    assert abs(_dec_spacing(_enc_spacing(150.0)) - 150.0) < 1e-3   # round-trips below the cap
+    assert _enc_spacing(10_000.0) == SPACING_ENC_CLAMP             # clamped
+
+
+def test_spacing_channel_holds_distance():
+    import pathlib
+
+    from src.config import CH_SPACING
+    from src.data.signal import _dec_spacing
+    from src.parsing.beatmap import TYPE_CIRCLE, Beatmap, HitObject
+    bm = Beatmap(path=pathlib.Path("x.osu"))
+    # two circles 200px apart (x), 1s apart -> the gap holds spacing ~200px
+    bm.hit_objects = [HitObject(x=100, y=100, time=0, type=TYPE_CIRCLE, end_time=0),
+                      HitObject(x=300, y=100, time=1000, type=TYPE_CIRCLE, end_time=1000)]
+    n = int(AUDIO.time_to_frame(1000)) + 10
+    sig = encode_beatmap(bm, n)
+    mid = int(AUDIO.time_to_frame(500))
+    assert abs(_dec_spacing(sig[CH_SPACING, mid]) - 200.0) < 2.0
+
+
+def test_decode_spacing_aligns_and_guards():
+    import pathlib
+
+    from src.config import CH_SPACING
+    from src.data.signal import decode_spacing
+    from src.parsing.beatmap import TYPE_CIRCLE, Beatmap, HitObject
+    bm = Beatmap(path=pathlib.Path("x.osu"))
+    objs = [HitObject(x=100, y=100, time=0, type=TYPE_CIRCLE, end_time=0),
+            HitObject(x=300, y=100, time=1000, type=TYPE_CIRCLE, end_time=1000),
+            HitObject(x=300, y=300, time=2000, type=TYPE_CIRCLE, end_time=2000)]
+    bm.hit_objects = objs
+    n = int(AUDIO.time_to_frame(2000)) + 10
+    sig = encode_beatmap(bm, n)
+    mags = decode_spacing(sig, objs)
+    assert len(mags) == 3 and mags[0] == 0.0
+    assert abs(mags[1] - 200.0) < 3.0 and abs(mags[2] - 200.0) < 3.0   # both gaps ~200px
+    # guard: an all-baseline (untrained) channel -> [] (skip respacing, never collapse)
+    sig0 = sig.copy()
+    sig0[CH_SPACING] = 0.0
+    assert decode_spacing(sig0, objs) == []
+    # guard: a pre-v8 signal with no spacing channel -> []
+    assert decode_spacing(sig[:CH_SPACING], objs) == []

@@ -15,7 +15,7 @@ import torch
 from .conditioning import CONTEXT_DIM, target_context, target_settings
 from .config import AUDIO, N_SIGNAL_CHANNELS
 from .data.audio import load_audio, log_mel
-from .data.signal import decode_kiai, decode_signal, decode_sv
+from .data.signal import decode_kiai, decode_signal, decode_spacing, decode_sv
 from .data.timing import estimate_timing_point
 from .model.diffusion import GaussianDiffusion
 from .model.unet import UNet1d
@@ -23,6 +23,7 @@ from .parsing.beatmap import Beatmap, TimingPoint, parse_beatmap, write_osu
 from .postprocess import (
     clamp_slider_endpoints,
     compute_breaks,
+    respace_by_magnitude,
     snap_slider_ends,
     snap_to_grid,
     trim_isolated_ends,
@@ -129,7 +130,7 @@ def prepare_audio(audio_path, device, timing_ref=None) -> PreparedAudio:
 def generate(audio_path, ckpt_path=None, out_path="generated.osu", steps=100, base=64,
              use_ema=True, snap=True, sr=None, guidance=2.0, match_sr=False, max_iter=3,
              tol=0.4, snap_divisors=(4, 8, 6), timing_ref=None, loaded=None, prepared=None,
-             guidance_rescale=0.0, density=None, onset_threshold=0.3):
+             guidance_rescale=0.0, density=None, onset_threshold=0.3, spacing_scale=0.0):
     if loaded is None:
         loaded = load_model(ckpt_path, base=base, use_ema=use_ema)
     model, diff, ctx_dim, device = loaded
@@ -150,6 +151,15 @@ def generate(audio_path, ckpt_path=None, out_path="generated.osu", steps=100, ba
         sig = sig[0, :, :T].float().cpu().numpy()
         objects = decode_signal(sig, onset_threshold=onset_threshold)
         trim_isolated_ends(objects)
+        # v8: rebuild positions to the spacing channel's per-gap magnitudes (keep the
+        # model's direction, set the step length from the predicted magnitude) — breaks
+        # the jump under-dispersion ceiling (RESEARCH 10.11). Off (0.0) for pre-v8 ckpts;
+        # decode_spacing returns [] for an absent/untrained channel, so respacing is
+        # skipped safely. Runs before snap/clamp so the slider-body clamp catches it.
+        if spacing_scale > 0:
+            mags = decode_spacing(sig, objects)
+            if mags:
+                respace_by_magnitude(objects, mags, alpha=spacing_scale)
         bm = Beatmap(path=Path(out_path))
         bm.audio_filename = Path(audio_path).name
         bm.title = Path(audio_path).stem
@@ -238,12 +248,15 @@ def main():
     ap.add_argument("--match-iter", type=int, default=3,
                     help="max --match-sr iterations (raise for high/noisy SR targets)")
     ap.add_argument("--no-snap", action="store_true", help="disable beat-snapping")
+    ap.add_argument("--spacing-scale", type=float, default=0.0,
+                    help="v8: rebuild positions to the spacing channel (0=off; ~1.0 for "
+                         "v8 ckpts; lower = gentler, raise >1 for more extreme jumps)")
     args = ap.parse_args()
     generate(args.audio, args.ckpt, args.out, steps=args.steps, snap=not args.no_snap,
              sr=args.sr, guidance=args.guidance, match_sr=args.match_sr,
              max_iter=args.match_iter, timing_ref=args.timing_from,
              guidance_rescale=args.guidance_rescale, density=args.density,
-             onset_threshold=args.onset_threshold)
+             onset_threshold=args.onset_threshold, spacing_scale=args.spacing_scale)
 
 
 if __name__ == "__main__":

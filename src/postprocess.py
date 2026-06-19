@@ -250,3 +250,66 @@ def snap_to_grid(objects: list[HitObject], tp: TimingPoint,
             moved += 1
     objects.sort(key=lambda o: o.time)
     return moved
+
+
+def _reflect(v: float, lo: float, hi: float) -> float:
+    """Fold ``v`` into ``[lo, hi]`` by mirror reflection (triangle wave): a value past
+    a wall bounces back in instead of being clamped to the wall. Clamping would
+    re-compress spacing right where we are trying to expand it; reflection keeps the
+    step length (and mimics how real aim bounces off the playfield edges)."""
+    span = hi - lo
+    if span <= 0:
+        return lo
+    t = (v - lo) % (2 * span)
+    if t > span:
+        t = 2 * span - t
+    return lo + t
+
+
+def respace_by_magnitude(objects: list[HitObject], magnitudes, alpha: float = 1.0,
+                         w: int = PLAYFIELD_W, h: int = PLAYFIELD_H) -> int:
+    """Re-space objects to target ``magnitudes`` while preserving the model's flow
+    *directions* — the v8/P4-B jump-under-dispersion fix (RESEARCH §10.11).
+
+    The model's turn angles are already ≈ real; only the step *length* (= spacing)
+    is compressed toward the playfield centre by mean-regression. So we keep each
+    consecutive step's direction (from the model's own positions) and set its length
+    from a separately-predicted ``magnitudes[k]`` (head-to-head distance from object
+    ``k-1`` to object ``k``; ``magnitudes[0]`` is ignored), walking the objects out to
+    the intended spacing. Each moved object's slider control points shift with its head
+    so slider shapes are preserved. New combos and spinners are **re-anchor** points —
+    the walk snaps back to the model's own absolute position there, bounding drift and
+    keeping the global layout. Out-of-bounds steps reflect off the walls. ``alpha`` in
+    [0, 1] blends model→reconstructed (0 = unchanged, 1 = full magnitude). Returns the
+    number of objects moved.
+    """
+    if len(objects) < 2:
+        return 0
+    objs = sorted(objects, key=lambda o: o.time)
+    mp = [(float(o.x), float(o.y)) for o in objs]          # model (input) positions
+    new = [mp[0]]
+    for k in range(1, len(objs)):
+        if objs[k].is_new_combo or objs[k].is_spinner or objs[k - 1].is_spinner:
+            tgt = mp[k]                                    # re-anchor to model absolute
+        else:
+            dx, dy = mp[k][0] - mp[k - 1][0], mp[k][1] - mp[k - 1][1]
+            n = hypot(dx, dy)
+            if n < 1e-6:
+                tgt = mp[k]                                # no direction -> leave it
+            else:
+                mag = max(0.0, float(magnitudes[k]))
+                tgt = (_reflect(new[k - 1][0] + mag * dx / n, 0, w),
+                       _reflect(new[k - 1][1] + mag * dy / n, 0, h))
+        new.append((alpha * tgt[0] + (1 - alpha) * mp[k][0],
+                    alpha * tgt[1] + (1 - alpha) * mp[k][1]))
+    moved = 0
+    for o, (nx, ny), (ox, oy) in zip(objs, new, mp):
+        dx, dy = int(round(nx - ox)), int(round(ny - oy))
+        if dx == 0 and dy == 0:
+            continue
+        o.x, o.y = int(round(nx)), int(round(ny))
+        if o.curve_points:
+            o.curve_points = [(cx + dx, cy + dy) for cx, cy in o.curve_points]
+        moved += 1
+    objects[:] = objs
+    return moved

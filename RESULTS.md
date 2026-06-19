@@ -4,6 +4,30 @@ Training-run history + generated-map quality (metrics via `src/metrics.py`).
 **Current release: v5** (`runs/20260614-224107-ranked-v5/ckpt/best.pt`, 17-ch).
 **v6 + v7-Phase2 trained; v7 work in progress (RESEARCH §10.7).**
 
+## v8 (P4-B) — decode reconstruction de-risk (2026-06-19, no train yet)
+
+Before spending a train on the spacing-magnitude channel (RESEARCH §10.11), validated the
+**decode half** — `postprocess.respace_by_magnitude` — on real v7.5 output (`aiv75_sr5/sr6.osu`).
+It keeps each step's model *direction* (turn angles are already ≈ real) and sets its *length* from a
+target magnitude (here synthesised as `scale × v7.5's own spacing` toward the Happppy 167 px ref),
+re-anchoring at new combos/spinners and reflecting off the walls.
+
+| map | spacing px | jump_ratio | turn° | in-bounds (head+body) |
+|---|---|---|---|---|
+| sr5 v7.5 input | 121.6 | 0.103 | 90.2 | ✓ |
+| sr5 respace α=0 | 121.6 | 0.103 | 90.2 | ✓ (perfect no-op) |
+| sr5 respace α=1 (+clamp) | **151.0** | **0.288** | 96.3 | ✓ |
+| sr6 v7.5 input | 137.9 | 0.194 | 106.0 | ✓ |
+| sr6 respace α=1 (+clamp) | **160.4** | **0.374** | 105.3 | ✓ |
+
+**Validated:** spacing expands controllably via the `alpha` blend (0 = unchanged), jump_ratio more
+than doubles into real-jump territory (ref 0.39), turn-angle is preserved, and after the existing
+`clamp_slider_endpoints` everything is in-bounds (heads via wall-reflection; slider bodies via the
+clamp). α=1 lands ~151/160 vs the 167 target — the new-combo re-anchoring trades a little expansion
+for bounded drift (raise the magnitude scale to compensate). **Conclusion:** the reconstruction is
+sound; the only open question is whether the model learns honest per-song magnitudes — which the
+train tests. Greenlights the v8 channel build.
+
 ## v7.5 — attention dropped + red points (TRAINED 2026-06-17, best so far)
 
 `runs/20260617-223917-ranked-v75/ckpt/best.pt` (val 0.0473 v-scale). 20-ch `ranked-v75`
