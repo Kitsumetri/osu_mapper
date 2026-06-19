@@ -182,7 +182,7 @@ def train(args):
     channel_w = (None if args.spatial_loss_weight == 1.0 else
                  _spatial_channel_weights(args.spatial_loss_weight).to(device).view(1, -1, 1))
     if channel_w is not None:
-        print(f"spatial loss weight: {args.spatial_loss_weight}x on cursor/anchors/spacing")
+        print(f"spatial loss weight: {args.spatial_loss_weight}x on cursor/anchors/spacing/corner")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4,
                             fused=(device == "cuda"))
     bf16_ok = device == "cuda" and torch.cuda.is_bf16_supported()

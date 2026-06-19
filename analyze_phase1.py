@@ -128,6 +128,8 @@ def main():
     ap.add_argument("--ckpt", default=CKPT)
     ap.add_argument("--label", default=None, help="name for the generated block")
     ap.add_argument("--rescale", type=float, default=0.0, help="guidance_rescale (v/zero-SNR)")
+    ap.add_argument("--spacing-scale", type=float, default=0.0,
+                    help="v8: rebuild positions to the spacing channel (0=off; ~1.0 for v8 ckpts)")
     ap.add_argument("--no-real", action="store_true", help="skip the real-map baseline")
     args = ap.parse_args()
     label = args.label or Path(args.ckpt).parts[-3]  # the run-id folder
@@ -156,7 +158,7 @@ def main():
     for sr in GEN_SRS:
         out = gen_dir / f"gen_sr{sr}.osu"
         generate(AUDIO_2MIN, out_path=out, sr=sr, loaded=loaded, prepared=prepared,
-                 guidance_rescale=args.rescale)
+                 guidance_rescale=args.rescale, spacing_scale=args.spacing_scale)
         gen.append(parse_beatmap(out))
     summarize(f"GENERATED [{label}]", gen)
 
