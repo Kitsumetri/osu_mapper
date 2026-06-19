@@ -4,6 +4,42 @@ Training-run history + generated-map quality (metrics via `src/metrics.py`).
 **Current release: v5** (`runs/20260614-224107-ranked-v5/ckpt/best.pt`, 17-ch).
 **v6 + v7-Phase2 trained; v7 work in progress (RESEARCH §10.7).**
 
+## v8 (P4-B) — draft trains: pipeline debug + base-160 probe (2026-06-19, drafts only)
+
+Two 2-epoch drafts on `ranked-v8` (**38,036 maps** — the +13k library reprocess), v8 recipe
+`--objective v --zero-snr --spatial-loss-weight 3` (no `--compile`). **Drafts validate the
+pipeline + mechanism *direction*, NOT quality (2 epochs = heavily undertrained).**
+
+**Pipeline ✅** both trained clean (no crash/divergence), 21-ch, loss-weighting active, SV +
+curves intact (no regression from adding the spacing channel).
+
+**Mechanism ✅ (the v8 bet, via `eval_spacing_channel`):** the spacing *channel* predicts a larger
+magnitude than the collapsed cursor *positions*; ratio (channel ÷ cursor mean spacing) grows with SR:
+| SR | base-128 ratio | base-160 ratio | base-160 channel_sp px |
+|---|---|---|---|
+| 3 | 1.04 | 1.13 | 116.6 |
+| 4 | 1.11 | 1.16 | 129.7 |
+| 5 | 1.14 | 1.16 | 152.0 |
+| 6 | 1.12 | 1.14 | 154.1 |
+The channel mean-regresses *above* the positions even undertrained → respace has a real gap to
+exploit (and base-160's extra capacity widens it). Net respace lift on a full map is still modest
+at 2 ep (small gap + new-combo re-anchoring); judge it on the full train.
+
+**base-160 — promising (the user's hypothesis: v-pred stability unblocks the bigger base).**
+| | base-128 draft | base-160 draft |
+|---|---|---|
+| params | 66.1M | 101.7M |
+| val_loss e0 / e1 | 0.0768 / 0.0655 | 0.0724 / **0.0619** |
+| grad-norm | (logged later) | **stable/decreasing**, 1.0 (warmup) → 0.1–0.7 |
+| s/epoch (no compile) | 571 / 514 | 1444 / 1065 (steady ~1065) |
+| memory | fits | fits (batch 16, ~7 GB) |
+base-160 fits, has a **lower loss**, a **stable grad-norm** (no divergence signature), and a
+**stronger spacing channel** — the first base-160 that didn't fall over. The prior divergences
+(v2 @e21, v3 @e12) were ε-pred; **v-pred + zero-SNR appears to be the unblock** (§7). **CAVEAT: the
+documented divergences hit epoch 12–21 — a 2-epoch draft CANNOT confirm long-run stability.** Next
+(USER): a full base-160 train, `--compile` (~6–8 h), watching gnorm/val through e15–25; if gnorm
+climbs, fall back to per-channel standardisation (§11 5.2) or lr 1.0e-4.
+
 ## v8 (P4-B) — decode reconstruction de-risk (2026-06-19, no train yet)
 
 Before spending a train on the spacing-magnitude channel (RESEARCH §10.11), validated the
