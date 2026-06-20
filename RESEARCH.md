@@ -1140,6 +1140,27 @@ first (the representation fix), then per-channel loss up-weighting on cursor/anc
 bundled into the same reprocess/train; A/B vs v7.5 on disjoint metrics (jump_ratio, angular-slider
 ratio, curved_slider_ratio), isolating the spacing channel via its `--spacing-scale` knob.
 
+### Outcome (base-160 train, 2026-06-20) — partial; the channel regresses to the SR-average
+Trained base-160 v8 (val 0.041, clean — RESULTS; + the base-160 stability win, §7). **The core bet
+only half held.** `eval_spacing_channel` on a jump song (Happppy, real spacing 173 / jump 0.42): the
+spacing channel predicts only ~120–127 px (ratio 1.03–1.04 over the cursor) — it mean-regresses to
+`E[spacing | audio, SR]` = the **SR-average**, NOT the per-song extreme. **Why the §10.11 prediction
+was wrong:** a magnitude scalar does mean-regress to the *correct* value — but "correct" here is the
+SR *average*, and the channel **shares the cursor's audio+SR conditioning**, so it has no extra
+information about whether *this* song is jump-heavy. Both channel and cursor → the same SR-average;
+moving magnitude into a channel re-encoded the average, it didn't recover the per-song extreme (the
+channel is itself under-dispersed: chan_p90 ~200 vs real ~340). The curve cue worked only because
+decode *forces* a bow; respace faithfully reproduces the channel's compressed magnitude.
+- **What worked:** base-160 stability (headline); no regression (curves 0.369, SV intact); and
+  `--spacing-scale >1` as a **manual** global jump dial (Happppy raw 0.116 → 2.5 → 0.297) — useful
+  but not automatic (over-spaces calm songs; uniform scaling can't make the bimodal stream+jump
+  structure).
+- **The real per-song fix (→ v9):** condition on an **audio-inferred aim-intensity / target spacing**
+  (compute per-song from onset-energy/spectral-flux, feed like `--density`; the §10.7-P5 stream-
+  density idea on the spacing axis). A passive channel can't beat the conditioning it shares — the
+  lever must be *new information at the input*, or an objective that samples extremes rather than
+  regressing to the mean (the deeper under-dispersion problem persists).
+
 ## 11. Audit follow-ups (external review 2026-06-14)
 
 A separate auditor read every `src/` file + re-derived the diffusion math (all

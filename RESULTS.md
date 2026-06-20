@@ -4,6 +4,44 @@ Training-run history + generated-map quality (metrics via `src/metrics.py`).
 **Current release: v5** (`runs/20260614-224107-ranked-v5/ckpt/best.pt`, 17-ch).
 **v6 + v7-Phase2 trained; v7 work in progress (RESEARCH §10.7).**
 
+## v8 (P4-B) — base-160 full train (TRAINED 2026-06-20)
+
+`runs/20260619-235218-ranked-v8-b160/ckpt/best.pt` (val **0.0412**, 21-ch, **base 160 / 101.7M**),
+v8 recipe `--objective v --zero-snr --compile --spatial-loss-weight 3`, 60 ep on `ranked-v8` (38k),
+~7 h (~400 s/ep).
+
+**WIN — base-160 is unblocked.** Trained clean through the **e12–21 divergence zone** that killed
+v2/v3 (ε-pred): val 0.078→0.041 monotonic, gnorm stable/decreasing. v-pred + zero-SNR is the unblock
+(§7); `--compile` works at base 160. **Bigger models are now trainable** — a durable capability win
+independent of the spacing outcome.
+
+**MISS — the spacing channel does NOT auto-adapt per-song.** On the Happppy jump song (real: spacing
+173.6 / jump 0.418), `eval_spacing_channel` shows the channel predicts only ~120–127 px (ratio
+1.03–1.04 over the cursor) — it regressed to the **SR-average**, same as the cursor. The v8 thesis
+("a magnitude scalar mean-regresses to the correct *larger* magnitude") only half held: it regresses
+to the SR-average, **not** the per-song extreme. **Root cause:** the channel shares the cursor's
+audio+SR conditioning, so it has no extra info about whether a song is jump-heavy — both →
+`E[spacing | audio, SR]`. (The curve cue worked because decode *forces* a bow; respace faithfully
+reproduces the channel's compressed magnitude, so it can't add what the channel didn't learn.)
+
+**PARTIAL WIN — `--spacing-scale` is a usable manual dial (no retrain).** Amplifying past 1.0
+uniformly scales spacing — a per-song jump knob v7.5 never had (Happppy @ sr6.5):
+| spacing-scale | mean_spacing | jump_ratio |
+|---|---|---|
+| 0 (raw) | 117.7 | 0.116 |
+| 1.0 (faithful) | 129.9 | 0.144 |
+| 2.0 | 146.5 | 0.197 |
+| 2.5 | 187.9 | 0.297 |
+(real 173.6 / 0.418.) No regression — curves 0.369 (≈ real 0.38), SV intact. Packaged `[AI-v8 s2.0]`
+(146/0.20). Caveats: the dial is **global** (over-spaces calm songs) and uniform scaling can't make
+real's bimodal stream+jump structure (std 130). `--match-sr` backfires on jump songs (the model
+under-produces SR → it lands on a sparse low-SR map); condition a high `--sr` directly instead.
+
+**Verdict:** net **+** over v7.5 (stable bigger base + a working spacing dial + no regression), but
+it did **not** break the jump ceiling *automatically*. The real per-song fix is **conditioning on an
+audio-inferred aim-intensity** (the §10.7-P5 density idea, on the spacing axis), not a passive
+channel — see RESEARCH §10.11. Play-test `[AI-v8 s2.0]` to decide vs v7.5.
+
 ## v8 (P4-B) — draft trains: pipeline debug + base-160 probe (2026-06-19, drafts only)
 
 Two 2-epoch drafts on `ranked-v8` (**38,036 maps** — the +13k library reprocess), v8 recipe

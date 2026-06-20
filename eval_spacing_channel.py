@@ -26,13 +26,14 @@ AUDIO_2MIN = "C:/osu!/Songs/986934 JIN feat LiSA - Headphone Actor/audio.mp3"
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", required=True)
+    ap.add_argument("--audio", default=AUDIO_2MIN)
     ap.add_argument("--srs", default="3,4,5,6")
     ap.add_argument("--guidance", type=float, default=2.0)
     args = ap.parse_args()
 
     loaded = load_model(args.ckpt)
     model, diff, _ctx_dim, device = loaded
-    cond, t_len, t_full, _tp = prepare_audio(AUDIO_2MIN, device)
+    cond, t_len, t_full, _tp = prepare_audio(args.audio, device)
     torch.manual_seed(0)
 
     print(f"\n{'SR':>4} {'cursor_sp':>10} {'channel_sp':>11} {'ratio':>6} "
