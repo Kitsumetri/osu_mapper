@@ -42,6 +42,14 @@ it did **not** break the jump ceiling *automatically*. The real per-song fix is 
 audio-inferred aim-intensity** (the §10.7-P5 density idea, on the spacing axis), not a passive
 channel — see RESEARCH §10.11. Play-test `[AI-v8 s2.0]` to decide vs v7.5.
 
+**Play feedback (2026-06-20): `--spacing-scale` HURTS in-game → use `--spacing-scale 0`.** The
+respace lifts the spacing *metrics* (jump_ratio) but the relocated objects read/play worse (flow +
+readability suffer when positions are walked/reflected), so in-game it's a net negative. **The
+respace is effectively shelved; generate raw (scale 0).** v8's real value is the **base-160
+stability + no regression** (and SR conditioning already gives meaningful per-song/per-SR spacing
+variation: e.g. Kano sr5→sr7 raw spacing 123→169, jump 0.09→0.30). The automatic per-song jump fix
+remains v9 (audio-inferred aim-intensity conditioning), not a decode lever.
+
 ## v8 (P4-B) — draft trains: pipeline debug + base-160 probe (2026-06-19, drafts only)
 
 Two 2-epoch drafts on `ranked-v8` (**38,036 maps** — the +13k library reprocess), v8 recipe
