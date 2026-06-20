@@ -236,3 +236,18 @@ def test_ddim_cfg_sample_runs():
     out = diff.ddim_sample(m, torch.randn(1, C_COND, T), (1, C_SIG, T), steps=8,
                            ctx=torch.rand(1, ctx_dim), guidance=2.0)
     assert out.shape == (1, C_SIG, T) and torch.isfinite(out).all()
+
+
+def test_ddim_batch_cfg_matches_two_forward_path():
+    """batch_cfg on/off must produce identical samples — the low-memory fallback (for
+    marathon songs that OOM the batch-2 forward) is exact, not an approximation."""
+    ctx_dim = 6
+    m = UNet1d(C_SIG, C_COND, base=16, mults=(1, 2), t_dim=32, attn=False,
+               ctx_dim=ctx_dim).eval()
+    diff = GaussianDiffusion(timesteps=100, device=DEV)
+    cond, ctx = torch.randn(1, C_COND, T), torch.rand(1, ctx_dim)
+    torch.manual_seed(7)
+    a = diff.ddim_sample(m, cond, (1, C_SIG, T), steps=8, ctx=ctx, guidance=2.0, batch_cfg=True)
+    torch.manual_seed(7)
+    b = diff.ddim_sample(m, cond, (1, C_SIG, T), steps=8, ctx=ctx, guidance=2.0, batch_cfg=False)
+    assert torch.allclose(a, b, atol=1e-5)

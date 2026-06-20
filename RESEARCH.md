@@ -1191,8 +1191,12 @@ config as "current" → now base-128/0.3) + the v5 decode (§8.2) + README chann
   to unblock base ≥160 (higher leverage than just lowering LR). *Future / pairs with 5.2.*
 - **Batched CFG** (5.4) — one concatenated forward instead of two → ~2× faster
   sampling, identical output. **Done** (`diffusion.ddim_sample`, 2026-06-20): batch-2 forward,
-  second half `ctx_drop=True` (== null embedding, bit-identical; hermetic-tested). Plus inference
-  `generate --compile` (opt-in, stacks) + a tqdm progress bar over the DDIM steps.
+  second half `ctx_drop=True` (== null embedding, bit-identical; hermetic-tested). **Memory tradeoff:
+  the batch-2 forward ~doubles peak activations → OOMs marathon-length songs at base-160 (e.g. the
+  8-min ICDD song hit 11.4/12 GB at batch-1), so `generate --no-batch-cfg` keeps the low-memory
+  two-forward path.** Plus inference `generate --compile` (opt-in, stacks) + a tqdm progress bar over
+  the DDIM steps. (Long-song speedup is still memory-bound — chunked/windowed generation is the real
+  lever there; future.)
 - **Attention on the up-path** (S-5) / fuse the top skip (S-4) — architecture A/B
   vs the 17/19 metric; needs a retrain.
 - Minor (cosmetic/negligible, left as-is): `package_map` re-parse drops `[Events]`
