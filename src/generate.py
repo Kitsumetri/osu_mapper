@@ -71,7 +71,8 @@ def _merge_green_lines(base_tp, kiai_spans, sv_secs):
     return timing
 
 
-def load_model(ckpt_path, base=64, use_ema=True, device=None) -> LoadedModel:
+def load_model(ckpt_path, base=64, use_ema=True, device=None,
+               compile_model=False) -> LoadedModel:
     """Load a checkpoint into an eval-ready U-Net + diffusion sampler.
 
     Reuse the result across generate() calls (e.g. an SR sweep) to avoid
@@ -94,6 +95,13 @@ def load_model(ckpt_path, base=64, use_ema=True, device=None) -> LoadedModel:
     weights = ckpt["ema"] if (use_ema and ckpt.get("ema")) else ckpt["model"]
     model.load_state_dict(weights)
     model.eval()
+    # torch.compile fuses kernels for the repeated DDIM forwards (compiles once on the
+    # first call, then reused across all steps / an SR sweep). Opt-in: the ~30-60s compile
+    # cost only pays off over many forwards (long songs, sweeps); it specialises on the
+    # song length, so a different-length song recompiles. (`model.sig_channels` still
+    # resolves through the OptimizedModule wrapper.)
+    if compile_model and device == "cuda":
+        model = torch.compile(model)
     diff = GaussianDiffusion(timesteps=cargs.get("timesteps", 1000), device=device,
                              objective=cargs.get("objective", "eps"),
                              zero_snr=cargs.get("zero_snr", False))
@@ -130,9 +138,10 @@ def prepare_audio(audio_path, device, timing_ref=None) -> PreparedAudio:
 def generate(audio_path, ckpt_path=None, out_path="generated.osu", steps=100, base=64,
              use_ema=True, snap=True, sr=None, guidance=2.0, match_sr=False, max_iter=3,
              tol=0.4, snap_divisors=(4, 8, 6), timing_ref=None, loaded=None, prepared=None,
-             guidance_rescale=0.0, density=None, onset_threshold=0.3, spacing_scale=0.0):
+             guidance_rescale=0.0, density=None, onset_threshold=0.3, spacing_scale=0.0,
+             compile_model=False):
     if loaded is None:
-        loaded = load_model(ckpt_path, base=base, use_ema=use_ema)
+        loaded = load_model(ckpt_path, base=base, use_ema=use_ema, compile_model=compile_model)
     model, diff, ctx_dim, device = loaded
     if prepared is None:
         prepared = prepare_audio(audio_path, device, timing_ref)
@@ -147,7 +156,7 @@ def generate(audio_path, ckpt_path=None, out_path="generated.osu", steps=100, ba
                                dtype=torch.float32, device=device)
         sig = diff.ddim_sample(model, cond, (1, model.sig_channels, t_full),
                                steps=steps, ctx=ctx, guidance=guidance,
-                               guidance_rescale=guidance_rescale)
+                               guidance_rescale=guidance_rescale, progress=True)
         sig = sig[0, :, :T].float().cpu().numpy()
         objects = decode_signal(sig, onset_threshold=onset_threshold)
         trim_isolated_ends(objects)
@@ -251,12 +260,16 @@ def main():
     ap.add_argument("--spacing-scale", type=float, default=0.0,
                     help="v8: rebuild positions to the spacing channel (0=off; ~1.0 for "
                          "v8 ckpts; lower = gentler, raise >1 for more extreme jumps)")
+    ap.add_argument("--compile", action="store_true",
+                    help="torch.compile the model for faster sampling (compiles once; "
+                         "worth it for long songs / SR sweeps, needs triton + a C compiler)")
     args = ap.parse_args()
     generate(args.audio, args.ckpt, args.out, steps=args.steps, snap=not args.no_snap,
              sr=args.sr, guidance=args.guidance, match_sr=args.match_sr,
              max_iter=args.match_iter, timing_ref=args.timing_from,
              guidance_rescale=args.guidance_rescale, density=args.density,
-             onset_threshold=args.onset_threshold, spacing_scale=args.spacing_scale)
+             onset_threshold=args.onset_threshold, spacing_scale=args.spacing_scale,
+             compile_model=args.compile)
 
 
 if __name__ == "__main__":

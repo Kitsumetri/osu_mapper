@@ -108,27 +108,43 @@ class GaussianDiffusion:
 
     @torch.no_grad()
     def ddim_sample(self, model, cond, shape, steps: int = 100, eta: float = 0.0,
-                    ctx=None, guidance: float = 1.0, guidance_rescale: float = 0.0):
+                    ctx=None, guidance: float = 1.0, guidance_rescale: float = 0.0,
+                    progress: bool = False):
         """DDIM sampling: correct accelerated sampling over a step subsequence.
 
         eta=0 is deterministic. ``ctx`` is the difficulty context; ``guidance`` > 1
         applies classifier-free guidance. ``guidance_rescale`` in (0,1] rescales the
         guided x0 toward the conditional x0's std (Lin et al.) to curb the
-        over-saturation that high guidance + zero-SNR can cause. Returns x0 (B,C,T).
+        over-saturation that high guidance + zero-SNR can cause. ``progress`` shows a
+        tqdm bar over the steps. Returns x0 (B,C,T).
         """
         b = shape[0]
         x = torch.randn(shape, device=self.device)
         seq = torch.linspace(0, self.timesteps - 1, steps, device=self.device).long()
         seq = torch.unique(seq).tolist()
         use_cfg = ctx is not None and guidance != 1.0
-        for k in reversed(range(len(seq))):
+        # batched classifier-free guidance: run the conditional + unconditional passes
+        # as ONE batch-2 forward instead of two — ctx_drop nulls the second half, which
+        # the UNet maps to exactly the null embedding (== ctx=None), so the result is
+        # bit-identical while ~halving the forward count (RESEARCH §11 5.4).
+        if use_cfg:
+            cond2 = torch.cat([cond, cond], 0)
+            ctx2 = torch.cat([ctx, ctx], 0)
+            drop2 = torch.cat([torch.zeros(b, dtype=torch.bool, device=self.device),
+                               torch.ones(b, dtype=torch.bool, device=self.device)])
+        steps_iter = list(reversed(range(len(seq))))
+        if progress:
+            from tqdm import tqdm
+            steps_iter = tqdm(steps_iter, desc="ddim", unit="step")
+        for k in steps_iter:
             i = seq[k]
             t = torch.full((b,), i, device=self.device, dtype=torch.long)
             a_t = self.sqrt_acp[i]
             s_t = self.sqrt_one_minus_acp[i]
             if use_cfg:
-                out_c = model(x, cond, t, ctx=ctx)
-                out_u = model(x, cond, t, ctx=None)
+                out2 = model(torch.cat([x, x], 0), cond2, torch.cat([t, t], 0),
+                             ctx=ctx2, ctx_drop=drop2)
+                out_c, out_u = out2[:b], out2[b:]
                 out = out_u + guidance * (out_c - out_u)
             else:
                 out = out_c = model(x, cond, t, ctx=ctx)

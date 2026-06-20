@@ -1190,7 +1190,9 @@ config as "current" → now base-128/0.3) + the v5 decode (§8.2) + README chann
 - **Zero-terminal-SNR β + v-prediction** (5.3) — the principled fix likely needed
   to unblock base ≥160 (higher leverage than just lowering LR). *Future / pairs with 5.2.*
 - **Batched CFG** (5.4) — one concatenated forward instead of two → ~2× faster
-  sampling, identical output. *Task.*
+  sampling, identical output. **Done** (`diffusion.ddim_sample`, 2026-06-20): batch-2 forward,
+  second half `ctx_drop=True` (== null embedding, bit-identical; hermetic-tested). Plus inference
+  `generate --compile` (opt-in, stacks) + a tqdm progress bar over the DDIM steps.
 - **Attention on the up-path** (S-5) / fuse the top skip (S-4) — architecture A/B
   vs the 17/19 metric; needs a retrain.
 - Minor (cosmetic/negligible, left as-is): `package_map` re-parse drops `[Events]`

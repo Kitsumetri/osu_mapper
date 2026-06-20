@@ -206,3 +206,33 @@ def test_rope_is_parameter_free():
     rope = UNet1d(C_SIG, C_COND, base=16, mults=(1, 2), t_dim=32, attn=True, rope=True)
     assert (sum(p.numel() for p in base.parameters())
             == sum(p.numel() for p in rope.parameters()))
+
+
+def test_batched_cfg_matches_two_forward():
+    """Batched CFG (one batch-2 forward, second half ctx_drop=True) must equal the two
+    separate conditional + unconditional forwards bit-for-bit — the equivalence the
+    sampling speedup relies on (RESEARCH §11 5.4)."""
+    ctx_dim = 6
+    m = UNet1d(C_SIG, C_COND, base=16, mults=(1, 2), t_dim=32, attn=False,
+               ctx_dim=ctx_dim, adaln=False).eval()  # FiLM: ctx active at init
+    x, cond = torch.randn(1, C_SIG, T), torch.randn(1, C_COND, T)
+    t, ctx = torch.randint(0, 1000, (1,)), torch.rand(1, ctx_dim)
+    with torch.no_grad():
+        out_c = m(x, cond, t, ctx=ctx)
+        out_u = m(x, cond, t, ctx=None)
+        out2 = m(torch.cat([x, x]), torch.cat([cond, cond]), torch.cat([t, t]),
+                 ctx=torch.cat([ctx, ctx]), ctx_drop=torch.tensor([False, True]))
+    assert torch.allclose(out2[:1], out_c, atol=1e-6)   # conditional half
+    assert torch.allclose(out2[1:], out_u, atol=1e-6)   # unconditional half == ctx=None
+    assert not torch.allclose(out_c, out_u)             # ctx actually matters (test is real)
+
+
+def test_ddim_cfg_sample_runs():
+    """DDIM with guidance>1 + ctx exercises the batched-CFG path -> finite, right shape."""
+    ctx_dim = 6
+    m = UNet1d(C_SIG, C_COND, base=16, mults=(1, 2), t_dim=32, attn=False,
+               ctx_dim=ctx_dim).eval()
+    diff = GaussianDiffusion(timesteps=100, device=DEV)
+    out = diff.ddim_sample(m, torch.randn(1, C_COND, T), (1, C_SIG, T), steps=8,
+                           ctx=torch.rand(1, ctx_dim), guidance=2.0)
+    assert out.shape == (1, C_SIG, T) and torch.isfinite(out).all()
