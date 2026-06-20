@@ -109,7 +109,7 @@ class GaussianDiffusion:
     @torch.no_grad()
     def ddim_sample(self, model, cond, shape, steps: int = 100, eta: float = 0.0,
                     ctx=None, guidance: float = 1.0, guidance_rescale: float = 0.0,
-                    progress: bool = False, batch_cfg: bool = True):
+                    progress: bool = False, batch_cfg: bool = True, amp: bool = False):
         """DDIM sampling: correct accelerated sampling over a step subsequence.
 
         eta=0 is deterministic. ``ctx`` is the difficulty context; ``guidance`` > 1
@@ -137,6 +137,15 @@ class GaussianDiffusion:
             ctx2 = torch.cat([ctx, ctx], 0)
             drop2 = torch.cat([torch.zeros(b, dtype=torch.bool, device=self.device),
                                torch.ones(b, dtype=torch.bool, device=self.device)])
+        # bf16 autocast around only the model forward (x + the schedule math stay fp32):
+        # enables the flash-attention SDPA kernel (O(T) instead of O(T²) memory) so long
+        # songs don't OOM materialising the attention matrix, and ~halves activation memory
+        # / ~2× the speed. Inference matches the bf16-autocast training regime.
+        def _fwd(*a, **kw):
+            if amp and self.device == "cuda":
+                with torch.autocast("cuda", dtype=torch.bfloat16):
+                    return model(*a, **kw)
+            return model(*a, **kw)
         steps_iter = list(reversed(range(len(seq))))
         if progress:
             from tqdm import tqdm
@@ -147,16 +156,17 @@ class GaussianDiffusion:
             a_t = self.sqrt_acp[i]
             s_t = self.sqrt_one_minus_acp[i]
             if batched:
-                out2 = model(torch.cat([x, x], 0), cond2, torch.cat([t, t], 0),
-                             ctx=ctx2, ctx_drop=drop2)
+                out2 = _fwd(torch.cat([x, x], 0), cond2, torch.cat([t, t], 0),
+                            ctx=ctx2, ctx_drop=drop2)
                 out_c, out_u = out2[:b], out2[b:]
                 out = out_u + guidance * (out_c - out_u)
             elif use_cfg:  # low-memory two-forward path (marathon songs)
-                out_c = model(x, cond, t, ctx=ctx)
-                out_u = model(x, cond, t, ctx=None)
+                out_c = _fwd(x, cond, t, ctx=ctx)
+                out_u = _fwd(x, cond, t, ctx=None)
                 out = out_u + guidance * (out_c - out_u)
             else:
-                out = out_c = model(x, cond, t, ctx=ctx)
+                out = out_c = _fwd(x, cond, t, ctx=ctx)
+            out = out.float()
             x0, eps = self._to_x0_eps(out, x, a_t, s_t)
             if guidance_rescale > 0 and use_cfg:
                 # per-sample std (over channel+time) so rescaling is correct under
