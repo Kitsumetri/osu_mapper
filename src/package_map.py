@@ -42,26 +42,14 @@ def _find_background(osu_path: Path) -> str | None:
     return None
 
 
-def package(generated: Path, original: Path, songs_dir: Path,
-            prefix: str = "[AI-GEN]") -> Path:
-    gen = parse_beatmap(generated)
-    orig = parse_beatmap(original)
-
-    artist = orig.artist or "Unknown"
-    title = orig.title or original.stem
-    folder_name = _safe(f"{prefix} {artist} - {title}")
-    out_dir = songs_dir / folder_name
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # copy audio
+def _copy_assets(original: Path, orig: Beatmap, out_dir: Path) -> str | None:
+    """Copy the original song's audio (and background image) into ``out_dir`` once.
+    Returns the background filename if one was found + copied, else None."""
     src_audio = original.parent / orig.audio_filename
-    audio_name = orig.audio_filename
     if src_audio.exists():
-        shutil.copy2(src_audio, out_dir / audio_name)
+        shutil.copy2(src_audio, out_dir / orig.audio_filename)
     else:
         print(f"WARNING: audio not found at {src_audio}")
-
-    # copy background if present
     bg_name = _find_background(original)
     if bg_name:
         src_bg = original.parent / bg_name
@@ -69,39 +57,60 @@ def package(generated: Path, original: Path, songs_dir: Path,
             shutil.copy2(src_bg, out_dir / bg_name)
         else:
             bg_name = None
+    return bg_name
 
-    # build the packaged beatmap with metadata from the original
+
+def _write_difficulty(out_dir: Path, artist: str, title: str, gen: Beatmap,
+                      version: str, audio_name: str, bg_name: str | None) -> Path:
+    """Write one generated map as a single difficulty (``[version]``) in ``out_dir``."""
     bm = Beatmap(path=out_dir / "generated.osu")
     bm.audio_filename = audio_name
-    bm.title = title
-    bm.artist = artist
-    bm.creator = "osu_mapper"
-    bm.version = f"{prefix} AI Generated"
-    # KEEP the generated map's own difficulty settings — generate writes AR/OD/HP/CS
-    # to match the conditioned target SR (conditioning.target_settings). Borrowing the
-    # original's would make an easy generated map play at the original's (often much
-    # harder) AR/OD and also change its computed star rating. SliderMultiplier is kept
-    # too: slider lengths are calibrated to it (beat-snapped ends), so overriding it
-    # rescales every slider duration and breaks the rhythm snapping.
+    bm.title, bm.artist, bm.creator, bm.version = title, artist, "osu_mapper", version
+    # KEEP the generated map's own difficulty settings — generate writes AR/OD/HP/CS to
+    # match the conditioned target SR. Borrowing the original's would make an easy map
+    # play at the original's (often harder) AR/OD and change its computed star rating.
+    # SliderMultiplier is kept too (slider lengths are beat-snap-calibrated to it).
     bm.circle_size = gen.circle_size
     bm.approach_rate = gen.approach_rate
     bm.overall_difficulty = gen.overall_difficulty
     bm.hp = gen.hp
     bm.slider_multiplier = gen.slider_multiplier
-
-    out_osu = out_dir / f"{_safe(artist + ' - ' + title)} ({bm.creator}) [{prefix} AI].osu"
+    out_osu = out_dir / f"{_safe(artist + ' - ' + title)} (osu_mapper) [{_safe(version)}].osu"
     write_osu(bm, gen.hit_objects, out_osu, timing_points=gen.timing_points)
-
-    # inject the background event so the map shows art in-game
-    if bg_name:
+    if bg_name:  # inject the background event so the map shows art in-game
         text = out_osu.read_text(encoding="utf-8")
-        text = text.replace("[Events]\n", f'[Events]\n0,0,"{bg_name}",0,0\n')
-        out_osu.write_text(text, encoding="utf-8")
+        out_osu.write_text(text.replace("[Events]\n", f'[Events]\n0,0,"{bg_name}",0,0\n'),
+                           encoding="utf-8")
+    return out_osu
 
-    print(f"packaged -> {out_dir}")
-    print(f"  audio: {audio_name}{'  bg: ' + bg_name if bg_name else ''}")
-    print(f"  objects: {len(gen.hit_objects)}  |  diff CS{bm.circle_size} AR{bm.approach_rate}")
+
+def package_set(generated: list, original: Path, songs_dir: Path,
+                set_prefix: str = "[AI]", diff_names: list | None = None) -> Path:
+    """Package several generated maps as difficulties of ONE beatmapset — a single folder
+    with one shared audio/background and one ``[Version]`` .osu per map (the osu!
+    convention for a mapset, so all difficulties appear under the same song in-game)."""
+    orig = parse_beatmap(original)
+    artist = orig.artist or "Unknown"
+    title = orig.title or Path(original).stem
+    out_dir = songs_dir / _safe(f"{set_prefix} {artist} - {title}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    bg_name = _copy_assets(Path(original), orig, out_dir)
+    for i, gpath in enumerate(generated):
+        gen = parse_beatmap(gpath)
+        version = diff_names[i] if diff_names else f"{set_prefix} {i + 1}"
+        _write_difficulty(out_dir, artist, title, gen, version, orig.audio_filename, bg_name)
+        print(f"  + [{version}]  {len(gen.hit_objects)} objects  "
+              f"CS{gen.circle_size} AR{gen.approach_rate}")
+    print(f"packaged {len(generated)} difficulty(ies) -> {out_dir}"
+          f"{'  (bg: ' + bg_name + ')' if bg_name else ''}")
     return out_dir
+
+
+def package(generated: Path, original: Path, songs_dir: Path,
+            prefix: str = "[AI-GEN]") -> Path:
+    """Single-difficulty convenience wrapper around :func:`package_set`."""
+    return package_set([generated], original, songs_dir, set_prefix=prefix,
+                       diff_names=[f"{prefix} AI"])
 
 
 def main():

@@ -146,7 +146,7 @@ def main() -> int:
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    packaged: list[str] = []
+    generated, diff_names = [], []
     for sr in args.sr:
         _bar()
         print(f"  GENERATING  {sr:.1f}*  ({audio.stem})")
@@ -158,20 +158,20 @@ def main() -> int:
                  spacing_scale=args.spacing_scale, loaded=loaded, prepared=prepared,
                  amp=amp, batch_cfg=batch_cfg)
         _print_stats(out_path, sr, time.time() - t0)
-        if do_package:
-            from src.package_map import package
-            folder = package(out_path, reference, Path(args.songs),
-                             prefix=f"{args.prefix} {sr:g}star")
-            packaged.append(str(folder))
+        generated.append(out_path)
+        diff_names.append(f"AI {sr:g}star")
 
     _bar()
-    if packaged:
-        print(f"  DONE -{len(packaged)} map(s) added to your Songs folder:")
-        for p in packaged:
-            print(f"    {p}")
-        print("  Open osu! and press F5 (or restart) to see them.")
+    if do_package:
+        # all difficulties go into ONE beatmapset folder (shared audio), the osu! way
+        from src.package_map import package_set
+        folder = package_set(generated, reference, Path(args.songs),
+                             set_prefix=args.prefix, diff_names=diff_names)
+        print(f"  DONE - {len(generated)} difficulty(ies) in ONE folder:")
+        print(f"    {folder}")
+        print("  Open osu! and press F5 (or restart) to see them under one song.")
     else:
-        print(f"  DONE -wrote {len(args.sr)} .osu file(s) to {out_dir}/")
+        print(f"  DONE - wrote {len(generated)} .osu file(s) to {out_dir}/")
         print("  (pass --reference <existing.osu> to auto-package them into osu!.)")
     _bar()
     return 0
