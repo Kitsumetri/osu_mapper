@@ -1,30 +1,17 @@
 # Research: osu! patterns, slider shapes, and how to train for them
 
-Notes driven by play-test feedback: the maps are *somewhat* playable and follow
-the rhythm, but (a) patterns look like random clusters rather than real osu!
-patterns, and (b) early output had only straight 2-point sliders. This doc
-summarises the relevant mapping concepts and how each maps to a concrete model
-change.
+**Status: v8 released** (base-160, 21-channel; see `RESULTS.md` for the quality history). This is
+the design + roadmap doc — the mapping concepts behind each model change and the per-version drafts
+(§10.x). It started from play-test feedback (early maps were rhythm-OK but clustered and
+straight-slider-heavy); most of that is now addressed (curved / reverse / red-corner sliders, SV,
+jumps, kiai, hitsounds), with per-song jump *extremes* the main open item (→ v9, §10.11).
 
 ## 0. Implementation status
 
-What of the plan below is already in the codebase vs still proposed:
-
-| Item | Status |
-|------|--------|
-| Curved Bezier sliders (encode shape into cursor signal, decode body) — §3.B interim | **done** (`signal.py`) |
-| Eval metrics (density, stream/jump, spacing, on-grid) — §3/§5 | **done** (`metrics.py`) |
-| Scale + capacity: 3004 maps, 97M attention U-Net, EMA, cosine LR — §3.D | **done** |
-| Store kiai / timing / difficulty / creator metadata — §7.1 | **done** (manifest) |
-| Difficulty defaults (AR8/OD7/HP5/CS4) — §6 | **done** (`generate.py`) |
-| Rhythm snapping (bounded 1/4-grid beat-snap) — §3.A / §4 | **done v1** (`postprocess.py`; on-grid 0.70→0.82) |
-| **Difficulty conditioning** (SR context vector + classifier-free guidance) — §3.C / §9.1 | **done (code, v3)**; needs trained v3 model |
-| **Kiai signal channel** (ch 6) + decode to 1–3 spans — §7.2 / §9.2 | **done (code, v3)** |
-| **Hitsound accent channels** (ch 7–9, whistle/finish/clap) — §7.4 / §9.3 | **done (code, v3)** |
-| Star-rating bucketing of the corpus (rosu-pp) — §8 | **done** (`difficulty.py`, 31k maps) |
-| Per-section / triplet snapping, flow/DS coupling — §3.A | *next* |
-| Style / mapper conditioning — §5 | proposed |
-| Multi-section BPM timing on output, downbeat tracking — §6 / §7.3 | proposed |
+The v3-era "what's done" checklist is superseded — see **`RESULTS.md`** for the shipped
+feature/version history (through v8) and **§10.x** below for the per-version design drafts. Still
+open: per-section flow / distance-snap coupling, style / mapper conditioning, multi-section-BPM
+output + downbeat tracking, and **per-song jump conditioning (v9, §10.11)**.
 
 ## 1. osu!standard pattern vocabulary
 

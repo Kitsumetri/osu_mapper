@@ -37,7 +37,7 @@ decoder $\mathcal{D}$ (Section 8) then maps a sampled signal to hit objects.
 | Symbol | Meaning |
 |--------|---------|
 | $T$ | number of time frames (sequence length) |
-| $C=17$ | map-signal channels (v5; 10 in v3) |
+| $C=21$ | map-signal channels (v8; 17 in v5, 10 in v3) |
 | $F=64$ | mel bands |
 | $N$ | number of diffusion steps ($N=1000$) |
 | $t \in \{1,\dots,N\}$ | diffusion timestep (not song time) |
@@ -74,8 +74,8 @@ $$
 ### 3.2 Beatmap signal — the diffusion target
 
 The beatmap is encoded as a continuous multi-channel signal
-$\mathbf{x}_0\in[-1,1]^{C\times T}$ with $C=17$ channels (v5; channels 0–9 are the
-v3 set, 10–16 are the v5 slider-shape additions):
+$\mathbf{x}_0\in[-1,1]^{C\times T}$ with $C=21$ channels (v8; 0–9 the v3 set, 10–16 the
+v5 slider-shape additions, 17–20 the v7/v7.5/v8 cue channels):
 
 | ch | name | meaning |
 |----|------|---------|
@@ -89,6 +89,10 @@ v3 set, 10–16 are the v5 slider-shape additions):
 | 7–9 | `whistle`/`finish`/`clap` | impulse at objects carrying that hitsound |
 | 10–15 | `slider_dx/dy_{1..3}` | $K{=}3$ control-point offsets from the slider head, normalised by $(W,H)$, **held constant over the slider span** (baseline 0) |
 | 16 | `slides` | repeat count held over the slider span ($1{\to}{-}1,\,2{\to}{-}\tfrac13,\dots$); recovers reverse sliders |
+| 17 | `sv` | slider-velocity timeline, $\log_2(\text{SV})$ scaled, piecewise-constant like green lines (v7) |
+| 18 | `curve` | per-slider sagitta (bow) cue, held over the span (v7) |
+| 19 | `corner` | per-slider red/angular-corner flag, held over the span (v7.5) |
+| 20 | `spacing` | head-to-head distance to the next object, $\text{dist}/300$, held over the gap (v8) |
 
 **Onset / new-combo** channels place a Gaussian bump at each object's frame
 $c = \text{time}/\Delta\tau$:
