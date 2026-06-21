@@ -65,6 +65,13 @@ SIGNAL_CHANNELS = [
     # sliders / ~75% of beziers are angular not smooth. High cue -> decode emits red
     # corners (doubled anchors). RESEARCH 10.9.
     "corner",  # 19
+    # v8 spacing-magnitude cue: head-to-head distance (px) between consecutive objects,
+    # held over the gap, baseline 0. A NON-NEGATIVE scalar whose conditional mean is the
+    # *correct* typical spacing (unlike absolute cursor x/y, which mean-regress to the
+    # centre -> spacing collapse). Decode reconstructs positions = model direction x this
+    # magnitude (postprocess.respace_by_magnitude). Breaks the jump under-dispersion
+    # ceiling. RESEARCH 10.11 (P4-B).
+    "spacing",  # 20
 ]
 N_SIGNAL_CHANNELS = len(SIGNAL_CHANNELS)
 
@@ -76,5 +83,6 @@ CH_SLIDES = CH_SLIDER_ANCHORS + 2 * N_SLIDER_ANCHORS  # 16
 CH_SV = CH_SLIDES + 1                         # 17: slider-velocity timeline
 CH_CURVE = CH_SV + 1                          # 18: per-slider curvature cue
 CH_CORNER = CH_CURVE + 1                      # 19: per-slider red-corner cue
+CH_SPACING = CH_CORNER + 1                    # 20: head-to-head spacing magnitude (v8)
 
 AUDIO = AudioConfig()

@@ -22,6 +22,7 @@ from ..config import (
     CH_CURY,
     CH_SLIDER_ANCHORS,
     CH_SLIDES,
+    CH_SPACING,
     CH_SV,
     N_SIGNAL_CHANNELS,
     N_SLIDER_ANCHORS,
@@ -81,6 +82,7 @@ class OsuSignalDataset(Dataset):
             sigpad[CH_SV] = 0.0  # SV baseline = SV 1.0
             sigpad[CH_CURVE] = 0.0  # curvature baseline = straight
             sigpad[CH_CORNER] = 0.0  # corner baseline = smooth
+            sigpad[CH_SPACING] = 0.0  # spacing baseline = 0 (no movement)
             sig = np.concatenate([sig, sigpad], axis=1)
         if self.augment:
             # cursor + slider-anchor channels are normalised so playfield centre is

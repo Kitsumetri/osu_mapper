@@ -4,6 +4,112 @@ Training-run history + generated-map quality (metrics via `src/metrics.py`).
 **Current release: v5** (`runs/20260614-224107-ranked-v5/ckpt/best.pt`, 17-ch).
 **v6 + v7-Phase2 trained; v7 work in progress (RESEARCH §10.7).**
 
+## v8 (P4-B) — base-160 full train (TRAINED 2026-06-20)
+
+`runs/20260619-235218-ranked-v8-b160/ckpt/best.pt` (val **0.0412**, 21-ch, **base 160 / 101.7M**),
+v8 recipe `--objective v --zero-snr --compile --spatial-loss-weight 3`, 60 ep on `ranked-v8` (38k),
+~7 h (~400 s/ep).
+
+**WIN — base-160 is unblocked.** Trained clean through the **e12–21 divergence zone** that killed
+v2/v3 (ε-pred): val 0.078→0.041 monotonic, gnorm stable/decreasing. v-pred + zero-SNR is the unblock
+(§7); `--compile` works at base 160. **Bigger models are now trainable** — a durable capability win
+independent of the spacing outcome.
+
+**MISS — the spacing channel does NOT auto-adapt per-song.** On the Happppy jump song (real: spacing
+173.6 / jump 0.418), `eval_spacing_channel` shows the channel predicts only ~120–127 px (ratio
+1.03–1.04 over the cursor) — it regressed to the **SR-average**, same as the cursor. The v8 thesis
+("a magnitude scalar mean-regresses to the correct *larger* magnitude") only half held: it regresses
+to the SR-average, **not** the per-song extreme. **Root cause:** the channel shares the cursor's
+audio+SR conditioning, so it has no extra info about whether a song is jump-heavy — both →
+`E[spacing | audio, SR]`. (The curve cue worked because decode *forces* a bow; respace faithfully
+reproduces the channel's compressed magnitude, so it can't add what the channel didn't learn.)
+
+**PARTIAL WIN — `--spacing-scale` is a usable manual dial (no retrain).** Amplifying past 1.0
+uniformly scales spacing — a per-song jump knob v7.5 never had (Happppy @ sr6.5):
+| spacing-scale | mean_spacing | jump_ratio |
+|---|---|---|
+| 0 (raw) | 117.7 | 0.116 |
+| 1.0 (faithful) | 129.9 | 0.144 |
+| 2.0 | 146.5 | 0.197 |
+| 2.5 | 187.9 | 0.297 |
+(real 173.6 / 0.418.) No regression — curves 0.369 (≈ real 0.38), SV intact. Packaged `[AI-v8 s2.0]`
+(146/0.20). Caveats: the dial is **global** (over-spaces calm songs) and uniform scaling can't make
+real's bimodal stream+jump structure (std 130). `--match-sr` backfires on jump songs (the model
+under-produces SR → it lands on a sparse low-SR map); condition a high `--sr` directly instead.
+
+**Verdict:** net **+** over v7.5 (stable bigger base + a working spacing dial + no regression), but
+it did **not** break the jump ceiling *automatically*. The real per-song fix is **conditioning on an
+audio-inferred aim-intensity** (the §10.7-P5 density idea, on the spacing axis), not a passive
+channel — see RESEARCH §10.11. Play-test `[AI-v8 s2.0]` to decide vs v7.5.
+
+**Play feedback (2026-06-20): `--spacing-scale` HURTS in-game → use `--spacing-scale 0`.** The
+respace lifts the spacing *metrics* (jump_ratio) but the relocated objects read/play worse (flow +
+readability suffer when positions are walked/reflected), so in-game it's a net negative. **The
+respace is effectively shelved; generate raw (scale 0).** v8's real value is the **base-160
+stability + no regression** (and SR conditioning already gives meaningful per-song/per-SR spacing
+variation: e.g. Kano sr5→sr7 raw spacing 123→169, jump 0.09→0.30). The automatic per-song jump fix
+remains v9 (audio-inferred aim-intensity conditioning), not a decode lever.
+
+## v8 (P4-B) — draft trains: pipeline debug + base-160 probe (2026-06-19, drafts only)
+
+Two 2-epoch drafts on `ranked-v8` (**38,036 maps** — the +13k library reprocess), v8 recipe
+`--objective v --zero-snr --spatial-loss-weight 3` (no `--compile`). **Drafts validate the
+pipeline + mechanism *direction*, NOT quality (2 epochs = heavily undertrained).**
+
+**Pipeline ✅** both trained clean (no crash/divergence), 21-ch, loss-weighting active, SV +
+curves intact (no regression from adding the spacing channel).
+
+**Mechanism ✅ (the v8 bet, via `eval_spacing_channel`):** the spacing *channel* predicts a larger
+magnitude than the collapsed cursor *positions*; ratio (channel ÷ cursor mean spacing) grows with SR:
+| SR | base-128 ratio | base-160 ratio | base-160 channel_sp px |
+|---|---|---|---|
+| 3 | 1.04 | 1.13 | 116.6 |
+| 4 | 1.11 | 1.16 | 129.7 |
+| 5 | 1.14 | 1.16 | 152.0 |
+| 6 | 1.12 | 1.14 | 154.1 |
+The channel mean-regresses *above* the positions even undertrained → respace has a real gap to
+exploit (and base-160's extra capacity widens it). Net respace lift on a full map is still modest
+at 2 ep (small gap + new-combo re-anchoring); judge it on the full train.
+
+**base-160 — promising (the user's hypothesis: v-pred stability unblocks the bigger base).**
+| | base-128 draft | base-160 draft |
+|---|---|---|
+| params | 66.1M | 101.7M |
+| val_loss e0 / e1 | 0.0768 / 0.0655 | 0.0724 / **0.0619** |
+| grad-norm | (logged later) | **stable/decreasing**, 1.0 (warmup) → 0.1–0.7 |
+| s/epoch (no compile) | 571 / 514 | 1444 / 1065 (steady ~1065) |
+| memory | fits | fits (batch 16, ~7 GB) |
+base-160 fits, has a **lower loss**, a **stable grad-norm** (no divergence signature), and a
+**stronger spacing channel** — the first base-160 that didn't fall over. The prior divergences
+(v2 @e21, v3 @e12) were ε-pred; **v-pred + zero-SNR appears to be the unblock** (§7). **CAVEAT: the
+documented divergences hit epoch 12–21 — a 2-epoch draft CANNOT confirm long-run stability.** Next
+(USER): a full base-160 train, `--compile` (~6–8 h), watching gnorm/val through e15–25; if gnorm
+climbs, fall back to per-channel standardisation (§11 5.2) or lr 1.0e-4.
+
+## v8 (P4-B) — decode reconstruction de-risk (2026-06-19, no train yet)
+
+Before spending a train on the spacing-magnitude channel (RESEARCH §10.11), validated the
+**decode half** — `postprocess.respace_by_magnitude` — on real v7.5 output (`aiv75_sr5/sr6.osu`).
+It keeps each step's model *direction* (turn angles are already ≈ real) and sets its *length* from a
+target magnitude (here synthesised as `scale × v7.5's own spacing` toward the Happppy 167 px ref),
+re-anchoring at new combos/spinners and reflecting off the walls.
+
+| map | spacing px | jump_ratio | turn° | in-bounds (head+body) |
+|---|---|---|---|---|
+| sr5 v7.5 input | 121.6 | 0.103 | 90.2 | ✓ |
+| sr5 respace α=0 | 121.6 | 0.103 | 90.2 | ✓ (perfect no-op) |
+| sr5 respace α=1 (+clamp) | **151.0** | **0.288** | 96.3 | ✓ |
+| sr6 v7.5 input | 137.9 | 0.194 | 106.0 | ✓ |
+| sr6 respace α=1 (+clamp) | **160.4** | **0.374** | 105.3 | ✓ |
+
+**Validated:** spacing expands controllably via the `alpha` blend (0 = unchanged), jump_ratio more
+than doubles into real-jump territory (ref 0.39), turn-angle is preserved, and after the existing
+`clamp_slider_endpoints` everything is in-bounds (heads via wall-reflection; slider bodies via the
+clamp). α=1 lands ~151/160 vs the 167 target — the new-combo re-anchoring trades a little expansion
+for bounded drift (raise the magnitude scale to compensate). **Conclusion:** the reconstruction is
+sound; the only open question is whether the model learns honest per-song magnitudes — which the
+train tests. Greenlights the v8 channel build.
+
 ## v7.5 — attention dropped + red points (TRAINED 2026-06-17, best so far)
 
 `runs/20260617-223917-ranked-v75/ckpt/best.pt` (val 0.0473 v-scale). 20-ch `ranked-v75`

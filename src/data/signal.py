@@ -21,6 +21,7 @@ from ..config import (
     CH_CURVE,
     CH_SLIDER_ANCHORS,
     CH_SLIDES,
+    CH_SPACING,
     CH_SV,
     N_SIGNAL_CHANNELS,
     N_SLIDER_ANCHORS,
@@ -113,6 +114,23 @@ def _turn_deg(a, b, c) -> float:
     return float(np.degrees(np.arccos(cos)))
 
 
+# v8 spacing-magnitude cue: head-to-head distance (px) between consecutive objects,
+# held over the gap, encoded as dist/SPACING_PX_SCALE clamped to [0, 1.2] (a non-negative
+# scalar whose conditional mean is the correct typical spacing, unlike absolute cursor x/y
+# which mean-regress to the centre -> spacing collapse). Decode rebuilds positions from it
+# (postprocess.respace_by_magnitude). RESEARCH 10.11 (P4-B).
+SPACING_PX_SCALE = 300.0
+SPACING_ENC_CLAMP = 1.2     # ~360 px cap (keeps the channel in the [-1.2, 1.2] convention)
+
+
+def _enc_spacing(px: float) -> float:
+    return float(np.clip(px / SPACING_PX_SCALE, 0.0, SPACING_ENC_CLAMP))
+
+
+def _dec_spacing(v: float) -> float:
+    return float(np.clip(v, 0.0, SPACING_ENC_CLAMP) * SPACING_PX_SCALE)
+
+
 def _gaussian_bump(signal: np.ndarray, center: float, sigma: float = ONSET_SIGMA_FRAMES):
     """Add a unit-height Gaussian centred at ``center`` (fractional frame)."""
     lo = int(np.floor(center - 4 * sigma))
@@ -169,6 +187,7 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
     slides_ch = -np.ones(n_frames, dtype=np.float32)
     curve_ch = np.zeros(n_frames, dtype=np.float32)  # v7 curvature cue, baseline 0 = straight
     corner_ch = np.zeros(n_frames, dtype=np.float32)  # v7.5 corner cue, baseline 0 = smooth
+    spacing_ch = np.zeros(n_frames, dtype=np.float32)  # v8 spacing magnitude, baseline 0
     # v7 SV timeline: piecewise-constant multiplier from the timing points (red lines
     # reset to 1.0, green lines set their multiplier), held to the next change.
     sv_ch = np.zeros(n_frames, dtype=np.float32)  # baseline 0 = SV 1.0
@@ -264,6 +283,17 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
         if b > a:
             sv_ch[a:b] = _enc_sv(sv)
 
+    # v8 spacing-magnitude timeline: head-to-head distance between consecutive objects,
+    # held over the gap (baseline 0). Decode reconstructs positions from it so jumps are
+    # not lost to position mean-regression (RESEARCH 10.11).
+    sp_objs = sorted(bm.hit_objects, key=lambda o: o.time)
+    for a, b in zip(sp_objs, sp_objs[1:]):
+        fa = int(round(cfg.time_to_frame(a.time)))
+        fb = int(round(cfg.time_to_frame(b.time)))
+        lo, hi = max(0, fa), min(n_frames, fb)
+        if hi > lo:
+            spacing_ch[lo:hi] = _enc_spacing(float(np.hypot(b.x - a.x, b.y - a.y)))
+
     sig[0] = onset * 2 - 1
     sig[1] = slider
     sig[2] = spinner
@@ -279,6 +309,7 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
     sig[CH_SV] = sv_ch
     sig[CH_CURVE] = curve_ch
     sig[CH_CORNER] = corner_ch
+    sig[CH_SPACING] = spacing_ch
     return sig
 
 
@@ -660,6 +691,31 @@ def decode_signal(sig: np.ndarray, cfg: AudioConfig = AUDIO,
 
     objects.sort(key=lambda o: o.time)
     return objects
+
+
+def decode_spacing(sig: np.ndarray, objects: list[HitObject],
+                   cfg: AudioConfig = AUDIO) -> list[float]:
+    """Per-object target spacing (px) from the v8 spacing channel, aligned to
+    time-sorted ``objects``: index 0 is unused; index k is the head-to-head distance
+    from object ``k-1`` to ``k`` (the channel's mean over that gap). Feeds
+    ``postprocess.respace_by_magnitude``. Returns ``[]`` when the channel is absent
+    (pre-v8 signal) or untrained (all ~baseline), so respacing is safely skipped
+    instead of collapsing every object onto a single point.
+    """
+    if sig.shape[0] <= CH_SPACING:
+        return []
+    ch = sig[CH_SPACING]
+    if float(np.abs(ch).max()) < 1e-3:
+        return []
+    objs = sorted(objects, key=lambda o: o.time)
+    n = len(ch)
+    mags = [0.0]
+    for a, b in zip(objs, objs[1:]):
+        fa = max(0, min(n - 1, int(round(cfg.time_to_frame(a.time)))))
+        fb = max(fa + 1, min(n, int(round(cfg.time_to_frame(b.time)))))
+        seg = ch[fa:fb]
+        mags.append(_dec_spacing(float(seg.mean())) if seg.size else 0.0)
+    return mags
 
 
 def decode_kiai(sig: np.ndarray, cfg: AudioConfig = AUDIO, threshold: float = 0.0,

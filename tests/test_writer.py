@@ -98,3 +98,38 @@ def test_writer_handles_empty_timing(sample_osu, tmp_path):
     write_osu(bm, bm.hit_objects, out, timing_points=[])
     bm2 = parse_beatmap(out)
     assert len(bm2.timing_points) >= 1  # a default point is injected
+
+
+def test_package_set_one_folder_multiple_difficulties(tmp_path):
+    """All generated SRs land in ONE beatmapset folder with a shared audio file, each as
+    its own [Version] — not a separate folder per difficulty."""
+    from src.package_map import package_set
+    from src.parsing.beatmap import TYPE_CIRCLE, Beatmap, HitObject
+
+    song = tmp_path / "orig_song"
+    song.mkdir()
+    (song / "audio.mp3").write_bytes(b"fake audio")
+    orig_path = song / "original.osu"
+    orig = Beatmap(path=orig_path, artist="Artist", title="Song", audio_filename="audio.mp3")
+    orig.hit_objects = [HitObject(x=100, y=100, time=0, type=TYPE_CIRCLE, end_time=0)]
+    write_osu(orig, orig.hit_objects, orig_path)
+
+    gens = []
+    for i in range(2):
+        g = tmp_path / f"gen{i}.osu"
+        bm = Beatmap(path=g, audio_filename="audio.mp3")
+        bm.hit_objects = [HitObject(x=50 + 10 * i, y=60, time=t, type=TYPE_CIRCLE, end_time=t)
+                          for t in range(0, 600, 150)]
+        write_osu(bm, bm.hit_objects, g, timing_points=[TimingPoint(0, 400.0, 4, True)])
+        gens.append(g)
+
+    songs = tmp_path / "Songs"
+    songs.mkdir()
+    out = package_set(gens, orig_path, songs, set_prefix="[AI]",
+                      diff_names=["AI 4star", "AI 5star"])
+
+    assert len(list(songs.iterdir())) == 1       # ONE set folder, not one per difficulty
+    assert (out / "audio.mp3").exists()          # shared audio copied once
+    osus = sorted(out.glob("*.osu"))
+    assert len(osus) == 2                         # two difficulties live in it
+    assert {parse_beatmap(o).version for o in osus} == {"AI 4star", "AI 5star"}

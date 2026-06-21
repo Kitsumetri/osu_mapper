@@ -1,4 +1,6 @@
 
+from math import hypot
+
 from src.parsing.beatmap import TYPE_CIRCLE, HitObject, TimingPoint
 from src.postprocess import snap_to_grid
 
@@ -185,3 +187,55 @@ def test_preserves_slider_duration():
     snap_to_grid([o], tp)
     assert o.time == 100
     assert o.end_time - o.time == 200  # duration preserved
+
+
+def test_respace_expands_spacing_preserving_flow():
+    """v8/P4-B: respace keeps each step's direction and sets its length from the target
+    magnitude, so spacing expands toward the target and stays in-bounds."""
+    from src.postprocess import respace_by_magnitude
+    objs = [HitObject(x=100 + 50 * i, y=192, time=200 * i, type=TYPE_CIRCLE, end_time=200 * i)
+            for i in range(4)]                       # horizontal line, 50px apart
+    moved = respace_by_magnitude(objs, [0.0, 120.0, 120.0, 120.0], alpha=1.0)
+    assert moved >= 3
+    objs.sort(key=lambda o: o.time)
+    for a, b in zip(objs, objs[1:]):
+        assert abs(hypot(a.x - b.x, a.y - b.y) - 120.0) <= 1.5   # expanded to target
+        assert 0 <= b.x <= 512 and 0 <= b.y <= 384               # in-bounds
+
+
+def test_respace_alpha_zero_is_noop():
+    from src.postprocess import respace_by_magnitude
+    objs = [HitObject(x=100 + 50 * i, y=192, time=200 * i, type=TYPE_CIRCLE, end_time=200 * i)
+            for i in range(4)]
+    before = [(o.x, o.y) for o in objs]
+    assert respace_by_magnitude(objs, [0.0, 300.0, 300.0, 300.0], alpha=0.0) == 0
+    assert [(o.x, o.y) for o in objs] == before      # unchanged at alpha=0
+
+
+def test_respace_reanchors_at_new_combo():
+    """A new-combo object snaps back to the model's absolute position (bounds drift)
+    instead of continuing the accumulated magnitude walk."""
+    from src.parsing.beatmap import TYPE_NEW_COMBO
+    from src.postprocess import respace_by_magnitude
+    objs = [
+        HitObject(x=100, y=192, time=0, type=TYPE_CIRCLE, end_time=0),
+        HitObject(x=120, y=192, time=200, type=TYPE_CIRCLE, end_time=200),
+        HitObject(x=300, y=192, time=400, type=TYPE_CIRCLE | TYPE_NEW_COMBO, end_time=400),
+    ]
+    respace_by_magnitude(objs, [0.0, 200.0, 200.0], alpha=1.0)
+    objs.sort(key=lambda o: o.time)
+    assert objs[2].x == 300                          # re-anchored to its model position
+
+
+def test_respace_shifts_slider_curve_points():
+    """Moving a slider head shifts its control points by the same delta (shape preserved)."""
+    from src.parsing.beatmap import TYPE_SLIDER
+    from src.postprocess import respace_by_magnitude
+    objs = [
+        HitObject(x=100, y=100, time=0, type=TYPE_CIRCLE, end_time=0),
+        HitObject(x=150, y=100, time=200, type=TYPE_SLIDER, end_time=400,
+                  curve_type="L", curve_points=[(200, 100)], slides=1, length=50.0),
+    ]
+    respace_by_magnitude(objs, [0.0, 100.0], alpha=1.0)
+    s = [o for o in objs if o.is_slider][0]
+    assert s.x == 200 and s.curve_points == [(250, 100)]   # head +50 -> control point +50

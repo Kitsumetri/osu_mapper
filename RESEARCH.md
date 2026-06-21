@@ -976,6 +976,191 @@ and v-pred already moved the objective. But cheap, stable nudges are worth A/B-i
 (we value stability — base-160 already diverges): **(1) Pseudo-Huber, (2) min-SNR-γ, (3) per-channel
 loss weighting on cursor/anchors.** Skip LPIPS/Gram-literal/adversarial (don't transfer / destabilise).
 
+## 10.11 v8 — P4-B: break the jump under-dispersion ceiling (design, 2026-06-18)
+
+**The gap.** v7.5 is the best model but **regresses to the *average* map for the conditioned
+SR**: on jump-spam songs it caps at mean-spacing ~116 px / jump_ratio ~0.13 vs the song's
+167 px / 0.39 (Happppy test, §10.7 P5). Spacing is object *position*, untouched by any decode
+lever → it is the headline remaining quality gap and needs model/representation work.
+
+### Why absolute x/y under-disperses (mechanism, precise)
+The target carries position as **absolute** `cursor_x/y` (ch 4/5, signal.py). Under ε/v-MSE the
+model learns `E[x0 | x_t, cond]`; for position the conditional mean ≈ playfield centre (a jump
+can go anywhere, so the mean of a broad distribution is the middle). Spacing is the **difference**
+of two such mean-regressed positions → it collapses to far below even the real *average*. Two
+compounding facts make the spatial channels the worst-hit:
+- **2-of-20 channels, high-frequency content.** The piecewise channels (SV, curve, hitsounds,
+  holds) are "solved" early and dominate the averaged loss; the cursor channels' jump detail is a
+  tiny fraction of the mean MSE → underfit → the model hedges to the mean (this is exactly the
+  §10.10(a) per-channel-difficulty argument).
+- **Spacing is a 2nd-order statistic of a 1st-order target.** Differences of under-dispersed,
+  correlated variables are *even more* under-dispersed. (turn-angle is already ≈ real → the path
+  *shape* is fine; only the *scale* = segment length = spacing is compressed.)
+- v-pred (P2) closed ~70 % of the mean gap and ~28 % of the jump gap but **not variety**;
+  dropping up-attn (v7.5) recovered the rest of v-pred's level — both confirm the ceiling is the
+  *representation*, not attention or the objective.
+
+### Which channels collapse, and why — *not all of them* (the three buckets)
+Mean-regression pulls **every** channel toward its conditional mean given (audio + difficulty);
+whether that hurts depends on what that mean *is* and how decode reads it. The governing rule:
+**a channel is endangered in proportion to how much its correct value depends on information NOT
+in the audio.** Three buckets:
+- **(1) Safe — the mean is the right answer (audio-determined).** `onset`, `slider_hold`,
+  `spinner_hold`, hitsound *count*. The mel strongly determines note *times*, so the onset bumps
+  stay at musical onsets (they don't wash to the −1 baseline *at notes*). This is why rhythm is the
+  model's best dimension (7/10) and slider/circle mix ≈ real. (Hitsound *quantity* is fine→over —
+  decode needs `accent_threshold` 0.85 because the channel **over-fires**, ~0.52→0.33; signal.py.
+  The 4/10 is placement/musicality + stability, a *different* problem.)
+- **(2) Collapse — a free creative choice the audio doesn't pin down (P4-B's family).**
+  `cursor_x/y` → centre → spacing collapses (116 vs 167). slider anchors → collinear (median
+  sagitta 0.0) → straight (partly rescued by the curve cue → 28%). `corner` → a **rare binary →
+  regresses to ~base-rate 0.13 → decode-thresholds to ~2%** — the clearest "washed to baseline"
+  case, and exactly *why* the corner cue under-fires. One shared root: a high-variance target the
+  audio doesn't determine.
+- **(3) Hurt by a *different* mechanism (not magnitude collapse).** `kiai` — structural,
+  few-count, boundary-ambiguous → under-confident → borderline sections flip per sample (eval saw
+  kiai 0.00 at SR4); fix = the supervised kiai head, not P4-B. `spinner` — under-produced from data
+  sparsity, not cancellation.
+
+**Takeaway:** bucket 2 is the single biggest gap and the shared cause of *both* the pattern and the
+straight-slider complaints — but it is **not** a whole-signal collapse. Bucket-1 channels working is
+exactly why the maps are playable. v8 targets bucket 2; bucket-3 items stay on their own tracks.
+
+### The key correction to the §10.7-B draft (signed Δ does NOT fix it)
+The old draft proposed "add Δx/Δy (velocity) auxiliary targets." **Signed Δx/Δy mean-regress to
+≈ 0** the same way absolute x/y regress to centre — jump *directions* are ~uniform, so the mean
+displacement vector cancels. Predicting Δ instead of x moves the zero, it doesn't remove it.
+What survives mean-regression is a **non-negative magnitude**: the spacing *distance* has a
+conditional mean ≈ the true typical spacing (a large positive number, no cancellation).
+
+This is the project's own evidence, twice over:
+- **Curve cue worked** (13→28 % visible): a non-negative scalar (sagitta) whose mean is a useful
+  "typical bow." A spacing-magnitude scalar is the same kind of object.
+- **Corner cue under-fired** (~2 % vs 13 %): a *rare binary* whose mean = base-rate, then thresholded
+  to ≈ 0. The lesson: encode dense positive scalars, not sparse binaries.
+
+**Reframe:** moving magnitude into its own channel changes the *fallback of mean-regression*
+from "centre → ~0 spacing" to "→ the correct average spacing." The floor rises to real-average
+(~134 px) for free; per-song extremes (167) still need the model to capture the deviation
+around that mean — which the cue + loss up-weighting help but (by the curve-cue precedent)
+likely won't fully reach. State this honestly: expect a solid lift toward the average and a
+partial recovery of the per-song extreme, not a full fix in one shot.
+
+### Primary design — a spacing-magnitude channel (+1, 20→21 ch; `CH_SPACING`=20)
+- **Encode** (signal.py): for each hit object, `s = dist(prev object's *end* pos, this object's
+  start pos)` (release→press = what the player's aim actually traverses; slider end keyframe
+  already exists). Store `s / SPACING_PX_SCALE` clipped to [0,~1.2], **held over the inter-object
+  gap** (dense supervision, like curve/sv), baseline 0. `SPACING_PX_SCALE ≈ 256` (≈ playfield
+  half-diagonal; tune so the common 0–300 px range fills [0,~1.2] and the rare 500+ clips).
+  *Flip-aug invariant* — distance is unchanged by h/v mirror, so the augment code needs **no**
+  negation for it (contrast: signed Δ channels would need the cursor negation — another reason
+  to prefer magnitude). Index-appended → old ckpts still load; dataset pad/baseline = 0.
+- **Decode** (signal.py `decode_signal`, post-step after objects are built): rebuild positions by
+  **accumulating displacement = (model's own direction) × (channel magnitude)**, re-anchored per
+  new-combo:
+  - first object & every new-combo head → snap to the model's **absolute** `cursor` position
+    (keeps global structure, bounds drift);
+  - within a combo, `q_{k+1} = q_k + s_k · dir_k`, where `dir_k = normalise(cursor[p_{k+1}] −
+    cursor[p_k])` (the angle the model already gets right) and `s_k` = windowed mean of the
+    spacing channel at the onset (same read pattern as the curve cue);
+  - **reflect at playfield walls** (mirror the offending component) rather than clamp — clamping
+    re-compresses spacing, reflection preserves magnitude and mimics real edge-aim. NC re-anchoring
+    keeps reflections rare.
+  - knobs (no retrain): a `--spacing-scale` blend α between the model's raw positions and the
+    reconstructed ones (α=0 = today's behaviour; α=1 = full magnitude), so we can dial intensity
+    and A/B without retraining.
+
+### De-risk the decode BEFORE spending a train (cheap, no retrain)
+The decode half is testable on the **existing v7.5** output: synthesise a target magnitude per gap
+(e.g. from SR/density, or just multiply v7.5's own spacings ×1.4) and run the reconstruction
+(direction-preserving rescale + wall reflection + NC re-anchor). If that yields clean, in-bounds
+jump maps, the reconstruction math + reflection are validated and the only open question is whether
+the *channel* learns honest per-song magnitudes — which is what the train tests. Also A/B the
+free nudge: CFG `--guidance 3–4` (more committed/extreme) on the jump song.
+
+### Complementary levers (ride the same train; one variable tracked at a time)
+- **Per-channel loss up-weighting** (§10.10(a)) — now co-primary, not a nudge: `--spatial-loss-weight`
+  weights cursor/anchors/**spacing**/**corner** above the easy piecewise channels in `_diffusion_loss`
+  (was an unweighted mean over all channels), renormalised to mean 1 so the overall scale is unchanged.
+  Directly counters the "2-of-21 underfit" mechanism (and corner's under-fire). Small, reversible.
+- **Per-channel target standardisation** (§11 5.2) — zero-mean/unit-var the channels so the spatial
+  channels aren't drowned by the −1-baseline binaries; also a base-160 stability candidate.
+- **Variance-matching auxiliary** (§10.10 Gram-idea) — penalise predicted cursor-channel variance
+  below real. Highest risk (non-standard term); hold unless the channel + weighting underperform.
+- **distance-snap variant** (refinement, not v8-primary): encode `spacing / beat-gap` (the DS
+  multiplier mappers actually use) instead of raw px — a more *stationary* target, but couples to
+  timing at decode. Note for v9 if raw magnitude proves noisy.
+
+### v8 scope — cursor only, or anchors + corners too?
+All three bucket-2 channels collapse, but they need different amounts of *new* work, and the
+v7-full "bundling lost attribution" lesson has a sharper reading: **bundle changes whose metrics
+are DISJOINT (attribution survives); isolate changes that move the SAME metric.** v7-full's mistake
+was up-attn fighting SV/curve over the *same* spatial-dispersion metric. Here the candidate fixes
+touch disjoint metrics and most are **decode-tunable**, so a bundle is recoverable at eval time.
+- **Cursor x/y — core, new representation.** Spacing-magnitude channel + decode reconstruction.
+  Owns the headline metric (jump_ratio / mean-spacing). Decode-tunable via `--spacing-scale` α
+  (α=0 → today's behaviour) → its effect is attributable post-train *without a retrain*.
+- **Slider anchors — NO new representation; helped for free.** Curvature *magnitude* is already
+  the curve cue (the non-negative-scalar fix, working at 28%); the per-channel **loss up-weighting**
+  (a complementary v8 lever) also up-weights the anchor channels → extra push on straightness,
+  measured by `curved_slider_ratio` (disjoint from jump_ratio). A richer anchor-*shape* rep
+  (waves/blankets geometry) shares metrics with the curve cue and is a harder problem → **defer to
+  v9.**
+- **Corner — loss up-weight, NOT count re-encode (corrected during implementation 2026-06-19).**
+  The drafted "scale by red-point count" would make the under-fire *worse*. Under mean-regression a
+  generated slider's corner value ≈ `e·P(angular|context)` where `e` is the encoded value; decode
+  fires when that ≥ `CORNER_DECODE_THRESHOLD` (0.25). The binary uses `e=1.0`; count-scaling drops a
+  1-red slider (the median) to `e=0.33`, so it clears the threshold *less* often → **fewer** corners,
+  not more. The binary's higher margin is exactly why it fires more. So the firing rate is raised the
+  same way as spatial dispersion — **up-weight the corner channel in the loss** (sharper fit →
+  P(angular|context) less hedged → more high-confidence fires) — plus post-train threshold tuning.
+  Encoding stays binary; corner joins the `--spatial-loss-weight` set. Orthogonal metric
+  (angular-slider ratio), decode-tunable threshold → attribution intact.
+
+**Decision: v8 = spacing-magnitude channel (cursor) + per-channel loss up-weighting on the under-fit
+channels (cursor/anchors/spacing/corner), one reprocess → `ranked-v8` (21-ch), one train.** Anchors
++ corner get fixed by the loss lever (no new/changed encoding); a dedicated slider-shape rep waits
+for v9. Attribution holds because the metrics are disjoint *and* the spacing effect is decode-tunable
+(set α=0 to isolate the loss-weighting's contribution from the channel's at eval, no retrain).
+
+### Eval & acceptance
+`analyze_phase1.py` (real vs v7.5 vs v8): **mean-spacing toward 134, jump_ratio toward 0.20, std
+toward 77** without collapsing streams/turn-angle. Then the **Happppy jump-song A/B** (target
+0.39 / 167) and the deathstream A/B (guard streams didn't regress). Hermetic test: spacing
+encode→decode round-trip (a held magnitude reconstructs the spacing within tolerance; a flat-0
+channel reproduces today's positions).
+
+### Cost / sequencing / risk
+One reprocess → `ranked-v8` (21-ch) + one ~6 h train (USER). Risks: (1) decode drift/bounds —
+mitigated by NC re-anchor + reflection + the de-risk pass above; (2) over-spacing on *average*
+songs if the channel over-fires — mitigated by the `--spacing-scale` blend (decode-tunable);
+(3) stream interaction (don't inflate 1/4 spacing) — the magnitude is per-gap so streams (small
+gaps) keep small spacing by construction. Build order: spacing channel + decode reconstruction
+first (the representation fix), then per-channel loss up-weighting on cursor/anchors/spacing/corner
+bundled into the same reprocess/train; A/B vs v7.5 on disjoint metrics (jump_ratio, angular-slider
+ratio, curved_slider_ratio), isolating the spacing channel via its `--spacing-scale` knob.
+
+### Outcome (base-160 train, 2026-06-20) — partial; the channel regresses to the SR-average
+Trained base-160 v8 (val 0.041, clean — RESULTS; + the base-160 stability win, §7). **The core bet
+only half held.** `eval_spacing_channel` on a jump song (Happppy, real spacing 173 / jump 0.42): the
+spacing channel predicts only ~120–127 px (ratio 1.03–1.04 over the cursor) — it mean-regresses to
+`E[spacing | audio, SR]` = the **SR-average**, NOT the per-song extreme. **Why the §10.11 prediction
+was wrong:** a magnitude scalar does mean-regress to the *correct* value — but "correct" here is the
+SR *average*, and the channel **shares the cursor's audio+SR conditioning**, so it has no extra
+information about whether *this* song is jump-heavy. Both channel and cursor → the same SR-average;
+moving magnitude into a channel re-encoded the average, it didn't recover the per-song extreme (the
+channel is itself under-dispersed: chan_p90 ~200 vs real ~340). The curve cue worked only because
+decode *forces* a bow; respace faithfully reproduces the channel's compressed magnitude.
+- **What worked:** base-160 stability (headline); no regression (curves 0.369, SV intact); and
+  `--spacing-scale >1` as a **manual** global jump dial (Happppy raw 0.116 → 2.5 → 0.297) — useful
+  but not automatic (over-spaces calm songs; uniform scaling can't make the bimodal stream+jump
+  structure).
+- **The real per-song fix (→ v9):** condition on an **audio-inferred aim-intensity / target spacing**
+  (compute per-song from onset-energy/spectral-flux, feed like `--density`; the §10.7-P5 stream-
+  density idea on the spacing axis). A passive channel can't beat the conditioning it shares — the
+  lever must be *new information at the input*, or an objective that samples extremes rather than
+  regressing to the mean (the deeper under-dispersion problem persists).
+
 ## 11. Audit follow-ups (external review 2026-06-14)
 
 A separate auditor read every `src/` file + re-derived the diffusion math (all
@@ -1005,7 +1190,13 @@ config as "current" → now base-128/0.3) + the v5 decode (§8.2) + README chann
 - **Zero-terminal-SNR β + v-prediction** (5.3) — the principled fix likely needed
   to unblock base ≥160 (higher leverage than just lowering LR). *Future / pairs with 5.2.*
 - **Batched CFG** (5.4) — one concatenated forward instead of two → ~2× faster
-  sampling, identical output. *Task.*
+  sampling, identical output. **Done** (`diffusion.ddim_sample`, 2026-06-20): batch-2 forward,
+  second half `ctx_drop=True` (== null embedding, bit-identical; hermetic-tested). **Memory tradeoff:
+  the batch-2 forward ~doubles peak activations → OOMs marathon-length songs at base-160 (e.g. the
+  8-min ICDD song hit 11.4/12 GB at batch-1), so `generate --no-batch-cfg` keeps the low-memory
+  two-forward path.** Plus inference `generate --compile` (opt-in, stacks) + a tqdm progress bar over
+  the DDIM steps. (Long-song speedup is still memory-bound — chunked/windowed generation is the real
+  lever there; future.)
 - **Attention on the up-path** (S-5) / fuse the top skip (S-4) — architecture A/B
   vs the 17/19 metric; needs a retrain.
 - Minor (cosmetic/negligible, left as-is): `package_map` re-parse drops `[Events]`
