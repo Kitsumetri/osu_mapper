@@ -4,6 +4,7 @@
   python main.py train      --data data/processed/ranked --tag mymodel --base 160 --epochs 60
   python main.py infer    --audio song.mp3 --reference ref.osu --sr 5 6   # generate + package
   python main.py generate --audio song.mp3 --ckpt runs/<id>/ckpt/best.pt --out out.osu
+  python main.py bestofn  --audio song.mp3 --sr 5 6 --n 8   # reward-ranked: sample N, keep best
 
 Each stage also has a module entrypoint (python -m src.train, python -m src.run_inference, ...).
 """
@@ -18,7 +19,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     # add_help=False so a stage's own --help passes through to it (not handled here)
-    for name in ("preprocess", "train", "infer", "generate"):
+    for name in ("preprocess", "train", "infer", "generate", "bestofn"):
         sub.add_parser(name, add_help=False)
 
     args, rest = ap.parse_known_args()
@@ -31,6 +32,8 @@ def main():
         from src.run_inference import main as run
     elif args.cmd == "generate":
         from src.generate import main as run
+    elif args.cmd == "bestofn":
+        from src.best_of_n import main as run
     raise SystemExit(run() or 0)
 
 
