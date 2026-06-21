@@ -4,16 +4,16 @@ it straight into your osu! Songs folder so it's playable in-game. One friendly c
 
 EXAMPLES
   # 5-star map for a song you already have mapped (uses the existing map for timing + art)
-  uv run python run_inference.py \
+  uv run python main.py infer \
       --audio "C:/osu!/Songs/123 Artist - Song/audio.mp3" \
       --reference "C:/osu!/Songs/123 Artist - Song/Artist - Song (Mapper) [Insane].osu" \
       --sr 5
 
   # several difficulties at once
-  uv run python run_inference.py --audio song.mp3 --reference ref.osu --sr 4 5 6
+  uv run python main.py infer --audio song.mp3 --reference ref.osu --sr 4 5 6
 
   # pick a checkpoint, just write the .osu (don't copy into Songs)
-  uv run python run_inference.py --audio song.mp3 --sr 5 --ckpt runs/<id>/ckpt/best.pt --no-package
+  uv run python main.py infer --audio song.mp3 --sr 5 --ckpt runs/<id>/ckpt/best.pt --no-package
 
 TIPS
   * --reference is an existing .osu for the same song. It gives exact BPM/offset (much better
