@@ -12,6 +12,9 @@ EXAMPLES
   # several difficulties at once
   uv run python main.py infer --audio song.mp3 --reference ref.osu --sr 4 5 6
 
+  # reward-ranked best-of-8 (sample N, keep the highest-reward winner per SR, still auto-packaged)
+  uv run python main.py infer --audio song.mp3 --reference ref.osu --sr 5 6 --best-of-n 8
+
   # pick a checkpoint, just write the .osu (don't copy into Songs)
   uv run python main.py infer --audio song.mp3 --sr 5 --ckpt runs/<id>/ckpt/best.pt --no-package
 
@@ -21,6 +24,9 @@ TIPS
     but recommended — without it the map is written to --out-dir and you place it yourself.
   * Star rating is conditioned, not exact; pass --match-sr to iterate toward the target (slower).
   * Long songs (>4 min) automatically use bf16 + the low-memory path so they don't run out of VRAM.
+  * --best-of-n N samples N candidates per SR, scores each with the reward function, and keeps
+    the winner. Requires artifacts/reference_stats.json (build with corpus_stats). The winner
+    flows through the same packaging path as a normal single generation.
 """
 from __future__ import annotations
 
@@ -72,6 +78,28 @@ def _print_stats(osu_path: Path, target_sr: float, gen_secs: float) -> float | N
     return sr
 
 
+def _print_bon_summary(sr: float, win_reward: float, all_rewards: list[float],
+                       elapsed: float) -> None:
+    """Print the per-SR best/mean/lift line after a best-of-N run."""
+    mean = sum(all_rewards) / len(all_rewards) if all_rewards else 0.0
+    lift = win_reward - mean
+    print(f"  [bon] SR {sr:g}: best R={win_reward:.4f} / mean R={mean:.4f} "
+          f"(lift {lift:+.4f}) in {elapsed:.0f}s  n={len(all_rewards)}")
+
+
+def _load_ref_stats_for_infer(path: str) -> dict:
+    """Load reference_stats.json, raising a user-friendly error if missing."""
+    import json
+    p = Path(path)
+    if not p.exists():
+        raise SystemExit(
+            f"ERROR: --best-of-n requires reward reference stats, "
+            f"but '{path}' is missing.\n"
+            f"Build them first:\n"
+            f'  uv run python -m src.corpus_stats --songs "C:/osu!/Songs" --out {path}')
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Generate, analyse and package an osu! map from audio.",
@@ -103,6 +131,20 @@ def main() -> int:
                     help="bf16 sampling (faster, lower memory). Default: auto-on for long songs")
     ap.add_argument("--batch-cfg", action=argparse.BooleanOptionalAction, default=None,
                     help="batched guidance (~2x faster, +memory); default auto-off for long songs")
+    # best-of-N flags
+    ap.add_argument("--best-of-n", type=int, default=1, metavar="N",
+                    help="sample N candidates per SR, keep the highest-reward winner "
+                         "(default 1 = single-sample, unchanged behaviour). "
+                         "Requires --ref-stats / artifacts/reference_stats.json.")
+    ap.add_argument("--ref-stats", default="artifacts/reference_stats.json",
+                    metavar="PATH",
+                    help="reference_stats.json for the reward function "
+                         "(only needed with --best-of-n N>1; "
+                         "build with: uv run python -m src.corpus_stats)")
+    ap.add_argument("--bon-seed", type=int, default=0,
+                    help="RNG seed for best-of-N candidate sampling (default 0)")
+    ap.add_argument("--keep-candidates", action="store_true",
+                    help="keep all N candidate .osu files on disk (default: only the winner)")
     args = ap.parse_args()
 
     audio = Path(args.audio)
@@ -126,6 +168,14 @@ def main() -> int:
     else:
         do_package = True
 
+    use_bon = args.best_of_n > 1
+
+    # load ref_stats early (fail fast before any expensive model load)
+    ref_stats: dict | None = None
+    if use_bon:
+        ref_stats = _load_ref_stats_for_infer(args.ref_stats)
+        print(f"reward calibrated on {ref_stats.get('n_maps')} ranked maps ({args.ref_stats})")
+
     # heavy imports after arg-validation so --help / bad paths fail fast
     from src.config import AUDIO
     from src.generate import generate, load_model, prepare_audio
@@ -144,22 +194,66 @@ def main() -> int:
     print(f"song: {_fmt_dur(duration_s)}  |  amp(bf16)={amp}  batched-guidance={batch_cfg}"
           + ("   [long song -> memory-safe mode]" if long_song and args.amp is None else ""))
 
+    if use_bon:
+        print(f"best-of-{args.best_of_n} mode: sampling {args.best_of_n} candidates per SR "
+              f"(seed={args.bon_seed}), keeping highest-reward winner")
+
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     generated, diff_names = [], []
+
+    # shared generation kwargs (passed through to generate / best_of_n)
+    gen_kwargs = dict(
+        guidance=args.guidance,
+        steps=args.steps,
+        match_sr=args.match_sr,
+        density=args.density,
+        spacing_scale=args.spacing_scale,
+        amp=amp,
+        batch_cfg=batch_cfg,
+    )
+
+    bon_summary: list[tuple[float, float, float]] = []  # (sr, best_r, mean_r) per SR
+
     for sr in args.sr:
         _bar()
-        print(f"  GENERATING  {sr:.1f}*  ({audio.stem})")
+        print(f"  GENERATING  {sr:.1f}*  ({audio.stem})"
+              + (f"  [best-of-{args.best_of_n}]" if use_bon else ""))
         _bar()
         out_path = out_dir / f"{audio.stem}_sr{sr:g}.osu"
         t0 = time.time()
-        generate(str(audio), out_path=str(out_path), sr=sr, guidance=args.guidance,
-                 steps=args.steps, match_sr=args.match_sr, density=args.density,
-                 spacing_scale=args.spacing_scale, loaded=loaded, prepared=prepared,
-                 amp=amp, batch_cfg=batch_cfg)
-        _print_stats(out_path, sr, time.time() - t0)
+
+        if use_bon:
+            from src.best_of_n import best_of_n
+            _, win_bd, all_bds = best_of_n(
+                str(audio), sr=sr, ref_stats=ref_stats,
+                out_path=str(out_path),
+                n=args.best_of_n, seed=args.bon_seed,
+                loaded=loaded, prepared=prepared,
+                keep_candidates=args.keep_candidates,
+                **gen_kwargs,
+            )
+            elapsed = time.time() - t0
+            rewards = [b.reward for b in all_bds]
+            _print_bon_summary(sr, win_bd.reward, rewards, elapsed)
+            bon_summary.append((sr, win_bd.reward, sum(rewards) / len(rewards)))
+        else:
+            generate(str(audio), out_path=str(out_path), sr=sr,
+                     loaded=loaded, prepared=prepared, **gen_kwargs)
+            elapsed = time.time() - t0
+
+        _print_stats(out_path, sr, elapsed)
         generated.append(out_path)
         diff_names.append(f"AI {sr:g}star")
+
+    if bon_summary:
+        _bar()
+        print(f"  BEST-OF-{args.best_of_n} SUMMARY")
+        _bar()
+        for sr, best_r, mean_r in bon_summary:
+            lift = best_r - mean_r
+            print(f"  SR {sr:g}*   best R={best_r:.4f} / mean R={mean_r:.4f} "
+                  f"(lift {lift:+.4f})")
 
     _bar()
     if do_package:

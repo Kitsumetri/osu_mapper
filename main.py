@@ -2,11 +2,17 @@
 
   python main.py preprocess --songs "C:/osu!/Songs" --out data/processed/ranked --gold --workers 10
   python main.py train      --data data/processed/ranked --tag mymodel --base 160 --epochs 60
-  python main.py infer    --audio song.mp3 --reference ref.osu --sr 5 6   # generate + package
-  python main.py generate --audio song.mp3 --ckpt runs/<id>/ckpt/best.pt --out out.osu
-  python main.py bestofn  --audio song.mp3 --sr 5 6 --n 8   # reward-ranked: sample N, keep best
+  python main.py infer      --audio song.mp3 --reference ref.osu --sr 5 6   # generate + package
+  python main.py infer      --audio song.mp3 --reference ref.osu --sr 5 6 --best-of-n 8
+  python main.py generate   --audio song.mp3 --ckpt runs/<id>/ckpt/best.pt --out out.osu
+  python main.py bestofn    --audio song.mp3 --sr 5 6 --n 8   # debug/no-package; prefer infer
 
 Each stage also has a module entrypoint (python -m src.train, python -m src.run_inference, ...).
+
+PREFERRED USER FLOWS
+  Single generation (+ auto-package):  main.py infer --audio ... --reference ... --sr ...
+  Best-of-N     (+ auto-package):      main.py infer ... --best-of-n N
+  Debug / inspect candidates (no pkg): main.py bestofn --audio ... --sr ... --n N --keep-candidates
 """
 
 import argparse

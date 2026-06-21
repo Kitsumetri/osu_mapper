@@ -11,9 +11,17 @@ phases (RESEARCH §10.12.3 Phase 0).
 One model load + one audio prepare are reused across all N samples (and all SRs);
 only the per-candidate noise seed changes, so the candidates are reproducible.
 
-  uv run python -m src.best_of_n --audio song.mp3 --ckpt runs/<id>/ckpt/best.pt \
-      --sr 5 6 7 --n 8 --timing-from ref.osu
-  uv run python main.py bestofn --audio song.mp3 --sr 5 --n 12 --keep-candidates
+PREFERRED USER ENTRYPOINT
+  For everyday use (reward-ranked generation + auto-packaging into osu! Songs):
+
+    uv run python main.py infer --audio song.mp3 --reference ref.osu --sr 5 6 --best-of-n 8
+
+  This module's CLI (``bestofn``) is the *no-package / debug* path — useful when you
+  want to inspect all N candidates or skip the packaging step:
+
+    uv run python -m src.best_of_n --audio song.mp3 --ckpt runs/<id>/ckpt/best.pt \\
+        --sr 5 6 7 --n 8 --timing-from ref.osu
+    uv run python main.py bestofn --audio song.mp3 --sr 5 --n 12 --keep-candidates
 """
 from __future__ import annotations
 
