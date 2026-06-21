@@ -18,18 +18,30 @@ import numpy as np
 from ..config import AUDIO, AudioConfig
 from ..parsing.beatmap import TimingPoint
 
-# osu! songs cluster in a fairly high BPM band, and librosa's default 120 BPM
-# prior tends to lock onto half-tempo. Bias both the prior and the octave fold
-# toward this range.
-OSU_BPM_LO = 125.0
-OSU_BPM_HI = 250.0
+# librosa's beat tracker is prone to octave errors (half / double tempo). We fold
+# only *implausible* tempi back into a generous musical band, and leave anything
+# already inside the band untouched. The band must be slightly wider than one
+# octave so the fold loop always terminates (hi/lo > 2).
+#
+# IMPORTANT: the band's lower edge used to be 125 BPM, which silently *doubled*
+# every genuinely-slow song — a real 120-BPM map folded to 240, an 89-BPM map to
+# 178 (the "doubled ~240 BPM red lines on audio_* maps" report). Plenty of ranked
+# maps sit in the 89-124 range, so the floor is now 89 and such tempi are kept.
+OSU_BPM_LO = 89.0
+OSU_BPM_HI = 205.0
 OSU_START_BPM = 160.0
 
 
 def _normalise_octave(bpm: float, lo: float = OSU_BPM_LO, hi: float = OSU_BPM_HI) -> float:
-    """Fold half/double-tempo errors into [lo, hi)."""
+    """Fold half/double-tempo *errors* into ``[lo, hi)``.
+
+    A tempo already inside the band is plausible and returned unchanged (so a real
+    slow song is never doubled); only out-of-band values are octave-shifted in.
+    """
     if bpm <= 0:
         return 0.0
+    if lo <= bpm < hi:
+        return bpm
     while bpm < lo:
         bpm *= 2
     while bpm >= hi:

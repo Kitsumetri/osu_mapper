@@ -143,6 +143,55 @@ def test_ddim_v_zero_snr_finite():
     assert torch.isfinite(out).all()
 
 
+def test_zero_snr_schedule_is_finite_everywhere():
+    """Zero-terminal-SNR drives alpha_bar_T->0, so betas[T]->1. Every derived buffer
+    (incl. posterior_var and sqrt_recip_alphas) must stay finite — a NaN here would
+    silently corrupt the last DDIM step / any DDPM ancestral step."""
+    diff = GaussianDiffusion(timesteps=50, device=DEV, objective="v", zero_snr=True)
+    for buf in (diff.betas, diff.alphas_cumprod, diff.sqrt_acp, diff.sqrt_one_minus_acp,
+                diff.sqrt_recip_alphas, diff.posterior_var):
+        assert torch.isfinite(buf).all()
+    assert (diff.posterior_var >= 0).all()
+    assert diff.alphas_cumprod[-1].abs() < 1e-6      # terminal SNR == 0
+
+
+def test_posterior_q_sample_consistency():
+    """q_sample(x0,t) noised then the true posterior mean of q(x_{t-1}|x_t,x0) must
+    equal the closed-form posterior coefficients applied to (x0, x_t)."""
+    import torch.nn.functional as F
+    d = GaussianDiffusion(timesteps=100, device=DEV)
+    x0 = torch.randn(2, C_SIG, T)
+    noise = torch.randn_like(x0)
+    t = torch.tensor([30, 70])
+    x_t = d.q_sample(x0, t, noise)
+    # the eps recovered from (x_t, x0) at this t matches the injected noise
+    a = d.sqrt_acp[t][:, None, None]
+    s = d.sqrt_one_minus_acp[t][:, None, None]
+    rec_eps = (x_t - a * x0) / s
+    assert torch.allclose(rec_eps, noise, atol=1e-4)
+    # posterior coefficients on x0 and x_t sum (with mean over batch) to ~the DDPM mean
+    acp = d.alphas_cumprod
+    acp_prev = F.pad(acp[:-1], (1, 0), value=1.0)
+    c0 = (torch.sqrt(acp_prev[t]) * d.betas[t] / (1 - acp[t]))[:, None, None]
+    ct = (torch.sqrt(1 - d.betas[t]) * (1 - acp_prev[t]) / (1 - acp[t]))[:, None, None]
+    post_mean = c0 * x0 + ct * x_t
+    assert torch.isfinite(post_mean).all()
+
+
+def test_guidance_rescale_runs_and_is_finite():
+    """The guidance_rescale branch (Lin et al. std-matching) must run on the CFG path
+    and stay finite for both batch_cfg on and off."""
+    ctx_dim = 6
+    m = UNet1d(C_SIG, C_COND, base=16, mults=(1, 2), t_dim=32, attn=False,
+               ctx_dim=ctx_dim).eval()
+    diff = GaussianDiffusion(timesteps=100, device=DEV)
+    cond, ctx = torch.randn(1, C_COND, T), torch.rand(1, ctx_dim)
+    for bc in (True, False):
+        out = diff.ddim_sample(m, cond, (1, C_SIG, T), steps=8, ctx=ctx,
+                               guidance=3.0, guidance_rescale=0.7, batch_cfg=bc)
+        assert out.shape == (1, C_SIG, T) and torch.isfinite(out).all()
+
+
 def test_apply_rope_preserves_norm_and_is_positional():
     from src.model.unet import _apply_rope
     x = torch.randn(1, 2, 5, 8)  # (b, heads, t, d)

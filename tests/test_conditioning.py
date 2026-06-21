@@ -33,6 +33,34 @@ def test_target_context_overrides():
     assert c[1] == context_vector(5, 10, 0, 0, 0, 0)[1]   # AR honoured
 
 
+def test_target_settings_in_valid_osu_ranges():
+    """AR/OD/CS/HP the model is conditioned on (and that get written into the .osu)
+    must stay within osu!'s legal [0, 10] (CS practically <=7), across the SR range."""
+    from src.conditioning import target_settings
+    for sr in (1.0, 3.0, 5.0, 7.0, 9.0, 11.0):
+        s = target_settings(sr)
+        assert 0.0 <= s["ar"] <= 10.0
+        assert 0.0 <= s["od"] <= 10.0
+        assert 0.0 <= s["cs"] <= 7.0
+        assert 0.0 <= s["hp"] <= 10.0
+        assert s["density"] > 0.0
+
+
+def test_context_dim_matches_unet_ctx_wiring():
+    """CONTEXT_DIM is the single source of truth; a UNet built with ctx_dim=CONTEXT_DIM
+    must accept a context vector of exactly that length (guards a silent dim drift)."""
+    import torch
+
+    from src.conditioning import CONTEXT_DIM, target_context
+    from src.model.unet import UNet1d
+    m = UNet1d(6, 16, base=16, mults=(1, 2), t_dim=32, attn=False, ctx_dim=CONTEXT_DIM).eval()
+    ctx = torch.tensor([target_context(5.0)], dtype=torch.float32)
+    assert ctx.shape[1] == CONTEXT_DIM
+    x, cond, t = torch.randn(1, 6, 32), torch.randn(1, 16, 32), torch.randint(0, 1000, (1,))
+    with torch.no_grad():
+        assert m(x, cond, t, ctx=ctx).shape == (1, 6, 32)
+
+
 def test_context_from_manifest_defaults():
     # missing fields fall back to sane defaults without crashing
     c = context_from_manifest({"n_objects": 300, "duration_s": 100.0})

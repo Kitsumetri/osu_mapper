@@ -92,6 +92,44 @@ def test_slider_without_curve_points_is_written_as_circle(sample_osu, tmp_path):
     assert not o.is_slider and o.is_circle
 
 
+def test_write_does_not_mutate_caller_objects(sample_osu, tmp_path):
+    """Regression: _clamp_slider_lengths used to shorten each slider's .length IN
+    PLACE, so a second write (or metrics computed after a write) saw an already-
+    clamped length. Writing must leave the caller's HitObjects untouched."""
+    from src.parsing.beatmap import TYPE_SLIDER, HitObject
+    bm = parse_beatmap(sample_osu)
+    # a slider with a deliberately over-long length that the clamp will shorten
+    s = HitObject(x=100, y=100, time=0, type=TYPE_SLIDER, curve_type="L",
+                  curve_points=[(400, 100)], slides=1, length=5000.0)
+    nxt = HitObject(x=200, y=200, time=300, type=TYPE_SLIDER, curve_type="L",
+                    curve_points=[(300, 200)], slides=1, length=100.0)
+    objs = [s, nxt]
+    tps = [TimingPoint(0, 400.0, 4, True)]
+    write_osu(bm, objs, tmp_path / "a.osu", timing_points=tps)
+    assert s.length == 5000.0          # caller's object NOT mutated
+    # writing twice must produce identical files (no progressive over-clamping)
+    write_osu(bm, objs, tmp_path / "b.osu", timing_points=tps)
+    assert (tmp_path / "a.osu").read_text() == (tmp_path / "b.osu").read_text()
+
+
+def test_written_slider_no_overlap_is_independent_of_caller_state(tmp_path):
+    """The clamp still fits each slider inside the gap to the next object, and the
+    same object list packaged into two difficulties yields the same clamped length."""
+    from src.parsing.beatmap import TYPE_SLIDER, Beatmap, HitObject
+    bm = Beatmap(path=tmp_path / "x.osu", slider_multiplier=1.4)
+    objs = [HitObject(x=100, y=100, time=0, type=TYPE_SLIDER, curve_type="L",
+                      curve_points=[(450, 100)], slides=1, length=9000.0),
+            HitObject(x=200, y=200, time=400, type=TYPE_SLIDER, curve_type="L",
+                      curve_points=[(300, 200)], slides=1, length=80.0)]
+    tps = [TimingPoint(0, 400.0, 4, True)]
+    write_osu(bm, objs, tmp_path / "d1.osu", timing_points=tps)
+    write_osu(bm, objs, tmp_path / "d2.osu", timing_points=tps)
+    for name in ("d1.osu", "d2.osu"):
+        parsed = sorted(parse_beatmap(tmp_path / name).hit_objects, key=lambda o: o.time)
+        for a, b in zip(parsed, parsed[1:]):
+            assert a.end_time <= b.time
+
+
 def test_writer_handles_empty_timing(sample_osu, tmp_path):
     bm = parse_beatmap(sample_osu)
     out = tmp_path / "out.osu"

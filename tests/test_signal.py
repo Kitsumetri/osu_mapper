@@ -432,6 +432,76 @@ def test_spacing_channel_holds_distance():
     assert abs(_dec_spacing(sig[CH_SPACING, mid]) - 200.0) < 2.0
 
 
+def test_pick_peaks_default_min_gap_collapses_plateau():
+    """Invariant: the model can emit a flat-topped onset; with the decode default
+    min_gap_frames>=2 a width-2 plateau must collapse to a single object (no
+    duplicate notes 1 frame apart). Locks the picker against a min_gap regression."""
+    from src.data.signal import _pick_peaks
+    ch = np.full(20, -1.0, dtype=np.float32)
+    ch[5] = ch[6] = 1.0                       # flat-topped onset (width 2)
+    assert _pick_peaks(ch, threshold=0.3, min_gap=2) == [5]   # one object
+    # a wide plateau (width 3, ~35 ms) is genuinely two onsets at the editor grid
+    ch3 = np.full(20, -1.0, dtype=np.float32)
+    ch3[5:8] = 1.0
+    assert _pick_peaks(ch3, threshold=0.3, min_gap=2) == [5, 7]
+
+
+def test_pick_peaks_handles_boundary_onsets():
+    """An onset on the first or last frame (object at time 0 / end) is a valid peak."""
+    from src.data.signal import _pick_peaks
+    ch = np.full(10, -1.0, dtype=np.float32)
+    ch[0] = 1.0          # object at time 0
+    ch[9] = 1.0          # object at the end
+    assert _pick_peaks(ch, threshold=0.3, min_gap=2) == [0, 9]
+
+
+def test_spinner_time_roundtrip():
+    """A spinner's start/end times survive encode -> decode within a frame or two."""
+    import pathlib
+
+    from src.parsing.beatmap import TYPE_SPINNER, Beatmap, HitObject
+    bm = Beatmap(path=pathlib.Path("x.osu"))
+    bm.hit_objects = [HitObject(x=256, y=192, time=1000, type=TYPE_SPINNER, end_time=3000)]
+    n = int(AUDIO.time_to_frame(3000)) + 10
+    dec = [o for o in decode_signal(encode_beatmap(bm, n), min_spinner_frames=10)
+           if o.is_spinner]
+    assert len(dec) == 1
+    assert abs(dec[0].time - 1000) < 2 * AUDIO.ms_per_frame
+    assert abs(dec[0].end_time - 3000) < 2 * AUDIO.ms_per_frame
+
+
+def test_sv_stacked_red_green_green_wins():
+    """A red + green timing point at the SAME time: the green's SV must win for the
+    section (matches osu! ordering), not be overwritten back to 1.0 by the red."""
+    import pathlib
+
+    from src.config import CH_SV
+    from src.data.signal import _dec_sv
+    from src.parsing.beatmap import TYPE_CIRCLE, Beatmap, HitObject, TimingPoint
+    bm = Beatmap(path=pathlib.Path("x.osu"),
+                 timing_points=[TimingPoint(0, 400.0, 4, True),        # red, SV 1.0
+                                TimingPoint(0, -50.0, 4, False)])      # green, SV 2.0 (same t)
+    bm.hit_objects = [HitObject(x=100, y=100, time=t, type=TYPE_CIRCLE, end_time=t)
+                      for t in range(0, 4000, 200)]
+    n = int(AUDIO.time_to_frame(4000)) + 10
+    sig = encode_beatmap(bm, n)
+    assert abs(_dec_sv(sig[CH_SV, 10]) - 2.0) < 1e-2     # green won
+
+
+def test_decode_spacing_all_zero_distance_skips():
+    """Stacked objects (all gaps 0 px) -> the channel is baseline, so decode_spacing
+    returns [] (skip respacing) instead of emitting bogus zero magnitudes."""
+    import pathlib
+
+    from src.data.signal import decode_spacing
+    from src.parsing.beatmap import TYPE_CIRCLE, Beatmap, HitObject
+    bm = Beatmap(path=pathlib.Path("x.osu"))
+    bm.hit_objects = [HitObject(x=100, y=100, time=0, type=TYPE_CIRCLE, end_time=0),
+                      HitObject(x=100, y=100, time=500, type=TYPE_CIRCLE, end_time=500)]
+    n = int(AUDIO.time_to_frame(500)) + 10
+    assert decode_spacing(encode_beatmap(bm, n), bm.hit_objects) == []
+
+
 def test_decode_spacing_aligns_and_guards():
     import pathlib
 
