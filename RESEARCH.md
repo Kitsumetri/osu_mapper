@@ -1148,6 +1148,86 @@ decode *forces* a bow; respace faithfully reproduces the channel's compressed ma
   lever must be *new information at the input*, or an objective that samples extremes rather than
   regressing to the mean (the deeper under-dispersion problem persists).
 
+## 10.12 v9 — alignment + postprocess (design, 2026-06-21)
+
+Three workstreams researched in parallel (detailed reports in `docs/v9/`): (1) postprocess
+1/4-snap correctness, (2) refresh the stale corpus stats, (3) a "ranked-map" reward + RL/post-train
+alignment. Branch `feat/v9-align` off `feat/v8-flow`. The connective theme is **model alignment**:
+v8 ships decent quality but mean-regresses to the SR-average; v9 attacks that from both the *input*
+(per-song conditioning, already roadmapped) and the *output distribution* (RL toward a reward), and
+cleans up the decode/postprocess errors that survive into the editor.
+
+### 10.12.1 Postprocess 1/4-snap — a real BPM-dependent bug, FIXED (`docs/v9/task1_postprocess.md`)
+The user's "I have to nudge notes onto 1/4 in the editor" was a genuine defect. `snap_to_grid` stored
+`o.time + int(round(grid - o.time))`; on a **half-tie delta** Python's banker's rounding sends
+`round(±0.5) → 0`, so the note **doesn't move** and stays 1 ms off the editor's own tick (`round(grid)`),
+which the editor then flags **unsnapped**. Measured on real outputs (`artifacts/generated/*.osu`, already
+through v8 postprocess) the editor-unsnapped rate was **1.8%–52.9% depending on BPM/offset** (worst:
+205 BPM); the fix (store `int(round(grid))` directly — the editor's exact tick) drops it to **0%** on
+every sample. This BPM-dependence is why the user saw it only on some songs. **Fixed** (commit `bc3c80a`):
+snap stores the rounded grid line; `_clamp` made NaN/inf-safe; new `clamp_objects_to_playfield` guards
+*all* heads (circles too, not just slider bodies) called in `generate._one_pass`; +8 hermetic tests.
+- **Ruled OUT** (correctly, not bugs): the bounded snap (`max_snap ≈ beat/16`) — 0% of objects are off
+  *all* of {1/4,1/8,1/6} by >1 ms in any sample, so the bound is right (kept it; it protects against a
+  wrong BPM estimate). And circle OOB via postprocess can't happen (`_reflect` and the blend stay in-range).
+- **Open → v9 model/decode (NOT postprocess):** ~16% of gaps on a *straight* song land on the 1/6
+  (triplet) grid — that's the model's onset noise being caught by the 1/6 divisor, not a snap bug. Did
+  **not** force-snap to 1/4 (would wreck real triplets/streams). Candidate fixes: per-song divisor
+  selection or tighter onset precision. Also flagged: stale `artifacts/generated/*.osu` still carry old
+  ≤1 ms offsets (regenerate to clear); possible **doubled 240 BPM red lines** on the `audio_*` maps
+  (timing — investigate separately).
+
+### 10.12.2 Refresh the corpus stats — parallelized; full run is the user's to fire (`docs/v9/task2_data_stats.md`)
+`artifacts/reference_stats.json` (the per-SR-bucket gold distribution behind `score_against_reference`
+and the v9 reward) was **n=31362, dated ~Jun 14**, from an older parser + older Songs snapshot → stale.
+- **`corpus_stats` parallelized** (commit `113ab26`): was single-threaded; the rosu SR call dominates and
+  parallelises cleanly → `--workers` (default `cpu_count-1`; `1` = serial), same idiom as `preprocess.py`.
+  Aggregation is order-independent (`_summary` sorts) so parallel ≡ serial — 5 hermetic equivalence tests.
+  Full ~95k-file refresh is now cheap.
+- **Diagnosis (1k-probe under current code vs old 31k):** most large single-bucket %s are sampling noise,
+  but three shifts are **systematic in every bucket** = a real parser change, not library growth:
+  `hitsound_ratio` **+14…37%**, `kiai_ratio` **−9…−27%**, `mean_spacing_px` **−2…−7%** (−3…−10 px).
+  Matters for the reward: `mean_spacing_px` is weighted 1.5; hitsound/kiai are 0.25 (lower-stakes, and get
+  their own v9 heads). **The full refresh must run before the reward is used in anger** — band p10/p90 need
+  large n. Old file preserved at `artifacts/reference_stats_v8_old.json`.
+  - **USER action:** `uv run python -m src.corpus_stats --songs "C:/osu!/Songs" --out artifacts/reference_stats.json`
+
+### 10.12.3 "Ranked-map" reward + RL alignment — design (`docs/v9/task3_rl_alignment.md`)
+A computable reward `R(map, target_SR)` on the machinery we already trust (`compute_metrics` +
+per-SR-bucket reference dists + rosu SR), prototyped pure/hermetic at `src/eval/reward.py` (+7 tests).
+- **Reward (one line):** `R = 0.65·(weighted-mean band-membership of the map's metrics inside the real
+  per-SR p10–p90 bands) + 0.35·(rosu SR-closeness)`. The per-metric sub-score is a **flat-topped tent**:
+  `1.0` *anywhere inside* the real band, falloff only *outside*. This is the anti-reward-hacking core —
+  **zero gradient for going more extreme**, so the optimum is "land in the ranked distribution", not
+  "maximise jumps". Directly encodes the v8 `--spacing-scale` lesson (maximising a spacing metric played
+  *worse*). Mapper-weighted metrics (grid-snap 2.0; spacing/density/streams 1.5; flow 1.0; cosmetic 0.25).
+  Convex blend (not product) so a momentary SR miss doesn't zero a good map. Reads the stats schema at call
+  time → survives the §10.12.2 refresh.
+- **RL method survey → cheapest-first plan.** Reward is non-differentiable (rosu + parser/decode), so
+  **DRaFT/AlignProp and reward-guided sampling are blocked** (would need a learned differentiable surrogate
+  — too many moving parts for 12 GB). Recommended ladder: **best-of-N reward ranking** (no train, immediate,
+  also the data source) → **RWR / best-of-N distillation** fine-tune of `best.pt` (short train, standard
+  denoising loss on reward-filtered self-gen) → **Diffusion-DPO** (preference pairs from ranked-vs-gen; most
+  12 GB-friendly *training* method, no in-loop rollout) → **DDPO/DPOK** (LoRA + few-step rollout) only if
+  needed and only with a hardened reward. Every phase gated on **in-game play feedback**, not just metrics.
+- **The strategic call — conditioning first, then RL (synergistic, not competing).** Both attack the same
+  root (mean-regression / under-produced per-song extremes) from opposite ends. §10.11's own diagnosis says
+  the missing lever is *new information at the input* = the planned **v9 per-song aim-intensity conditioning**;
+  RL is the *other* lever (an objective that samples extremes). **Conditioning is the higher-leverage *first*
+  move**: RL can only amplify a tail the model can already sample, and without a per-song signal RWR/DPO would
+  push spacing up **globally** — the exact uniform `--spacing-scale` failure. Conditioning makes "more jumps
+  *on the jumpy song*" expressible; RL then makes the model commit to that tail. **Best-of-N can run now**
+  (free) to measure how much tail already exists to select from.
+
+### 10.12.4 Sequenced v9 plan
+1. **Postprocess snap fix — DONE** (`bc3c80a`), ships immediately (no retrain).
+2. **Refresh `reference_stats.json`** (USER runs the now-parallel scan) — unblocks the reward calibration.
+3. **Best-of-N reward ranking** (no train) — wire `reward.py` into a `generate` N-sample-and-pick harness;
+   A/B on a jump song with play feedback. If it satisfies, RL may be unnecessary.
+4. **v9 per-song aim-intensity conditioning** (reprocess + train, USER) — the diagnosed primary fix.
+5. **RWR / DPO on the conditioned model** (short/moderate trains, USER) — commit to the per-song tail.
+   Parallel, no big train: hitsound musicality + kiai head (HANDOFF §6).
+
 ## 11. Audit follow-ups (external review 2026-06-14)
 
 A separate auditor read every `src/` file + re-derived the diffusion math (all
