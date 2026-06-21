@@ -1221,12 +1221,24 @@ per-SR-bucket reference dists + rosu SR), prototyped pure/hermetic at `src/eval/
 
 ### 10.12.4 Sequenced v9 plan
 1. **Postprocess snap fix — DONE** (`bc3c80a`), ships immediately (no retrain).
-2. **Refresh `reference_stats.json`** (USER runs the now-parallel scan) — unblocks the reward calibration.
-3. **Best-of-N reward ranking** (no train) — wire `reward.py` into a `generate` N-sample-and-pick harness;
-   A/B on a jump song with play feedback. If it satisfies, RL may be unnecessary.
+2. **Refresh `reference_stats.json` — DONE** (USER ran the parallel scan): **n=31362 → 94639** (3× the
+   library). Confirmed the stale-stats shifts at full scale (every bucket): hitsound_ratio +16…28%,
+   kiai_ratio −9…−16%, mean_spacing_px −2…−6%, sv_changes_per_min +12…72%, reversal_ratio −7…−30%. Bands
+   now reliable. (Expert+ SR-mean 8.18→7.68 = library composition, not a metric change.)
+3. **Best-of-N reward ranking — DONE** (`2263443`, `src/best_of_n.py`, `main.py bestofn`): sample N per
+   (song, SR), score with `reward.py`, keep the best; one model/audio load reused across all N+SRs, seeded
+   per-candidate. Writes `<out>.bon.json` (full per-candidate breakdown). Validated end-to-end on the v8
+   ckpt + refreshed reward (candidates vary, reward discriminates, winner promoted). **Next: USER runs a
+   real N (e.g. `--n 8 --sr 5 6 7`) on a jump song and gives play feedback** — if best-of-N satisfies, RL
+   may be unnecessary.
+   - **Reward caveat found (validation):** `on_quarter_grid_ratio` (and so the reward via it) assumes a
+     **single BPM** — it under-measures *variable-BPM* maps (a real ranked accel-map scored 0.28 vs the
+     0.78–1.0 band). **Does NOT affect best-of-N** (generated maps are single-BPM by construction; gold
+     training data is single-BPM-filtered) — but note it before using the reward on arbitrary real maps.
 4. **v9 per-song aim-intensity conditioning** (reprocess + train, USER) — the diagnosed primary fix.
-5. **RWR / DPO on the conditioned model** (short/moderate trains, USER) — commit to the per-song tail.
-   Parallel, no big train: hitsound musicality + kiai head (HANDOFF §6).
+5. **RWR / DPO on the conditioned model** (short/moderate trains, USER) — commit to the per-song tail,
+   using best-of-N's reward-ranked self-generations as the corpus. Parallel, no big train: hitsound
+   musicality + kiai head (HANDOFF §6).
 
 ## 11. Audit follow-ups (external review 2026-06-14)
 
