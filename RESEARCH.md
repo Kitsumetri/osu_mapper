@@ -1240,6 +1240,49 @@ per-SR-bucket reference dists + rosu SR), prototyped pure/hermetic at `src/eval/
    using best-of-N's reward-ranked self-generations as the corpus. Parallel, no big train: hitsound
    musicality + kiai head (HANDOFF §6).
 
+### 10.12.5 Round 2 — reward generalization, RL feasibility, endpoint + core hardening (2026-06-22)
+Four parallel workstreams off the user's play-test of best-of-N (logs in `artifacts/generated/*.bon.json`;
+detail in `docs/v9/`). All committed on `feat/v9-align`; **203 tests, ruff clean** integrated.
+
+- **Autopackage / one entrypoint — DONE** (`1bcacd0`, `docs/v9/task_autopackage.md`). `main.py infer
+  --best-of-n N` is now the blessed flow: each SR reward-ranks N candidates (reusing one model+audio load)
+  and the **winner auto-packages** into the one beatmapset folder exactly like a normal generation; prints
+  per-SR best/mean/lift; keeps the `<winner>.bon.json` audit. `bestofn` stays as the no-package/debug path.
+- **General (pattern-balanced) reward — DONE** (`61535cd`, `docs/v9/task_general_reward.md`,
+  `src/eval/measure_reward.py`). The old `quality` was a flat mean over 14 metrics → the **spacing/aim
+  family was 31% of quality** and out-voted sliders (the user's sr5 bon winner had `slider_ratio` totally
+  off-band yet scored quality 0.852 — three perfect spacing 1.0s drowning the broken sliders). Fixed:
+  `quality` is now a weighted mean over **5 pattern families** (rhythm / spacing_aim / flow / slider_shape
+  ≈ 22.7% each, accents 9.1%), each a within-family mean — a family's share is its weight, not its metric
+  count; **streams moved into *flow*** (a stream map is judged on its own axis, not against jumps).
+  Flat-topped bands preserved at metric→family→quality (one family can't prop up a broken one → strictly
+  harder to game). **Gold calibration (K=500 ranked maps, scored at own SR): reward mean 0.953 / median
+  0.976**, balanced across SR buckets (0.947–0.979) and families (slider_shape 0.907 … accents 0.951) =
+  the "ranked maps of any style score high" property. The sr5 bon winner correctly drops to quality 0.805
+  (now exposes `slider_shape` 0.52). Public API unchanged (`RewardBreakdown` gains `family_breakdown`).
+- **RL / policy-gradient feasibility — researched** (`5be40f7`, `docs/v9/task_rl_policy_gradient.md`,
+  prototype `src/rl/sample_logprob.py` +8 tests). **Verdict: DDPO/DPOK are feasible on 12 GB but NOT the
+  first move.** Three compounding reasons: (1) the production `ddim_sample` is `eta=0`/deterministic →
+  **no per-step log-prob to differentiate** (PG needs a stochastic sampler that isn't built); (2) the
+  **flat-topped band reward starves a policy gradient** — advantages collapse to zero in-band, so PG can
+  only pull outliers inward, never push past typicality (the reward is built for *selection*/*reweighting*,
+  not gradient-climbing — and per-song extremes are conditioning's job, not this reward's); (3) even the
+  fit-on-12 GB config (LoRA + detached rollout + per-step recompute + 10-step eta=1 + grad-ckpt) is ~days
+  of single-GPU time, and RL-without-conditioning pushes spacing *globally* (the `--spacing-scale` failure).
+  **→ Phase-1 RL = RWR / best-of-N distillation on the *conditioned* model.** The prototype proves the
+  v-pred+zero-SNR+CFG per-step log-prob math is correct and gradients flow (a de-risked seed for a future
+  phase-3; model files untouched, exact `diffusion.py` additions spec'd in the doc).
+- **Core-component quality audit — DONE** (`07f8912`, `docs/v9/task_core_quality.md`, +15 tests). Ranked by
+  quality impact: `signal.py` and `diffusion.py` audited **solid** (encode/decode round-trips hold; v↔x0/eps
+  exact, zero-SNR finite, min-SNR-γ correct, batched CFG bit-identical). **Two real bugs fixed:**
+  - **MEDIUM doubled-BPM on slow songs** (`timing.py::_normalise_octave`): the octave-fold band `[125,250)`
+    forced every sub-125 tempo up an octave (**120→240**, 100→200, 89→178) — *exactly* the reported
+    "doubled ~240 BPM red lines on `audio_*`". librosa tracked tempo correctly; the fold corrupted it. Now
+    `[89,205)` and a no-op for in-band tempi. (Only hit novel songs generated without `--timing-from`.)
+  - **LOW-MED `write_osu` in-place mutation** (`beatmap.py::_clamp_slider_lengths`): shortened sliders'
+    `.length` on the caller's objects, so writing one object-list to multiple difficulties (best-of-N /
+    `infer` multi-SR packaging) progressively over-clamped. Now clamps on `dataclasses.replace` copies.
+
 ## 11. Audit follow-ups (external review 2026-06-14)
 
 A separate auditor read every `src/` file + re-derived the diffusion math (all
