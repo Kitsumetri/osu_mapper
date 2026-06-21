@@ -21,6 +21,7 @@ from .model.diffusion import GaussianDiffusion
 from .model.unet import UNet1d
 from .parsing.beatmap import Beatmap, TimingPoint, parse_beatmap, write_osu
 from .postprocess import (
+    clamp_objects_to_playfield,
     clamp_slider_endpoints,
     compute_breaks,
     respace_by_magnitude,
@@ -197,6 +198,7 @@ def generate(audio_path, ckpt_path=None, out_path="generated.osu", steps=100, ba
             snap_to_grid(objects, tp, divisors=snap_divisors)
             snap_slider_ends(objects, timing, bm.slider_multiplier)  # SV-aware
         clamp_slider_endpoints(objects)
+        clamp_objects_to_playfield(objects)  # final guard: all heads inside playfield
         breaks = compute_breaks(objects)
         write_osu(bm, objects, out_path, timing_points=timing, breaks=breaks)
         return objects

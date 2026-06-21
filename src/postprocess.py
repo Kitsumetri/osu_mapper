@@ -5,7 +5,9 @@ tighter against the music. It is deliberately *bounded* — only objects already
 within ``max_snap_ms`` of a grid line move — so a wrong BPM estimate can't drag
 everything onto a bad grid. It is *triplet-aware*: each object snaps to whichever
 of the 1/4 or 1/3 subdivisions is closest (covers the ~10%+ of maps that use
-triplet rhythms).
+triplet rhythms). A snapped object is stored at the *rounded grid line*
+(``round(offset + k*iv)``), which is exactly the integer-ms tick the osu! editor
+draws — so the editor never flags a snapped note as "unsnapped" (see ``snap_to_grid``).
 """
 from __future__ import annotations
 
@@ -79,7 +81,34 @@ def trim_isolated_ends(objects: list[HitObject], max_gap_ms: float = 3000.0,
 
 
 def _clamp(v: float, lo: float, hi: float) -> int:
+    # NaN/inf-safe: a non-finite coordinate (never produced by decode today, but a
+    # cheap guard against a future channel / external .osu feeding garbage in)
+    # collapses to the lower bound rather than raising on int(round(nan)).
+    if v != v or v in (float("inf"), float("-inf")):
+        return int(lo)
     return int(round(min(max(v, lo), hi)))
+
+
+def clamp_objects_to_playfield(objects: list[HitObject],
+                               w: int = PLAYFIELD_W, h: int = PLAYFIELD_H) -> int:
+    """Clamp every object's *head* (x, y) into the playfield.
+
+    ``clamp_slider_endpoints`` only guards slider bodies; circles/spinner heads are
+    left wherever decode put them. Decode clips positions to ``[0, w] x [0, h]``
+    *inclusive*, so a note can sit exactly on the edge (half off-screen). This is a
+    final, cheap guard for ALL object heads — a no-op for the common case (decode
+    already clipped), but it makes "every emitted object is inside the playfield" an
+    explicit postprocess contract and catches anything an upstream change might push
+    out. Slider control points are handled by ``clamp_slider_endpoints``. Returns the
+    number of object heads moved.
+    """
+    changed = 0
+    for o in objects:
+        nx, ny = _clamp(o.x, 0, w), _clamp(o.y, 0, h)
+        if (nx, ny) != (o.x, o.y):
+            o.x, o.y = nx, ny
+            changed += 1
+    return changed
 
 
 def clamp_slider_endpoints(objects: list[HitObject],
@@ -237,17 +266,29 @@ def snap_to_grid(objects: list[HitObject], tp: TimingPoint,
     moved = 0
     for o in objects:
         best_delta = None
+        best_grid = None
         for iv in intervals:
             k = round((o.time - offset) / iv)
             grid = offset + k * iv
             delta = grid - o.time
             if best_delta is None or abs(delta) < abs(best_delta):
                 best_delta = delta
+                best_grid = grid
         if best_delta is not None and 0 < abs(best_delta) <= max_snap_ms:
-            d = int(round(best_delta))
-            o.time += d
-            o.end_time += d
-            moved += 1
+            # Store the *rounded grid line* directly, not ``o.time + round(delta)``.
+            # osu! stores integer-ms times and the editor's snap tick is round(grid);
+            # ``round(delta)`` collapses a half-tie (delta=-0.5) to 0 via banker's
+            # rounding, leaving the note one ms off the editor's tick — which the
+            # editor then flags as "unsnapped" (the user has to nudge it manually).
+            # ``round(grid)`` == the editor's own tick, so the note lands exactly on
+            # the grid line the editor draws. The end_time shifts by the same delta
+            # so slider/spinner durations are preserved.
+            new_time = int(round(best_grid))
+            d = new_time - o.time
+            if d != 0:
+                o.time = new_time
+                o.end_time += d
+                moved += 1
     objects.sort(key=lambda o: o.time)
     return moved
 
