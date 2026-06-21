@@ -6,14 +6,17 @@ rosu-pp — see `difficulty.py`), reporting mean / std / p10 / p90 per metric.
 The output is the "what real maps look like" baseline to compare generated maps
 against. Star rating is used because mappers' difficulty *names* are arbitrary.
 
-  python -m src.corpus_stats --songs "C:/osu!/Songs"      # all maps
+  python -m src.corpus_stats --songs "C:/osu!/Songs"                 # all maps, parallel
   python -m src.corpus_stats --songs "C:/osu!/Songs" --limit 400
+  python -m src.corpus_stats --songs "C:/osu!/Songs" --workers 1     # force serial
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 from .difficulty import SR_BUCKET_ORDER, sr_bucket, star_rating
@@ -42,46 +45,85 @@ def _summary(values: list[float]) -> dict:
             "p90": round(vs[int(0.9 * (n - 1))], 3)}
 
 
+def _process_file(path: Path) -> tuple[str, dict[str, float]] | None:
+    """Parse one .osu and return ``(sr_bucket, {metric: value})`` for a usable
+    std map, else ``None``. Module-level + picklable so it runs in a worker
+    process (Windows ``spawn``). The per-file work — parse, the cheap mode/object
+    filter, the expensive rosu SR call, metrics — is independent across files, so
+    this is the unit the pool distributes.
+    """
+    # parse + cheap mode/object filter FIRST, then the expensive rosu SR call
+    # (avoids parsing std maps twice and skips rosu on taiko/mania/ctb).
+    try:
+        bm = parse_beatmap(path)
+    except Exception:
+        return None
+    if bm.mode != 0 or len(bm.hit_objects) < 50:
+        return None
+    sr = star_rating(path)
+    if sr is None:
+        return None
+    m = compute_metrics(bm)
+    if m.get("n_objects", 0) < 50:
+        return None
+    m["star_rating"] = round(sr, 3)
+    return sr_bucket(sr), {k: m[k] for k in KEYS if k in m}
+
+
 def collect(songs_dir: Path, limit: int | None = None, seed: int = 0,
-            progress_every: int = 2000) -> dict:
+            workers: int | None = None, progress_every: int = 2000) -> dict:
     """Compute metrics over (a sample of) the library, bucketed by star rating.
 
-    ``limit=None`` processes every .osu in the library.
+    ``limit=None`` processes every .osu in the library. ``workers`` parallel
+    processes (default ``cpu_count-1``; ``workers<=1`` forces the serial path) —
+    the rosu SR call dominates and parallelises cleanly. Aggregation is order-
+    independent (``_summary`` sorts), so the result is identical to the serial run
+    regardless of worker count or completion order.
     """
     files = list(songs_dir.rglob("*.osu"))
     random.seed(seed)
     random.shuffle(files)
+    if workers is None:
+        workers = max(1, (os.cpu_count() or 2) - 1)
 
     buckets: dict[str, dict[str, list[float]]] = {}
     n_used = n_seen = 0
-    for f in files:
-        if limit is not None and n_used >= limit:
-            break
-        n_seen += 1
-        if n_seen % progress_every == 0:
-            print(f"  scanned {n_seen}/{len(files)} files, used {n_used} std maps", flush=True)
-        # parse + cheap mode/object filter FIRST, then the expensive rosu SR call
-        # (avoids parsing std maps twice and skips rosu on taiko/mania/ctb).
-        try:
-            bm = parse_beatmap(f)
-        except Exception:
-            continue
-        if bm.mode != 0 or len(bm.hit_objects) < 50:
-            continue
-        sr = star_rating(f)
-        if sr is None:
-            continue
-        m = compute_metrics(bm)
-        if m.get("n_objects", 0) < 50:
-            continue
-        m["star_rating"] = round(sr, 3)
-        store = buckets.setdefault(sr_bucket(sr), {k: [] for k in KEYS})
+
+    def _accumulate(res: tuple[str, dict[str, float]] | None) -> None:
+        nonlocal n_used
+        if res is None:
+            return
+        bucket, vals = res
+        store = buckets.setdefault(bucket, {k: [] for k in KEYS})
         for k in KEYS:
-            if k in m:
-                store[k].append(m[k])
+            if k in vals:
+                store[k].append(vals[k])
         n_used += 1
 
-    out = {"n_maps": n_used, "bucket_by": "star_rating", "buckets": {}}
+    def _tick() -> None:
+        if n_seen % progress_every == 0:
+            print(f"  scanned {n_seen}/{len(files)} files, used {n_used} std maps", flush=True)
+
+    if workers <= 1:
+        for f in files:
+            if limit is not None and n_used >= limit:
+                break
+            n_seen += 1
+            _tick()
+            _accumulate(_process_file(f))
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_process_file, f) for f in files]
+            for fut in as_completed(futs):
+                n_seen += 1
+                _tick()
+                _accumulate(fut.result())
+                if limit is not None and n_used >= limit:
+                    for f2 in futs:
+                        f2.cancel()
+                    break
+
+    out = {"n_maps": n_used, "bucket_by": "star_rating", "workers": workers, "buckets": {}}
     for b, store in buckets.items():
         out["buckets"][b] = {k: _summary(v) for k, v in store.items()}
     return out
@@ -92,13 +134,16 @@ def main():
     ap.add_argument("--songs", default=r"C:/osu!/Songs")
     ap.add_argument("--limit", type=int, default=None,
                     help="max std maps to use (default: all)")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="parallel worker processes (default: cpu_count-1; 1 = serial)")
     ap.add_argument("--out", default="artifacts/reference_stats.json")
     args = ap.parse_args()
-    stats = collect(Path(args.songs), args.limit)
+    stats = collect(Path(args.songs), args.limit, workers=args.workers)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(stats, indent=2), encoding="utf-8")
-    print(f"\nprocessed {stats['n_maps']} std maps (bucketed by star rating) -> {out}")
+    print(f"\nprocessed {stats['n_maps']} std maps (bucketed by star rating, "
+          f"{stats.get('workers', 1)} workers) -> {out}")
     for b in SR_BUCKET_ORDER:
         if b not in stats["buckets"]:
             continue
