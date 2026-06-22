@@ -6,6 +6,27 @@
 **Current release: v8** (`runs/20260619-235218-ranked-v8-b160/ckpt/best.pt`, 21-ch, base-160).
 Per-version *design* lives in [docs/versions/](../versions/README.md); this file is the run log.
 
+## v8_1 — rope + huber + 80ep ablation (TRAINED 2026-06-22; pending play-feedback)
+
+`runs/20260622-024342-ranked-v8_1-b160/ckpt/best.pt` — the v8 recipe **+ rope + huber(β0.5) + 80 ep**
+(else identical: base 160, attn-levels 3, v-pred, zero-snr, spatial-loss-weight 3, `ranked-v8`). ~14 h
+(~625 s/ep, ~2× v8). val **0.0338 huber** — **NOT comparable** to v8's 0.041 mse (different loss scale;
+judge by A/B, not the number). Full A/B: [versions/v9/v8_1-ablation.md](../versions/v9/v8_1-ablation.md).
+
+Same-seed A/B generation (12 song×SR cells, family-balanced reward): **v8_1 wins 10/12 cells.** Raw mean
+0.77 vs v8 0.82 is dragged down by **two Blue Zenith low-SR collapses**; excluding them v8_1 **0.876 vs
+0.824**.
+- **WIN — high-SR control + jumps.** Highscore sr7: v8 overshot to 7.91★ (sr_close 0.23), v8_1 nailed
+  7.16★ (0.91) with *higher* jumps. **rope did NOT compress jumps** (jump_ratio flat — the up-attn fear
+  didn't recur); **huber cut mean-regression** (tighter spacing, fewer/deliberate sliders, shape held).
+  gnorm stayed stable (the base-160 win held).
+- **REGRESSION — low-SR obedience on fast stream songs.** Blue Zenith @ sr4: v8_1 ignored the easy-diff
+  prompt and emitted a 10.5 obj/s / 30 px stream wall, overshooting to 5.7★ (v8 stayed sane/sparse). A
+  conditioning-obedience miss — the same class v9 per-song conditioning targets.
+
+**Decision:** keep **v8** as the released base; **do NOT auto-promote on metrics** — needs in-game A/B
+(strong lean toward v8_1 for the high-SR/jump regime v9 cares about). See [roadmap](roadmap.md).
+
 ## v8 (P4-B) — base-160 full train (TRAINED 2026-06-20)
 
 `runs/20260619-235218-ranked-v8-b160/ckpt/best.pt` (val **0.0412**, 21-ch, **base 160 / 101.7M**),

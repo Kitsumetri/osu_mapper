@@ -46,7 +46,7 @@ mirror) first, then follows it into this tree.
 | [versions/v7.md](versions/v7.md) | v-pred + zero-SNR + SV/curve/corner; the up-attn lesson; v7.5 (best pre-v8) |
 | [versions/v8.md](versions/v8.md) | spacing channel + spatial loss weight; base-160 unblocked (RELEASED); + the timing-model design |
 | [versions/v9.md](versions/v9.md) | **active**: alignment — postprocess fix, reward, best-of-N, per-song conditioning plan |
-| [versions/v9/](versions/v9/) | v9 detailed task reports (postprocess, data-stats, RL alignment, autopackage, general reward, RL policy-gradient, core-quality) |
+| [versions/v9/](versions/v9/) | v9 detailed task reports (postprocess, data-stats, RL alignment, autopackage, general reward, RL policy-gradient, core-quality) + [v8_1-ablation](versions/v9/v8_1-ablation.md) (rope+huber A/B) |
 
 ## DYNAMIC — status (`docs/status/` + repo root)
 
