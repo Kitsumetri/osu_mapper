@@ -129,6 +129,8 @@ def train(args):
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.enable_flash_sdp(True)
+
     # --resume continues an interrupted run *in place* (same run dir, appended
     # metrics, restored optimizer/EMA/step so the LR schedule stays continuous).
     resume_ck = None
@@ -161,11 +163,20 @@ def train(args):
     train_ds = Subset(ds, train_idx) if n_val else ds
     val_ds = Subset(val_ds_full, val_idx) if n_val else None
     print(f"dataset: {n_total} difficulties (train {len(train_ds)}, val {n_val})")
-    dl = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=args.workers,
-                    drop_last=True, pin_memory=True, persistent_workers=args.workers > 0)
-    val_dl = (DataLoader(val_ds, batch_size=args.batch, shuffle=False,
-                         num_workers=args.workers, drop_last=False, pin_memory=True)
-              if val_ds is not None else None)
+    dl = DataLoader(
+        train_ds, batch_size=args.batch, shuffle=True, num_workers=args.workers,
+        drop_last=True, pin_memory=True, persistent_workers=args.workers > 0, 
+        prefetch_factor=2
+    )
+
+    if val_ds is not None:
+        val_dl = DataLoader(
+            val_ds, batch_size=args.batch, shuffle=False,
+            num_workers=args.workers, drop_last=False, pin_memory=True, 
+            prefetch_factor=2
+        )
+    else:
+        val_ds = None
 
     model = UNet1d(N_SIGNAL_CHANNELS, AUDIO.n_mels, base=args.base, attn=args.attn,
                    ctx_dim=CONTEXT_DIM, attn_levels=args.attn_levels,
@@ -252,9 +263,11 @@ def train(args):
     # never carry the compiled `_orig_mod.` prefix (resume/generate stay compatible).
     # NOTE: on Windows this needs `triton-windows` + MSVC Build Tools (cl.exe);
     # without them torch.compile raises at the first step. Default off.
-    fwd_model = torch.compile(model) if (args.compile and device == "cuda") else model
-    if args.compile:
-        print("torch.compile enabled (first step compiles; needs triton + a C compiler)")
+    if (args.compile and device == "cuda"):
+        fwd_model = torch.compile(model, mode="reduce-overhead")
+    else:
+        fwd_model = model
+
 
     for epoch in range(start_epoch, args.epochs):
         model.train()
