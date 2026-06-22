@@ -1,7 +1,7 @@
 # v9 — policy-gradient (DDPO / DPOK) feasibility deep-dive
 
 **Status:** research (user request #3). Goes DEEPER than the existing survey
-(`docs/v9/task3_rl_alignment.md`, RESEARCH §10.12.3) on **policy-gradient
+(`task3_rl_alignment.md`, [`../v9.md`](../v9.md) §9.3) on **policy-gradient
 feasibility specifically**, then either green-lights a concrete plan or falls back
 to the existing RWR/DPO recommendation with evidence.
 

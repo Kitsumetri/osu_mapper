@@ -15,7 +15,9 @@ A beatmap is represented as a **frame-aligned multi-channel signal** at the audi
 frame rate, and a **1D conditional diffusion U-Net** (DDIM sampling, QK-norm attention) denoises
 that signal conditioned on the mel spectrogram + a difficulty vector. The signal is decoded back
 into hit objects — circles, curved sliders, spinners, hitsounds, kiai, slider-velocity — and
-written to a valid `.osu`. (The full math is in [`TECH_REPORT.md`](TECH_REPORT.md).)
+written to a valid `.osu`. (The full math is in
+[`docs/knowledge/diffusion-math.md`](docs/knowledge/diffusion-math.md) +
+[`docs/knowledge/signal-encoding.md`](docs/knowledge/signal-encoding.md).)
 
 ```
 audio.mp3 ──► log-mel (64×T) ──┐
@@ -24,8 +26,9 @@ audio.mp3 ──► log-mel (64×T) ──┐
 ```
 
 The current model (**v8**, base-160) generates rhythm, jumps, streams, curved + reverse sliders,
-red-corner sliders, slider-velocity sections, kiai and hitsounds. See [`RESULTS.md`](RESULTS.md)
-for the quality history.
+red-corner sliders, slider-velocity sections, kiai and hitsounds. See
+[`docs/status/results.md`](docs/status/results.md) for the quality history, and
+[`docs/INDEX.md`](docs/INDEX.md) for the full documentation map.
 
 ## Install
 
