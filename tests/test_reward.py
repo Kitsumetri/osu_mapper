@@ -89,19 +89,27 @@ def test_family_balance_slider_not_masked_by_spacing():
     assert q_broken < 0.75
 
 
-def test_families_contribute_equally_regardless_of_metric_count():
-    # spacing_aim has 3 metrics, slider_shape effectively 2 here; their total
-    # effective share of quality must be ~equal (both full-weight families).
+def test_family_share_tracks_family_weight():
+    # A family's share of quality depends ONLY on its family weight, never on how
+    # many metrics it contains (the anti jump-bias core). spacing_aim and
+    # slider_shape carry different metric counts but the same family weight, so
+    # their shares stay equal. After the v9 round-3 reweight the pattern families
+    # are no longer all-equal (rhythm >> flow), but each family's share must still
+    # be exactly proportional to its family weight.
+    fam_w = {f: w for f, (w, _) in FAMILIES.items()}
+    tot_w = sum(fam_w.values())
     fam_share = {f: 0.0 for f in FAMILIES}
     fam_of = {m: f for f, (_, ms) in FAMILIES.items() for m in ms}
     tot = sum(METRIC_WEIGHTS.values())
     for m, w in METRIC_WEIGHTS.items():
         fam_share[fam_of[m]] += w / tot
-    # the four pattern families share equal weight; accents deliberately lower
+    for f in FAMILIES:
+        assert abs(fam_share[f] - fam_w[f] / tot_w) < 1e-6
+    # count-independence: equal family weight -> equal share despite metric count
     assert abs(fam_share["spacing_aim"] - fam_share["slider_shape"]) < 1e-6
-    assert abs(fam_share["spacing_aim"] - fam_share["flow"]) < 1e-6
-    assert abs(fam_share["spacing_aim"] - fam_share["rhythm"]) < 1e-6
-    assert fam_share["accents"] < fam_share["spacing_aim"]
+    # the reweight's intent: rhythm is the heaviest, flow the lightest pattern family
+    assert fam_share["rhythm"] > fam_share["spacing_aim"] > fam_share["flow"]
+    assert fam_share["accents"] < fam_share["flow"]
 
 
 def test_reward_hacking_overshoot_not_better_than_ranked():

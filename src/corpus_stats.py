@@ -29,6 +29,10 @@ KEYS = ["star_rating", "density_per_s", "circle_ratio", "slider_ratio",
         "spinner_ratio", "bezier_slider_ratio", "new_combo_ratio",
         "mean_spacing_px", "std_spacing_px", "stream_ratio", "jump_ratio",
         "on_quarter_grid_ratio", "mean_turn_angle_deg", "reversal_ratio",
+        # v9 flow/slider distributional traits (reward.py FAMILIES.flow /
+        # .slider_shape) — registered here so a future gold-stats refresh
+        # produces p10/p90 bands for them; reward.py ignores them until then.
+        "stream_spacing_cv", "slider_anchor_spread_px",
         "sv_changes_per_min", "kiai_ratio", "hitsound_ratio", "clap_ratio",
         "whistle_ratio", "finish_ratio"]
 

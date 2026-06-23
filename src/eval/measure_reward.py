@@ -14,12 +14,17 @@ mis-calibrated metric (note the known ``on_quarter_grid_ratio`` single-BPM cavea
   uv run python -m src.eval.measure_reward --songs "C:/osu!/Songs" \
       --db "C:/osu!/osu!.db" --ref-stats artifacts/reference_stats.json --limit 500
   uv run python -m src.eval.measure_reward --limit 400 --json out.json   # machine-readable
+  # brute-force EVERY gold map, parallel, dump the worst-50 tail:
+  uv run python -m src.eval.measure_reward --all --workers 10 \
+      --json artifacts/reward_audit.json --bottom-n 50
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 from ..difficulty import SR_BUCKET_ORDER, star_rating
@@ -51,70 +56,142 @@ def _summary(vs: list[float]) -> dict:
 
 def sample_gold_paths(songs_dir: Path, db_path: Path | None, limit: int,
                       seed: int = 0) -> list[Path]:
-    """Up to ``limit`` real .osu paths, preferring osu!.db-confirmed ranked maps.
+    """Real .osu paths, preferring osu!.db-confirmed ranked maps.
 
+    ``limit <= 0`` means **no cap** — return EVERY candidate (the ``--all`` /
+    ``--limit 0`` brute-force path). Otherwise return up to ``limit`` (shuffled).
     Falls back to a random sample of every .osu in the library when osu!.db is
     missing/unreadable (callers should note the sample is then "real" not "gold").
     """
     rng = random.Random(seed)
+    cap = None if limit <= 0 else limit
     if db_path and Path(db_path).exists():
         try:
             from ..data.osu_db import ranked_osu_paths
             paths = list(ranked_osu_paths(songs_dir, db_path))
             if paths:
                 rng.shuffle(paths)
-                return paths[:limit]
+                return paths if cap is None else paths[:cap]
         except Exception as e:  # pragma: no cover - depends on a real osu!.db
             print(f"  [warn] osu!.db parse failed ({e}); falling back to random real maps")
     paths = list(Path(songs_dir).rglob("*.osu"))
     rng.shuffle(paths)
-    return paths[:limit]
+    return paths if cap is None else paths[:cap]
+
+
+def _worst_family(family_breakdown: dict[str, float]) -> str | None:
+    """The family with the lowest band-membership score (the map's weakest axis)."""
+    if not family_breakdown:
+        return None
+    return min(family_breakdown, key=family_breakdown.get)
+
+
+def _score_one(args: tuple[str, dict, float]) -> dict | None:
+    """Score ONE gold map at its OWN rosu SR (so sr_closeness ~1.0, quality is the
+    thing under test). Module-level + picklable so it runs in a worker process
+    (Windows ``spawn``). Returns a compact dict, or ``None`` to skip (not std /
+    unparseable / no comparable metrics). The per-file work (parse + rosu SR +
+    metrics + reward) is independent across files — the unit the pool distributes.
+    """
+    path, ref_stats, sr_weight = args
+    sr = star_rating(path)
+    if sr is None:                         # not std / unparseable -> skip
+        return None
+    try:
+        bd = reward_from_osu(path, ref_stats, target_sr=sr, sr_weight=sr_weight)
+    except Exception:
+        return None
+    if not bd.per_metric:                  # no bucket / no comparable metrics
+        return None
+    return {
+        "path": str(path),
+        "reward": bd.reward,
+        "quality": bd.quality,
+        "sr_closeness": bd.sr_closeness,
+        "bucket": bd.bucket,
+        "family_breakdown": bd.family_breakdown,
+        "per_metric": bd.per_metric,
+        "playability": bd.playability,
+        "defects": bd.defects,
+        "worst_family": _worst_family(bd.family_breakdown),
+    }
 
 
 def measure(songs_dir: Path, db_path: Path | None, ref_stats: dict, limit: int,
-            seed: int = 0, sr_weight: float = 0.35) -> dict:
+            seed: int = 0, sr_weight: float = 0.35, workers: int | None = None,
+            bottom_n: int = 50, progress_every: int = 200) -> dict:
     """Score a gold sample at each map's own SR; aggregate overall / per-bucket /
-    per-family. Scoring at own SR makes ``sr_closeness`` ~1.0, isolating quality.
+    per-family, and collect the BOTTOM-N lowest-reward maps. ``limit <= 0`` scores
+    EVERY gold map (the brute-force ``--all`` path). ``workers`` parallel processes
+    (default ``cpu_count-1``; ``<=1`` forces serial) — the rosu SR call dominates
+    and parallelises cleanly, exactly like ``corpus_stats.collect``. Aggregation
+    is order-independent (``_summary`` sorts; the bottom-N is sorted at the end),
+    so the result is identical regardless of worker count or completion order.
     """
     paths = sample_gold_paths(songs_dir, db_path, limit, seed)
+    if workers is None:
+        workers = max(1, (os.cpu_count() or 2) - 1)
+
     overall = {"reward": [], "quality": [], "sr_closeness": []}
     per_bucket: dict[str, dict[str, list[float]]] = {}
     per_family: dict[str, list[float]] = {f: [] for f in FAMILIES}
     per_metric: dict[str, list[float]] = {}
+    playabilities: list[float] = []
+    scored_rows: list[dict] = []           # compact per-map rows (for the tail)
     n_scored = n_seen = 0
 
-    for p in paths:
-        n_seen += 1
-        sr = star_rating(p)
-        if sr is None:                     # not std / unparseable -> skip
-            continue
-        try:
-            bd = reward_from_osu(p, ref_stats, target_sr=sr, sr_weight=sr_weight)
-        except Exception:
-            continue
-        if not bd.per_metric:              # no bucket / no comparable metrics
-            continue
+    def _accumulate(res: dict | None) -> None:
+        nonlocal n_scored
+        if res is None:
+            return
         n_scored += 1
-        overall["reward"].append(bd.reward)
-        overall["quality"].append(bd.quality)
-        overall["sr_closeness"].append(bd.sr_closeness)
-        b = bd.bucket
-        pb = per_bucket.setdefault(b, {"reward": [], "quality": []})
-        pb["reward"].append(bd.reward)
-        pb["quality"].append(bd.quality)
-        for fam, v in bd.family_breakdown.items():
+        overall["reward"].append(res["reward"])
+        overall["quality"].append(res["quality"])
+        overall["sr_closeness"].append(res["sr_closeness"])
+        pb = per_bucket.setdefault(res["bucket"], {"reward": [], "quality": []})
+        pb["reward"].append(res["reward"])
+        pb["quality"].append(res["quality"])
+        for fam, v in res["family_breakdown"].items():
             per_family[fam].append(v)
-        for k, v in bd.per_metric.items():
+        for k, v in res["per_metric"].items():
             per_metric.setdefault(k, []).append(v)
-        if n_scored % 100 == 0:
-            print(f"  scored {n_scored} (seen {n_seen})", flush=True)
+        playabilities.append(res["playability"])
+        scored_rows.append({
+            "path": res["path"], "reward": res["reward"],
+            "quality": res["quality"], "bucket": res["bucket"],
+            "worst_family": res["worst_family"], "playability": res["playability"],
+            "defects": res["defects"],
+        })
+
+    def _tick() -> None:
+        if n_scored and n_scored % progress_every == 0:
+            print(f"  scored {n_scored} (seen {n_seen}/{len(paths)})", flush=True)
+
+    jobs = ((p, ref_stats, sr_weight) for p in paths)
+    if workers <= 1:
+        for job in jobs:
+            n_seen += 1
+            _accumulate(_score_one(job))
+            _tick()
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_score_one, job) for job in jobs]
+            for fut in as_completed(futs):
+                n_seen += 1
+                _accumulate(fut.result())
+                _tick()
+
+    # the lowest-reward tail (path + reward + worst family) — the audit target.
+    bottom = sorted(scored_rows, key=lambda r: r["reward"])[:max(0, bottom_n)]
 
     return {
         "n_seen": n_seen,
         "n_scored": n_scored,
         "sr_weight": sr_weight,
+        "workers": workers,
         "ref_stats_n": ref_stats.get("n_maps"),
         "overall": {k: _summary(v) for k, v in overall.items()},
+        "playability": _summary(playabilities),
         "per_bucket": {
             b: {"reward": _summary(per_bucket[b]["reward"]),
                 "quality": _summary(per_bucket[b]["quality"])}
@@ -122,18 +199,24 @@ def measure(songs_dir: Path, db_path: Path | None, ref_stats: dict, limit: int,
         },
         "per_family": {f: _summary(per_family[f]) for f in FAMILIES if per_family[f]},
         "per_metric": {k: round(sum(v) / len(v), 3) for k, v in sorted(per_metric.items())},
+        "bottom_n": bottom,
     }
 
 
 def _print_report(rep: dict) -> None:
     o = rep["overall"]
     print(f"\n=== gold-map reward measurement (n_scored={rep['n_scored']}, "
-          f"ref n={rep['ref_stats_n']}, sr_weight={rep['sr_weight']}) ===")
+          f"ref n={rep['ref_stats_n']}, sr_weight={rep['sr_weight']}, "
+          f"workers={rep.get('workers')}) ===")
     print(f"  reward       mean {o['reward']['mean']:.4f}  median {o['reward']['median']:.4f}"
           f"  p10 {o['reward']['p10']:.4f}  p90 {o['reward']['p90']:.4f}")
     print(f"  quality      mean {o['quality']['mean']:.4f}  median {o['quality']['median']:.4f}"
           f"  p10 {o['quality']['p10']:.4f}  p90 {o['quality']['p90']:.4f}")
     print(f"  sr_closeness mean {o['sr_closeness']['mean']:.4f}  (own-SR target -> ~1.0)")
+    pl = rep.get("playability", {})
+    if pl.get("n"):
+        print(f"  playability  mean {pl['mean']:.4f}  median {pl['median']:.4f}"
+              f"  min {pl['min']:.4f}  (1.0 = no objective defects)")
     print("\n  per SR bucket (reward mean / quality mean / n):")
     for b, s in rep["per_bucket"].items():
         print(f"    {b:8} R {s['reward']['mean']:.4f}  Q {s['quality']['mean']:.4f}"
@@ -144,6 +227,14 @@ def _print_report(rep: dict) -> None:
     print("\n  per metric (mean band-membership):")
     for k, v in rep["per_metric"].items():
         print(f"    {k:24} {v:.3f}")
+    bottom = rep.get("bottom_n", [])
+    if bottom:
+        print(f"\n  lowest-reward tail (worst {len(bottom)}; audit these):")
+        for r in bottom[:25]:
+            print(f"    R {r['reward']:.4f}  [{r['bucket']:8}] worst={str(r['worst_family']):12} "
+                  f"play={r['playability']:.3f}  {Path(r['path']).name}")
+        if len(bottom) > 25:
+            print(f"    ... (+{len(bottom) - 25} more in the --json output)")
 
 
 def main() -> int:
@@ -153,7 +244,14 @@ def main() -> int:
     ap.add_argument("--db", default=r"C:/osu!/osu!.db",
                     help="osu!.db for ranked-status filtering (omit -> random real maps)")
     ap.add_argument("--ref-stats", default="artifacts/reference_stats.json")
-    ap.add_argument("--limit", type=int, default=400, help="max gold maps to score")
+    ap.add_argument("--limit", type=int, default=400,
+                    help="max gold maps to score (0 = ALL, same as --all)")
+    ap.add_argument("--all", action="store_true",
+                    help="score EVERY gold map with no cap (== --limit 0)")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="parallel worker processes (default cpu_count-1; 1 = serial)")
+    ap.add_argument("--bottom-n", type=int, default=50,
+                    help="dump the N lowest-reward maps (path + reward + worst family)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--sr-weight", type=float, default=0.35)
     ap.add_argument("--json", default=None, help="also write the full report JSON here")
@@ -167,8 +265,10 @@ def main() -> int:
     if db is None:
         print(f"  [note] no osu!.db at {args.db}; sampling RANDOM real maps (not ranked-filtered)")
 
-    rep = measure(Path(args.songs), db, ref_stats, args.limit,
-                  seed=args.seed, sr_weight=args.sr_weight)
+    limit = 0 if args.all else args.limit
+    rep = measure(Path(args.songs), db, ref_stats, limit,
+                  seed=args.seed, sr_weight=args.sr_weight,
+                  workers=args.workers, bottom_n=args.bottom_n)
     _print_report(rep)
     if args.json:
         Path(args.json).write_text(json.dumps(rep, indent=2), encoding="utf-8")

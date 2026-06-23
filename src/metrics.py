@@ -24,6 +24,22 @@ JUMP_MIN_SPACING = 200.0
 # bezier with near-collinear anchors looks straight): real ranked ~0.38, v6 ~0.13.
 CURVE_SAGITTA_PX = 10.0
 
+# osu! stack leniency: two objects whose gap and (head) distance are below the
+# stack threshold are *stacked* by the editor (drawn with a small per-object
+# offset). The stack radius is ~3 px (objects within this are visually "the same
+# spot"). We use it to detect when consecutive notes sit on top of each other.
+STACK_RADIUS_PX = 3.0
+
+
+def circle_radius_px(cs: float) -> float:
+    """osu!standard hit-circle radius in playfield px from Circle Size.
+
+    Official formula: r = 54.4 - 4.48 * CS  (CS 4 -> 36.5 px, CS 5 -> 32.0 px).
+    The follow-circle / hittable region of a slider is ~2.4 r, but for "do two
+    objects occupy the same spot" we use the circle radius itself.
+    """
+    return 54.4 - 4.48 * cs
+
 
 def _dist(a, b) -> float:
     return math.hypot(a.x - b.x, a.y - b.y)
@@ -46,6 +62,49 @@ def slider_sagitta(o) -> float:
     return max(abs((px - ax) * dy - (py - ay) * dx) / chord for px, py in poly)
 
 
+def slider_anchor_min_gap(o) -> float:
+    """Smallest distance (px) between consecutive points of a slider's control
+    polygon (head + anchors). Small values mean anchors are clustered on top of
+    each other — a *degenerate* control polygon that decodes to a kink/spike or a
+    zero-length segment. 0.0 if the slider has no anchors. ``inf`` sentinel folded
+    to a large number so callers can compare cleanly.
+    """
+    poly = [(o.x, o.y), *(o.curve_points or [])]
+    if len(poly) < 2:
+        return float("inf")
+    return min(math.hypot(poly[i + 1][0] - poly[i][0],
+                          poly[i + 1][1] - poly[i][1])
+               for i in range(len(poly) - 1))
+
+
+def slider_polyline(o, n: int = 12) -> list[tuple[float, float]]:
+    """Coarse polyline approximation of a slider body, head->tail.
+
+    Not the exact bezier/perfect-circle path osu! renders — for *overlap* and
+    *proximity* tests a piecewise-linear walk over (head, anchors..., last anchor)
+    is enough and is shape-agnostic (works for L/B/P/C). Resamples to ``n`` evenly
+    spaced points along that control polygon so two sliders are compared on
+    comparable resolutions regardless of anchor count.
+    """
+    poly = [(float(o.x), float(o.y)), *((float(a), float(b)) for a, b in (o.curve_points or []))]
+    if len(poly) < 2:
+        return poly
+    seg_len = [math.hypot(poly[i + 1][0] - poly[i][0], poly[i + 1][1] - poly[i][1])
+               for i in range(len(poly) - 1)]
+    total = sum(seg_len) or 1.0
+    out, target, acc, j = [], 0.0, 0.0, 0
+    for k in range(n + 1):
+        target = total * k / n
+        while j < len(seg_len) - 1 and acc + seg_len[j] < target:
+            acc += seg_len[j]
+            j += 1
+        t = (target - acc) / (seg_len[j] or 1.0)
+        t = max(0.0, min(1.0, t))
+        out.append((poly[j][0] + t * (poly[j + 1][0] - poly[j][0]),
+                    poly[j][1] + t * (poly[j + 1][1] - poly[j][1])))
+    return out
+
+
 def compute_metrics(bm: Beatmap) -> dict:
     objs = sorted(bm.hit_objects, key=lambda o: o.time)
     n = len(objs)
@@ -57,6 +116,7 @@ def compute_metrics(bm: Beatmap) -> dict:
 
     gaps_ms, spacings, beats, ongrid = [], [], [], 0
     streams = jumps = 0
+    stream_spacings = []   # circle->circle spacing of pairs that ARE in a stream
     for a, b in zip(objs, objs[1:]):
         dt = b.time - a.time
         if dt <= 0:
@@ -73,6 +133,7 @@ def compute_metrics(bm: Beatmap) -> dict:
                 ongrid += 1
             if nb <= 0.30 and d <= STREAM_MAX_SPACING:   # ~1/4 beat, tight
                 streams += 1
+                stream_spacings.append(d)
         if d >= JUMP_MIN_SPACING:
             jumps += 1
 
@@ -112,6 +173,23 @@ def compute_metrics(bm: Beatmap) -> dict:
         mu = _mean(x)
         return math.sqrt(sum((v - mu) ** 2 for v in x) / len(x))
 
+    # --- new distributional flow / slider-shape traits ----------------------
+    # (i) stream-spacing regularity: coefficient of variation (std/mean) of the
+    #     circle->circle spacing of pairs that form a stream. A clean stream has
+    #     near-constant spacing (CV ~ 0); a messy/varying stream has a high CV.
+    #     This is a *distributional* trait (style varies, so it needs a gold band),
+    #     so it goes in compute_metrics + corpus_stats, NOT the defect penalty.
+    mu_ss = _mean(stream_spacings)
+    stream_spacing_cv = round(_std(stream_spacings) / mu_ss, 3) if mu_ss > 1e-6 else 0.0
+
+    # (ii) slider anchor spread: mean over sliders of the smallest gap between
+    #     consecutive control points (px), capped so a few huge sliders don't
+    #     dominate. Low = anchors bunched (kinky/degenerate control polygons);
+    #     real ranked sliders place anchors with sane spacing. Distributional.
+    sliders = [o for o in objs if o.is_slider and (o.curve_points or [])]
+    anchor_gaps = [min(slider_anchor_min_gap(o), 200.0) for o in sliders]
+    slider_anchor_spread_px = round(_mean(anchor_gaps), 1) if anchor_gaps else 0.0
+
     return {
         "n_objects": n,
         "duration_s": round(duration_s, 1),
@@ -136,7 +214,11 @@ def compute_metrics(bm: Beatmap) -> dict:
         "on_quarter_grid_ratio": round(ongrid / m, 3) if m else 0.0,
         "mean_turn_angle_deg": round(_mean(turn_angles), 1),
         "reversal_ratio": round(reversals / len(turn_angles), 3) if turn_angles else 0.0,
+        # NEW distributional flow trait: stream-spacing regularity (CV).
+        "stream_spacing_cv": stream_spacing_cv,
         "sv_changes_per_min": round(sv_changes / (duration_s / 60), 2) if duration_s else 0.0,
+        # NEW distributional slider-shape trait: mean min-anchor-gap (px).
+        "slider_anchor_spread_px": slider_anchor_spread_px,
         # v3 outputs: kiai coverage and hitsound usage
         "kiai_ratio": round(
             sum(e - s for s, e in bm.kiai_spans()) / 1000 / duration_s, 3) if duration_s else 0.0,
