@@ -34,6 +34,7 @@ from .config import (
     N_SIGNAL_CHANNELS,
 )
 from .data.dataset import OsuSignalDataset
+from .data.val_split import resolve_split
 from .model.diffusion import GaussianDiffusion
 from .model.unet import UNet1d
 
@@ -150,16 +151,38 @@ def train(args):
     sys.stderr = _Tee(sys.stderr, log_fh)
     print(f"device={device}  run={run_dir}  ({datetime.now():%Y-%m-%d %H:%M:%S})")
 
-    # train/val split: hold out a deterministic slice for validation. The val set
-    # uses a non-augmented dataset view so the metric is stable across epochs.
+    # train/val split: hold out whole SONGS (not difficulties) so validation is a
+    # real held-out signal. The mel is shared per audio across a song's difficulties
+    # (dataset.py loads mels/<audio_id>.npy), and the SAME song is often mapped by
+    # different people with slightly different audio files (different audio_id), so a
+    # plain randperm over difficulties leaks a song's audio into both sides and makes
+    # val_loss optimistically low. resolve_split groups by a normalised song-identity
+    # key unioned with shared audio_id and holds out whole groups; it prefers a frozen
+    # static set (data/<tag>/val_split.json) so val is identical across configs/runs,
+    # else falls back to a grouped split with a fixed seed. The val set uses a
+    # non-augmented dataset view so the metric is stable across epochs.
     ds = OsuSignalDataset(args.data, crop_frames=args.crop, min_objects=args.min_objects,
                           augment=args.augment)
     val_ds_full = OsuSignalDataset(args.data, crop_frames=args.crop,
                                    min_objects=args.min_objects, augment=False)
     n_total = len(ds)
-    perm = torch.randperm(n_total, generator=torch.Generator().manual_seed(1234)).tolist()
-    n_val = int(n_total * args.val_frac) if args.val_frac > 0 else 0
-    val_idx, train_idx = perm[:n_val], perm[n_val:]
+    # build the split from the dataset's *filtered* items so the item_ids match the
+    # Subset indices below (min_objects filtering already applied identically).
+    idx_of = {it["item_id"]: i for i, it in enumerate(ds.items)}
+    if args.val_frac > 0:
+        train_ids, val_ids, used_static = resolve_split(
+            args.data, val_frac=args.val_frac, seed=args.val_seed)
+        # restrict to ids the dataset actually has (manifest may include items the
+        # min_objects filter dropped, or the static set may predate a reprocess).
+        val_idx = [idx_of[i] for i in val_ids if i in idx_of]
+        val_set = set(val_idx)
+        train_idx = [i for i in range(n_total) if i not in val_set]
+        n_val = len(val_idx)
+        val_items = [ds.items[i] for i in val_idx]   # held-out manifest rows (reward probe)
+        src = "static val_split.json" if used_static else f"grouped (seed {args.val_seed})"
+        print(f"val split: {src}, holding out whole songs")
+    else:
+        train_idx, val_idx, n_val, val_items = list(range(n_total)), [], 0, []
     train_ds = Subset(ds, train_idx) if n_val else ds
     val_ds = Subset(val_ds_full, val_idx) if n_val else None
     print(f"dataset: {n_total} difficulties (train {len(train_ds)}, val {n_val})")
@@ -226,11 +249,18 @@ def train(args):
     if resume_ck is None:
         (run_dir / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
     # append on resume so the existing metrics history is preserved
-    new_metrics = resume_ck is None or not (run_dir / "metrics.csv").exists()
-    metrics = open(run_dir / "metrics.csv", "a" if not new_metrics else "w", newline="")  # noqa: SIM115
+    metrics_path = run_dir / "metrics.csv"
+    new_metrics = resume_ck is None or not metrics_path.exists()
+    # the val_reward column is new; when resuming a run whose metrics.csv predates it,
+    # keep the OLD 5-column layout so the appended rows stay aligned with the header.
+    has_reward_col = True
+    if not new_metrics:
+        first = metrics_path.read_text(encoding="utf-8").splitlines()[:1]
+        has_reward_col = bool(first) and "val_reward" in first[0]
+    metrics = open(metrics_path, "a" if not new_metrics else "w", newline="")  # noqa: SIM115
     writer = csv.writer(metrics)
     if new_metrics:
-        writer.writerow(["epoch", "avg_loss", "val_loss", "lr", "sec"])
+        writer.writerow(["epoch", "avg_loss", "val_loss", "val_reward", "lr", "sec"])
 
     @torch.no_grad()
     def _validate():
@@ -257,6 +287,68 @@ def train(args):
             nb += b
         model.train()
         return tot / max(1, nb)
+
+    # --- reward-in-val: a cheap, gated "does it play like ranked?" probe ----------
+    # Sample a map on a SMALL fixed subset of held-out SONGS, decode in-memory, and
+    # average the ranked-map reward (src/eval/reward.py + the corpus reference stats).
+    # This catches what val_loss can't: val_loss is the denoising MSE on noised real
+    # signals (always low once the model fits), whereas the reward scores a *fully
+    # sampled* map against the real per-SR-bucket distribution. Reuses generate() and
+    # the reward end to end (no reimplementation). Gated by --val-reward-every epochs
+    # and capped at --val-reward-songs so it is never a heavy run. Imports are lazy so
+    # a missing rosu/ref-stats (or another module mid-edit) only disables this probe,
+    # never training itself.
+    reward_probe = None
+    if args.val_reward_every > 0 and val_items and Path(args.ref_stats).exists():
+        # one difficulty per held-out audio (the mel is what conditions sampling),
+        # deterministic, capped — a few songs, not the whole val set.
+        seen, probe_items = set(), []
+        for it in val_items:
+            if it["audio_id"] in seen:
+                continue
+            seen.add(it["audio_id"])
+            probe_items.append(it)
+            if len(probe_items) >= args.val_reward_songs:
+                break
+
+        def reward_probe(probe_items=probe_items):     # noqa: F811
+            import numpy as np
+
+            from .eval.reward import reward_from_osu
+            from .generate import LoadedModel, PreparedAudio, generate
+            from .parsing.beatmap import TimingPoint
+
+            ref_stats = json.loads(Path(args.ref_stats).read_text(encoding="utf-8"))
+            mel_model = (ema.shadow if ema else model)  # sample from EMA (what we ship)
+            loaded = LoadedModel(mel_model, diff, CONTEXT_DIM, device)
+            mel_model.eval()
+            tmp = run_dir / "_val_reward"
+            tmp.mkdir(exist_ok=True)
+            rewards = []
+            for it in probe_items:
+                mel = np.load(Path(args.data) / "mels" / f"{it['audio_id']}.npy"
+                              ).astype(np.float32)
+                t_len = mel.shape[1]
+                pad = (-t_len) % 16
+                mel_p = np.pad(mel, ((0, 0), (0, pad)), constant_values=-1.0)
+                cond = torch.from_numpy(mel_p[None]).to(device)
+                bpm = it.get("bpm") or 0.0
+                bl = 60000.0 / bpm if bpm > 0 else 500.0     # beat_length (ms)
+                tp = TimingPoint(0, bl, 4, True)
+                prepared = PreparedAudio(cond, t_len, mel_p.shape[1], tp)
+                sr = float(it.get("star_rating") or 5.0)
+                out = tmp / f"{it['item_id']}.osu"
+                try:
+                    generate("song.mp3", out_path=str(out), sr=sr, steps=args.val_reward_steps,
+                             loaded=loaded, prepared=prepared, amp=device == "cuda")
+                    rewards.append(reward_from_osu(out, ref_stats, target_sr=sr).reward)
+                except Exception as e:               # a single bad sample never kills training
+                    print(f"  [val-reward] skipped {it['item_id']}: {e}")
+            model.train()
+            return sum(rewards) / len(rewards) if rewards else None
+    elif args.val_reward_every > 0 and not Path(args.ref_stats).exists():
+        print(f"val-reward disabled: ref stats '{args.ref_stats}' missing "
+              f"(build with src.corpus_stats)")
 
     # torch.compile wraps the model for the training forward only; EMA, optimizer,
     # validation and checkpoints all use the *raw* `model`, so saved state_dicts
@@ -311,12 +403,22 @@ def train(args):
                           f"lr {lr:.2e} gnorm {float(gnorm):.2f}")
         avg = running / max(1, len(dl))
         val = _validate()
+        # cheap, gated reward probe: every N epochs sample maps on a few held-out
+        # songs and average the ranked-map reward (None when off / between checks).
+        val_reward = None
+        if reward_probe is not None and (epoch + 1) % args.val_reward_every == 0:
+            val_reward = reward_probe()
         dt = time.time() - t0
         lr_now = opt.param_groups[0]["lr"]
         val_str = f"{val:.4f}" if val is not None else "n/a"
-        print(f"epoch {epoch} avg_loss {avg:.4f} val_loss {val_str} lr {lr_now:.2e} ({dt:.1f}s)")
-        writer.writerow([epoch, f"{avg:.5f}", f"{val:.5f}" if val is not None else "",
-                         f"{lr_now:.3e}", f"{dt:.1f}"])
+        rew_str = f" val_reward {val_reward:.4f}" if val_reward is not None else ""
+        print(f"epoch {epoch} avg_loss {avg:.4f} val_loss {val_str}{rew_str} "
+              f"lr {lr_now:.2e} ({dt:.1f}s)")
+        row = [epoch, f"{avg:.5f}", f"{val:.5f}" if val is not None else ""]
+        if has_reward_col:        # old (resumed) metrics.csv may predate this column
+            row.append(f"{val_reward:.5f}" if val_reward is not None else "")
+        row += [f"{lr_now:.3e}", f"{dt:.1f}"]
+        writer.writerow(row)
         metrics.flush()
 
         # select the best checkpoint by val loss when available, else train loss
@@ -391,8 +493,24 @@ def main():
     ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--min-objects", type=int, default=50)
-    ap.add_argument("--val-frac", type=float, default=0.02,
-                    help="fraction of difficulties held out for validation (0 disables)")
+    ap.add_argument("--val-frac", type=float, default=0.10,
+                    help="fraction of SONGS held out for validation (0 disables). The split "
+                         "is group-aware (whole songs, by normalised title[+artist] + shared "
+                         "audio_id) so no audio leaks into val; a frozen data/<tag>/"
+                         "val_split.json overrides this if present.")
+    ap.add_argument("--val-seed", type=int, default=1234,
+                    help="seed for the grouped val split (ignored if a static "
+                         "val_split.json is present)")
+    ap.add_argument("--val-reward-every", type=int, default=0,
+                    help="every N epochs, sample maps on a few held-out songs and log the "
+                         "mean ranked-map reward (0=off). Needs --ref-stats + rosu.")
+    ap.add_argument("--val-reward-songs", type=int, default=4,
+                    help="number of held-out songs sampled for the reward probe (keep small)")
+    ap.add_argument("--val-reward-steps", type=int, default=50,
+                    help="DDIM steps for the reward-probe samples (fewer = cheaper)")
+    ap.add_argument("--ref-stats", default="artifacts/reference_stats.json",
+                    help="corpus reference_stats.json for the val-reward probe "
+                         "(src.corpus_stats output)")
     ap.add_argument("--log-every", type=int, default=50)
     ap.add_argument("--save-every", type=int, default=25)
     ap.add_argument("--resume", default=None,
