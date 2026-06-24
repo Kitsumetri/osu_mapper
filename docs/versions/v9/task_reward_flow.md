@@ -19,7 +19,12 @@ maps still score high — synthetic tests cannot calibrate against real maps.**
 > `slider_anchor_spread_px`), and the penalty is now **velocity-only** with the
 > ceiling recalibrated `4.0 → 10.0 px/ms`. `measure_reward` gained a **`--gold`**
 > filter (calibrate on the single-BPM training subset) and per-defect reporting.
-> Sections B & C below describe this **final** state; the reweight (A) is unchanged.
+> A follow-up `--gold` audit (`n=38140`) confirmed it: **reward 0.97, playability
+> 1.0, `unhittable_jump` rate 0.0**. The remaining low-reward tail then traced to
+> the grid metric: **`on_quarter_grid_ratio` was 1/4-only**, so correctly-snapped
+> 1/8 bursts / 1/6 triplets read as off-grid (and rhythm is 40% of the reward), so
+> it was **broadened to the {1/4, 1/8, 1/6} grid** (the postprocess divisor set).
+> Sections A–C below describe this **final** state.
 
 ---
 
@@ -42,6 +47,16 @@ Within `rhythm` (within-family weights): `on_quarter_grid_ratio` **2.0 → 3.0**
 metric weight in the whole reward, and tanking grid-snap costs more `quality` than
 tanking any flow metric (asserted in `test_reward_flow.py`).
 
+**Grid metric broadened (3a-fix):** `on_quarter_grid_ratio` originally credited only
+gaps near a **1/4** subdivision (`|nb·4 − round| ≤ 0.12`), so a correctly-snapped
+1/8 burst or 1/6 triplet read as *off-grid*. With this metric now 40% of the reward,
+that over-penalised rhythmically-complex ranked maps (the `--gold` audit's
+`rhythm`-worst tail). It now credits the **{1/4, 1/8, 1/6}** grid — within 0.03 beats
+of a multiple of 1/8 *or* 1/6 (1/4 ⊂ 1/8; this is the same divisor set
+`postprocess.snap_to_grid` uses). The metric's values rise, so the change **requires
+a `corpus_stats` refresh** to recalibrate its gold band (done together with the new
+band metrics' refresh). The name is kept for continuity.
+
 Family shares of `quality` (family weight / total 5.0): rhythm **40%**,
 spacing_aim 20%, slider_shape 20%, flow **12%**, accents 8%. (Within-family
 weights only set a metric's relative importance *inside* its family — the share is
@@ -53,12 +68,13 @@ no overshoot gradient. Reweighting only changes the *outer* family averages.
 
 ### Single-BPM caveat (carried, amplified by the reweight)
 
-`on_quarter_grid_ratio` measures gap-to-nearest-1/4 against a **single** BPM
-(`bm.bpm` = first uninherited timing point). On a **variable-BPM** ranked map the
-later sections' gaps don't line up with that one BPM, so the metric under-counts →
-under-measures those maps. Up-weighting it (now the dominant reward metric)
-**amplifies the bias against variable-BPM maps in gold-calibration / real-map
-validation** — expect such maps in the `measure_reward --all` low-reward tail.
+`on_quarter_grid_ratio` measures gap-to-nearest {1/4, 1/8, 1/6} subdivision against
+a **single** BPM (`bm.bpm` = first uninherited timing point). On a **variable-BPM**
+ranked map the later sections' gaps don't line up with that one BPM, so the metric
+under-counts → under-measures those maps. Up-weighting it (now the dominant reward
+metric) **amplifies the bias against variable-BPM maps in gold-calibration /
+real-map validation** — but `measure_reward --gold` filters them out (single-BPM
+only), which is why the `--gold` audit lifted this metric to ~0.98.
 **It is SAFE for GENERATED maps**, which are single-BPM by construction (one
 uninherited line), so the metric is exact for everything the model produces and
 everything best-of-N / RL ranks. The audit tail is the place to confirm the

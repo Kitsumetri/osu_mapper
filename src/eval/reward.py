@@ -55,16 +55,18 @@ from ..metrics import compute_metrics
 # v9 rhythm>>flow reweight (task_reward_flow.md): WRONG RHYTHM = UNPLAYABLE,
 # wrong flow = merely stylistic. So rhythm is the heaviest family (2.0) and flow
 # the lightest pattern family (0.6); within rhythm, grid-snap is up-weighted
-# (2.0 -> 3.0) so 1/4-snap dominates the rhythm score. (CAVEAT: on_quarter_grid
-# assumes a single BPM and under-measures variable-BPM ranked maps; up-weighting
-# it amplifies that bias in GOLD calibration / real-map validation, but it is
-# SAFE for GENERATED maps which are single-BPM by construction — see the doc.)
+# (2.0 -> 3.0) so snapping dominates the rhythm score. on_quarter_grid_ratio now
+# credits the standard {1/4, 1/8, 1/6} grid (round-3a-fix), not 1/4 alone, so
+# correctly-snapped bursts/triplets are no longer mis-scored as off-grid. (CAVEAT:
+# it still assumes a single BPM and under-measures variable-BPM ranked maps;
+# up-weighting amplifies that bias in GOLD calibration / real-map validation, but
+# it is SAFE for GENERATED maps which are single-BPM by construction — see the doc.)
 FAMILIES: dict[str, tuple[float, dict[str, float]]] = {
     # WHEN you click — the spine of a playable map. Grid-snap is the single
     # strongest ranked/non-ranked discriminator; density sets the right map for
     # the song. HEAVIEST family (rhythm>>flow): a wrong-rhythm map is unplayable.
     "rhythm": (2.0, {
-        "on_quarter_grid_ratio": 3.0,   # up-weighted: 1/4-snap dominates rhythm
+        "on_quarter_grid_ratio": 3.0,   # up-weighted: {1/4,1/8,1/6} snap dominates
         "density_per_s": 1.5,
     }),
     # HOW FAR the cursor travels — the v8/v9 crux (jumps under-produced). Three

@@ -167,9 +167,15 @@ def compute_metrics(bm: Beatmap) -> dict:
         if beat > 0:
             nb = dt / beat
             beats.append(nb)
-            # distance (in beats) to nearest 1/4 subdivision
-            q = nb * 4
-            if abs(q - round(q)) <= 0.12:
+            # on the standard snap grid: within ~0.03 beats of a 1/4, 1/8 OR 1/6
+            # subdivision. 1/4 is a multiple of 1/8, so checking divisors {8, 6}
+            # credits 1/4, 1/8, 1/6 (and the coarser 1/2, 1/3, 1/1 they subsume) —
+            # the same divisor set postprocess snaps to. A correctly-snapped 1/8
+            # burst or 1/6 triplet is therefore no longer mis-read as "off-grid".
+            # (Was 1/4-only; broadened in the v9 round-3a-fix — note this raises the
+            # metric's values, so it REQUIRES a corpus_stats refresh to recalibrate
+            # its gold band.)
+            if any(abs(nb - round(nb * D) / D) <= 0.03 for D in (8, 6)):
                 ongrid += 1
             if nb <= 0.30 and d <= STREAM_MAX_SPACING:   # ~1/4 beat, tight
                 streams += 1

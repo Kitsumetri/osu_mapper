@@ -94,6 +94,20 @@ def test_stream_spacing_cv_irregular_stream_positive():
     assert m["stream_spacing_cv"] > 0.3            # clearly irregular
 
 
+def test_on_grid_credits_quarter_eighth_and_sixth():
+    # round-3a-fix: on_quarter_grid_ratio now credits the standard {1/4,1/8,1/6}
+    # grid (150 BPM beat 400 ms: 1/4=100, 1/8=50, 1/6~=66.7 ms), not 1/4 alone.
+    quarter = [_circle(i * 20, 100, i * 100) for i in range(8)]
+    eighth = [_circle(i * 20, 100, i * 50) for i in range(8)]
+    sixth = [_circle(i * 20, 100, round(i * 400 / 6)) for i in range(8)]
+    assert compute_metrics(_bm(quarter))["on_quarter_grid_ratio"] == 1.0
+    assert compute_metrics(_bm(eighth))["on_quarter_grid_ratio"] == 1.0
+    assert compute_metrics(_bm(sixth))["on_quarter_grid_ratio"] >= 0.8
+    # an off-grid gap (1/5 = 80 ms) is still NOT credited
+    fifth = [_circle(i * 20, 100, i * 80) for i in range(8)]
+    assert compute_metrics(_bm(fifth))["on_quarter_grid_ratio"] < 0.2
+
+
 def test_stream_spacing_cv_zero_when_no_stream():
     # pure jumps, no stream pairs -> metric defined as 0.0
     objs = [_circle(0 if i % 2 == 0 else 400, 192, i * 200) for i in range(5)]
