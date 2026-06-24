@@ -37,13 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..difficulty import sr_bucket
-from ..metrics import (
-    STACK_RADIUS_PX,
-    circle_radius_px,
-    compute_metrics,
-    slider_anchor_min_gap,
-    slider_polyline,
-)
+from ..metrics import compute_metrics
 
 # --- pattern families -------------------------------------------------------
 # Metrics grouped by what they describe about play. Quality is a weighted mean
@@ -92,6 +86,7 @@ FAMILIES: dict[str, tuple[float, dict[str, float]]] = {
         "mean_turn_angle_deg": 1.0,
         "reversal_ratio": 0.75,
         "stream_spacing_cv": 1.0,       # NEW (band-less until gold refresh)
+        "stack_ratio": 0.5,             # NEW: stacking rate (band-less until refresh)
     }),
     # SLIDER & combo structure — the family the old reward drowned out. Given
     # full family weight so a tech/slider map is judged on its sliders, not
@@ -102,7 +97,8 @@ FAMILIES: dict[str, tuple[float, dict[str, float]]] = {
         "curved_slider_ratio": 1.0,
         "sv_changes_per_min": 0.75,
         "new_combo_ratio": 0.5,
-        "slider_anchor_spread_px": 0.75,  # NEW (band-less until gold refresh)
+        "slider_anchor_spread_px": 0.75,    # NEW (band-less until gold refresh)
+        "slider_overlap_ratio": 0.5,        # NEW: overlap rate (band-less until refresh)
     }),
     # cosmetic accents (hitsounds/kiai handled by a separate v9 head) — low
     # family weight so they nudge, never decide.
@@ -126,54 +122,33 @@ METRIC_WEIGHTS: dict[str, float] = {
 # stray before its sub-score hits 0. 1.0 = one extra band-width past the edge.
 BAND_FALLOFF = 1.0
 
-# --- playability penalty (objective defects, NO gold band needed) -----------
-# Some flaws are *defects no ranked map of any style has*, so they need no
-# distributional band — a clean ranked map has ~zero of them regardless of
-# whether it's jump/stream/tech. We measure each as a FRACTION of affected
-# objects in [0, 1], combine into a single penalty, and fold it MULTIPLICATIVELY
-# into the reward: clean map -> playability 1.0 -> reward unchanged; defects ->
-# playability < 1.0 -> reward pulled down. This is anti-hackable: it can only
-# LOWER the reward (it cannot lift a map above its band-membership ceiling, so
-# you can't farm it), and it is bounded in [0, 1] by construction.
+# --- playability penalty (ONE objective defect, NO gold band needed) --------
+# v9 round-3a recalibration (audit n=87176): the earlier penalty also flagged
+# stacks, slider/object overlaps, and tight ("degenerate") slider anchors. But
+# those are INTENTIONAL osu! patterns — real ranked maps do all three — so the
+# penalty fired on gold maps (playability averaged 0.76, dragging reward 0.95 ->
+# 0.72). Those three are now DISTRIBUTIONAL band metrics instead (stack_ratio +
+# slider_overlap_ratio in metrics.compute_metrics; slider_anchor_spread_px was
+# already there): a ranked-typical amount scores 1.0, only a far-out-of-band
+# amount costs — exactly like every other metric, and anti-hackable by the flat
+# top.
 #
-# osu! domain facts used (playfield 512x384, see metrics.circle_radius_px):
-#  - stack leniency: two objects within STACK_RADIUS_PX (~3 px) sit on the same
-#    spot. A *deliberate* stack is a same-instant / very-tight-gap design; a
-#    surprise stack is two notes that LAND on each other with a playable gap
-#    between them (the cursor has nowhere to travel -> reads as one object).
-#  - hittable jump velocity: required cursor speed = distance / Δt (px per ms).
-#    Even pro players cap out; past a ceiling the jump is physically un-hittable
-#    at the map's rhythm. We express the ceiling in px/ms (see UNHITTABLE_PX_PER_MS).
-#  - degenerate slider anchors: control points clustered within a few px decode
-#    to a spike/zero-length segment (a nasty, often unrendered shape).
-#  - slider/object overlap: a slider body passing within a circle radius of a
-#    NON-adjacent object (or another slider's body) reads as a tangled blob.
+# What remains here is the one thing NO ranked map of any style does and that has
+# no meaningful distribution to sit inside: a cursor move that is physically
+# impossible at the map's own rhythm (the decode-glitch teleport failure mode of
+# a GENERATED map). It needs no band — a clean map has ~zero — so we keep it as a
+# bounded fraction of affected pairs, folded MULTIPLICATIVELY into the reward
+# (clean -> playability 1.0 -> reward unchanged; glitchy -> < 1.0). Anti-hackable:
+# it can only LOWER the reward and is bounded in [0, 1].
 
-# A jump is unhittable if the cursor would have to move faster than this. ~150
-# BPM 1/2 jump of 300 px over 200 ms = 1.5 px/ms is hard-but-fine; streams of
-# ~4 px over 60 ms = 0.067 px/ms are trivial. Sustained human cap is ~3-4 px/ms
-# for a single snap; we set 4.0 px/ms as the "physically impossible at this
-# rhythm" line (generous, so only true defects fire).
-UNHITTABLE_PX_PER_MS = 4.0
-# a deliberate stack has a gap at/under this many ms (stack leniency window-ish);
-# a longer gap with objects on the same spot is a *surprise* stack defect.
-STACK_GAP_MS = 10.0
-# slider anchors closer than this (px) are degenerate (spike / zero segment).
-DEGENERATE_ANCHOR_PX = 4.0
-
-
-def _stack_defect_rate(objs: list) -> float:
-    """Fraction of consecutive pairs that are UNINTENDED stacks: head-to-head
-    distance under the stack radius but with a playable time gap (so they are not
-    a deliberate same-instant stack). The cursor has nowhere to go -> the second
-    note reads as hidden under the first."""
-    pairs = [(a, b) for a, b in zip(objs, objs[1:]) if (b.time - a.time) > 0]
-    if not pairs:
-        return 0.0
-    bad = sum(1 for a, b in pairs
-              if (b.time - a.time) > STACK_GAP_MS
-              and (((a.x - b.x) ** 2 + (a.y - b.y) ** 2) ** 0.5) <= STACK_RADIUS_PX)
-    return bad / len(pairs)
+# A jump is unhittable if the cursor must move faster than this. ~150 BPM 1/2
+# jump of 300 px / 200 ms = 1.5 px/ms is hard-but-fine; even the hardest ranked
+# 1/4 jump-bursts top out ~6-7 px/ms. The earlier 4.0 clipped real aim maps (the
+# audit's tech/jump tail); 10.0 clears the hardest ranked aim while still catching
+# teleport glitches (full playfield ~600 px in < 60 ms -> 10+ px/ms). TUNE to the
+# gold p99: re-run `measure_reward --gold` and read the per-defect unhittable_jump
+# rate — it should be ~0 on gold; raise this if it is not.
+UNHITTABLE_PX_PER_MS = 10.0
 
 
 def _unhittable_jump_rate(objs: list) -> float:
@@ -192,72 +167,29 @@ def _unhittable_jump_rate(objs: list) -> float:
     return bad / len(pairs)
 
 
-def _degenerate_anchor_rate(objs: list) -> float:
-    """Fraction of sliders whose control polygon has anchors clustered within
-    DEGENERATE_ANCHOR_PX (a spike / zero-length segment)."""
-    sliders = [o for o in objs if o.is_slider and (o.curve_points or [])]
-    if not sliders:
-        return 0.0
-    bad = sum(1 for o in sliders if slider_anchor_min_gap(o) < DEGENERATE_ANCHOR_PX)
-    return bad / len(sliders)
-
-
-def _slider_overlap_rate(objs: list, radius: float) -> float:
-    """Fraction of sliders whose body passes within ``radius`` px of a
-    NON-adjacent object's head (circle or another slider's head). Adjacent
-    objects are allowed to be close (that's normal follow-through); we only flag
-    a slider tangling with an object that is NOT its immediate neighbour, which
-    reads as an unintended overlapping blob.
-    """
-    sliders = [(i, o) for i, o in enumerate(objs) if o.is_slider and (o.curve_points or [])]
-    if not sliders:
-        return 0.0
-    bad = 0
-    for i, o in sliders:
-        body = slider_polyline(o)
-        hit = False
-        for j, other in enumerate(objs):
-            if abs(j - i) <= 1:           # skip self + immediate neighbours
-                continue
-            ox, oy = float(other.x), float(other.y)
-            # body point within a circle radius of a non-adjacent head -> overlap
-            if any(((px - ox) ** 2 + (py - oy) ** 2) ** 0.5 <= radius for px, py in body):
-                hit = True
-                break
-        if hit:
-            bad += 1
-    return bad / len(sliders)
-
-
-# per-defect weights (relative importance inside the penalty). Unhittable jumps
-# and surprise stacks are the most fatal (literally unplayable); overlaps and
-# degenerate anchors are bad but sometimes recoverable.
+# per-defect weights (relative importance inside the penalty). Only the
+# physically-impossible-velocity defect remains — stacks/overlaps/anchors became
+# distributional band metrics (see the note above). Kept as a dict so the penalty
+# stays trivially extensible if a genuinely band-less defect turns up later.
 DEFECT_WEIGHTS = {
     "unhittable_jump": 1.0,
-    "unintended_stack": 1.0,
-    "slider_overlap": 0.6,
-    "degenerate_anchor": 0.6,
 }
 
 
 def playability_penalty(bm) -> tuple[float, dict[str, float]]:
     """Bounded objective-defect penalty in [0, 1] for a parsed Beatmap.
 
-    Returns ``(penalty, per_defect_rates)`` where ``penalty`` is the
-    DEFECT_WEIGHTS-weighted mean of the four defect rates (each a fraction of
-    affected objects in [0, 1]); so ``penalty`` is itself in [0, 1]. A clean
-    ranked map scores ~0; defects raise it toward 1. ``playability = 1 - penalty``
-    is what folds into the reward.
+    Returns ``(penalty, per_defect_rates)``. The penalty is the DEFECT_WEIGHTS-
+    weighted mean of the defect rates (each a fraction of affected pairs in
+    [0, 1]) — currently just the physically-impossible cursor-velocity defect, so
+    the penalty is itself in [0, 1]. A clean ranked map scores ~0; glitchy maps
+    raise it toward 1. ``playability = 1 - penalty`` is what folds into the reward.
     """
     objs = sorted(bm.hit_objects, key=lambda o: o.time)
     if len(objs) < 2:
         return 0.0, {}
-    radius = max(1.0, circle_radius_px(bm.circle_size))
     rates = {
         "unhittable_jump": _unhittable_jump_rate(objs),
-        "unintended_stack": _stack_defect_rate(objs),
-        "slider_overlap": _slider_overlap_rate(objs, radius),
-        "degenerate_anchor": _degenerate_anchor_rate(objs),
     }
     num = sum(DEFECT_WEIGHTS[k] * v for k, v in rates.items())
     den = sum(DEFECT_WEIGHTS.values())
@@ -400,16 +332,20 @@ def reward_from_metrics(metrics: dict, ref_stats: dict, target_sr: float,
 
 
 def reward_from_osu(osu_path: str | Path, ref_stats: dict, target_sr: float,
-                    sr_weight: float = 0.35, sr_tol: float = 0.5) -> RewardBreakdown:
+                    sr_weight: float = 0.35, sr_tol: float = 0.5,
+                    bm=None) -> RewardBreakdown:
     """End-to-end reward for a generated .osu file (parses + rosu SR + reward).
 
     The rosu SR call (non-differentiable) lives here, isolated from the pure core
     so the core stays testable without rosu installed. The beatmap is parsed ONCE
-    and reused for metrics, the rosu SR call, and the playability penalty.
+    and reused for metrics, the rosu SR call, and the playability penalty; pass a
+    pre-parsed ``bm`` (e.g. a caller that already parsed it to gold-filter) to skip
+    the re-parse.
     """
     from ..difficulty import star_rating
     from ..parsing.beatmap import parse_beatmap
-    bm = parse_beatmap(osu_path)
+    if bm is None:
+        bm = parse_beatmap(osu_path)
     metrics = compute_metrics(bm)
     achieved = star_rating(osu_path)
     penalty, defect_rates = playability_penalty(bm)

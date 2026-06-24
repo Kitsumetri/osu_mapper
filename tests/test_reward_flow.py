@@ -148,8 +148,9 @@ def test_reward_stays_in_unit_interval():
 # --- preserved prior behaviour ----------------------------------------------
 
 def test_defect_weights_present_and_positive():
-    assert set(DEFECT_WEIGHTS) == {
-        "unhittable_jump", "unintended_stack", "slider_overlap", "degenerate_anchor"}
+    # v9 round-3a: only the physically-impossible-velocity defect remains a hard
+    # penalty; stacks / overlaps / tight anchors became distributional band metrics.
+    assert set(DEFECT_WEIGHTS) == {"unhittable_jump"}
     assert all(w > 0 for w in DEFECT_WEIGHTS.values())
 
 

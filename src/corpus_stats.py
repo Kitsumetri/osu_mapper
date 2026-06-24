@@ -33,6 +33,7 @@ KEYS = ["star_rating", "density_per_s", "circle_ratio", "slider_ratio",
         # .slider_shape) — registered here so a future gold-stats refresh
         # produces p10/p90 bands for them; reward.py ignores them until then.
         "stream_spacing_cv", "slider_anchor_spread_px",
+        "stack_ratio", "slider_overlap_ratio",
         "sv_changes_per_min", "kiai_ratio", "hitsound_ratio", "clap_ratio",
         "whistle_ratio", "finish_ratio"]
 

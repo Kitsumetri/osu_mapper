@@ -105,6 +105,46 @@ def slider_polyline(o, n: int = 12) -> list[tuple[float, float]]:
     return out
 
 
+def stack_ratio_of(objs: list) -> float:
+    """Fraction of consecutive object pairs sitting on the same spot (head-to-head
+    distance <= STACK_RADIUS_PX, positive time gap).
+
+    Stacking is a normal, intentional osu! pattern (notes drawn on one spot with a
+    small editor offset), so this is a DISTRIBUTIONAL trait scored by a gold band,
+    NOT a defect: a map that stacks like ranked maps sits in the band. (An earlier
+    design penalised *all* stacking, which wrongly dinged real maps.)
+    """
+    pairs = [(a, b) for a, b in zip(objs, objs[1:]) if b.time - a.time > 0]
+    if not pairs:
+        return 0.0
+    stacked = sum(1 for a, b in pairs if math.hypot(a.x - b.x, a.y - b.y) <= STACK_RADIUS_PX)
+    return stacked / len(pairs)
+
+
+def slider_overlap_ratio_of(objs: list, radius: float) -> float:
+    """Fraction of sliders whose body passes within ``radius`` px of a NON-adjacent
+    object's head (an immediate neighbour is allowed — that is normal follow-through).
+
+    Overlapping a slider with nearby objects is a common stylistic device, so this
+    is a DISTRIBUTIONAL trait scored by a gold band, NOT a defect — only a map that
+    overlaps far more than any ranked map drifts out of band.
+    """
+    sliders = [(i, o) for i, o in enumerate(objs) if o.is_slider and (o.curve_points or [])]
+    if not sliders:
+        return 0.0
+    bad = 0
+    for i, o in sliders:
+        body = slider_polyline(o)
+        for j, other in enumerate(objs):
+            if abs(j - i) <= 1:                 # skip self + immediate neighbours
+                continue
+            ox, oy = float(other.x), float(other.y)
+            if any(math.hypot(px - ox, py - oy) <= radius for px, py in body):
+                bad += 1
+                break
+    return bad / len(sliders)
+
+
 def compute_metrics(bm: Beatmap) -> dict:
     objs = sorted(bm.hit_objects, key=lambda o: o.time)
     n = len(objs)
@@ -190,6 +230,13 @@ def compute_metrics(bm: Beatmap) -> dict:
     anchor_gaps = [min(slider_anchor_min_gap(o), 200.0) for o in sliders]
     slider_anchor_spread_px = round(_mean(anchor_gaps), 1) if anchor_gaps else 0.0
 
+    # (iii) stacking rate + (iv) slider/object overlap rate: also distributional
+    #     traits (both are intentional osu! patterns at a ranked-typical rate, so
+    #     they are band-scored — NOT defects; see the helper docstrings + reward.py).
+    radius = max(1.0, circle_radius_px(bm.circle_size))
+    stack_ratio = stack_ratio_of(objs)
+    slider_overlap_ratio = slider_overlap_ratio_of(objs, radius)
+
     return {
         "n_objects": n,
         "duration_s": round(duration_s, 1),
@@ -219,6 +266,10 @@ def compute_metrics(bm: Beatmap) -> dict:
         "sv_changes_per_min": round(sv_changes / (duration_s / 60), 2) if duration_s else 0.0,
         # NEW distributional slider-shape trait: mean min-anchor-gap (px).
         "slider_anchor_spread_px": slider_anchor_spread_px,
+        # NEW distributional traits: stacking rate (flow) + slider/object overlap
+        # rate (slider_shape) — intentional patterns, band-scored not penalised.
+        "stack_ratio": round(stack_ratio, 3),
+        "slider_overlap_ratio": round(slider_overlap_ratio, 3),
         # v3 outputs: kiai coverage and hitsound usage
         "kiai_ratio": round(
             sum(e - s for s, e in bm.kiai_spans()) / 1000 / duration_s, 3) if duration_s else 0.0,
