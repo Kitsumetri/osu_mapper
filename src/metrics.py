@@ -135,10 +135,20 @@ def slider_overlap_ratio_of(objs: list, radius: float) -> float:
     bad = 0
     for i, o in sliders:
         body = slider_polyline(o)
+        # bbox of the body expanded by radius — an object outside it can't be within
+        # radius of ANY body point (its x- or y-distance alone already exceeds radius),
+        # so we skip the per-point hypot for it. Exact (no false negatives), and it
+        # turns the O(sliders x objects x polyline) scan into ~O(sliders x neighbours).
+        xs = [p[0] for p in body]
+        ys = [p[1] for p in body]
+        xlo, xhi = min(xs) - radius, max(xs) + radius
+        ylo, yhi = min(ys) - radius, max(ys) + radius
         for j, other in enumerate(objs):
             if abs(j - i) <= 1:                 # skip self + immediate neighbours
                 continue
             ox, oy = float(other.x), float(other.y)
+            if not (xlo <= ox <= xhi and ylo <= oy <= yhi):
+                continue                        # bbox reject (can't overlap)
             if any(math.hypot(px - ox, py - oy) <= radius for px, py in body):
                 bad += 1
                 break

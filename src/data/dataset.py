@@ -69,7 +69,10 @@ class OsuSignalDataset(Dataset):
         L = self.crop
         if T >= L:
             start = np.random.randint(0, T - L + 1)
-            mel, sig = mel[:, start:start + L], sig[:, start:start + L]
+            # .copy() the mel crop: the mel comes from a shared per-worker LRU cache, so
+            # returning a view would alias the cache — any in-place op downstream would
+            # corrupt it for every item sharing this audio_id. (sig is loaded fresh.)
+            mel, sig = mel[:, start:start + L].copy(), sig[:, start:start + L]
         else:
             pad = L - T
             # pad mel with -1.0 = true silence (after audio.py's (dB+40)/40 norm);

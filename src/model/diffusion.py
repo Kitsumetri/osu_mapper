@@ -85,12 +85,17 @@ class GaussianDiffusion:
         return x0, eps
 
     @torch.no_grad()
-    def p_sample(self, model, cond, shape, steps: int | None = None):
+    def p_sample(self, model, cond, shape):
         """Full ancestral DDPM sampling (reference only; ``generate`` uses ``ddim_sample``).
 
-        Unconditional (no ctx/CFG) and assumes ``objective='eps'`` — wire those
-        through before using it in production.
+        Unconditional (no ctx/CFG) and **requires** ``objective='eps'`` — the posterior
+        mean below is eps-parameterised, so under v-pred it would treat v as eps and
+        produce garbage. Kept as the ancestral / ``eta>0`` reference the RL log-prob plan
+        may use; wire ctx/CFG through before any production use. (Dropped a never-used
+        ``steps`` arg that falsely implied step subsampling — this always runs all
+        ``self.timesteps``; use ``ddim_sample`` for accelerated sampling.)
         """
+        assert self.objective == "eps", "p_sample is eps-only; use ddim_sample for v-pred"
         b = shape[0]
         x = torch.randn(shape, device=self.device)
         for i in reversed(range(self.timesteps)):
@@ -188,6 +193,10 @@ class GaussianDiffusion:
                 std_c = x0_c.std(dim=(1, 2), keepdim=True)
                 std_g = x0.std(dim=(1, 2), keepdim=True).clamp(min=1e-8)
                 x0 = guidance_rescale * (x0 * std_c / std_g) + (1 - guidance_rescale) * x0
+                # re-derive eps from the rescaled x0 so the (x0, eps) pair stays
+                # consistent (x_t = a*x0 + s*eps); otherwise the DDIM directional term
+                # below mixes a rescaled x0 with the UN-rescaled eps -> off-trajectory.
+                eps = (x - a_t * x0) / s_t.clamp(min=1e-8)
             x0 = x0.clamp(-1.5, 1.5)
             if monitor is not None:
                 # frac_done: 0 at the first (noisiest) step, 1 at the last. Single-step
@@ -203,7 +212,11 @@ class GaussianDiffusion:
                 break
             acp_prev = self.alphas_cumprod[seq[k - 1]]
             acp_t = self.alphas_cumprod[i]
-            sigma = eta * torch.sqrt((1 - acp_prev) / (1 - acp_t) * (1 - acp_t / acp_prev))
+            # clamp acp_prev: under zero-terminal-SNR alphas_cumprod can be 0, which
+            # makes acp_t/acp_prev divide by zero (NaN sigma). eta=0 (default) zeroes
+            # sigma anyway; this only matters for a future eta>0 / RL log-prob path.
+            sigma = eta * torch.sqrt((1 - acp_prev) / (1 - acp_t)
+                                     * (1 - acp_t / acp_prev.clamp(min=1e-8)))
             dir_xt = torch.sqrt((1 - acp_prev - sigma**2).clamp(min=0.0)) * eps
             x = torch.sqrt(acp_prev) * x0 + dir_xt
             if eta > 0:

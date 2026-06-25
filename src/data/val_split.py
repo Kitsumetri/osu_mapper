@@ -144,7 +144,10 @@ def grouped_split(items: list[dict], val_frac: float = 0.10,
     rng.shuffle(group_list)
 
     n_total = len(items)
-    n_val_target = round(n_total * val_frac)
+    # round, but hold out at least one whole song when val_frac > 0 and items exist:
+    # round(n_total*val_frac) can hit 0 on small/dev datasets, which would silently
+    # return an EMPTY val set (defeating the held-out-song machinery with no error).
+    n_val_target = max(1, round(n_total * val_frac))
     val_set: set[int] = set()
     for grp in group_list:
         if len(val_set) >= n_val_target:

@@ -26,7 +26,7 @@ from .parsing.beatmap import parse_beatmap
 # metrics to summarise (numeric, comparable across maps). star_rating is added
 # per map and bucketed on, but also summarised so each bucket shows its SR range.
 KEYS = ["star_rating", "density_per_s", "circle_ratio", "slider_ratio",
-        "spinner_ratio", "bezier_slider_ratio", "new_combo_ratio",
+        "spinner_ratio", "bezier_slider_ratio", "curved_slider_ratio", "new_combo_ratio",
         "mean_spacing_px", "std_spacing_px", "stream_ratio", "jump_ratio",
         "on_quarter_grid_ratio", "mean_turn_angle_deg", "reversal_ratio",
         # v9 flow/slider distributional traits (reward.py FAMILIES.flow /

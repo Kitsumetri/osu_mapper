@@ -335,7 +335,11 @@ def train(args):
                 bpm = it.get("bpm") or 0.0
                 bl = 60000.0 / bpm if bpm > 0 else 500.0     # beat_length (ms)
                 tp = TimingPoint(0, bl, 4, True)
-                prepared = PreparedAudio(cond, t_len, mel_p.shape[1], tp)
+                # condition the probe on the SAME per-song aim the model trained on
+                # (stored on the manifest item); else a v9 aim-conditioned model is
+                # sampled at the neutral aim=0 baseline and val_reward misrepresents it.
+                aim = float(it.get("aim_intensity") or 0.0)
+                prepared = PreparedAudio(cond, t_len, mel_p.shape[1], tp, aim)
                 sr = float(it.get("star_rating") or 5.0)
                 out = tmp / f"{it['item_id']}.osu"
                 try:

@@ -192,6 +192,16 @@ def test_unhittable_jump_fires_on_impossible_velocity():
     assert _unhittable_jump_rate(objs) == 1.0
 
 
+def test_unhittable_jump_uses_slider_end_not_head():
+    # C#5: the cursor leaves a slider at its END. A slider head(0,192)->tail(500,192)
+    # ending at t=1000, then a circle back at (0,192) 10 ms later: from the TAIL that's
+    # 500 px / 10 ms = 50 px/ms (impossible) and must flag -- even though the HEAD->next
+    # geometry (same x, ~1 s apart) looks like ~0 px/ms.
+    slider = HitObject(x=0, y=192, time=0, type=TYPE_SLIDER, curve_type="L",
+                       curve_points=[(500, 192)], slides=1, length=500.0, end_time=1000)
+    assert _unhittable_jump_rate([slider, _circle(0, 192, 1010)]) == 1.0
+
+
 def test_hard_but_ranked_jump_not_flagged():
     # the recalibration's point: a hard 1/4 jump-burst is NOT flagged.
     # 250 px over 50 ms (200 BPM 1/4) = 5 px/ms < 10 ceiling

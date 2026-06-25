@@ -128,8 +128,10 @@ def _score_one(args: tuple) -> dict | str | None:
         if not _is_gold(bm, sr):
             return "filtered"              # ranked but not in the gold subset
     try:
-        # reuse the already-parsed map (gold path) to skip a re-parse
-        bd = reward_from_osu(path, ref_stats, target_sr=sr, sr_weight=sr_weight, bm=bm)
+        # reuse the already-parsed map (gold path) AND the SR we just computed, so
+        # neither the parse nor the (dominant) rosu star-rating call runs twice.
+        bd = reward_from_osu(path, ref_stats, target_sr=sr, sr_weight=sr_weight,
+                             bm=bm, achieved_sr=sr)
     except Exception:
         return None
     if not bd.per_metric:                  # no bucket / no comparable metrics

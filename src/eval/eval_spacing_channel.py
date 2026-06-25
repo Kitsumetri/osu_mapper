@@ -33,7 +33,7 @@ def main():
 
     loaded = load_model(args.ckpt)
     model, diff, _ctx_dim, device = loaded
-    cond, t_len, t_full, _tp = prepare_audio(args.audio, device)
+    cond, t_len, t_full, _tp, _aim = prepare_audio(args.audio, device)  # 5-tuple incl. v9 aim
     torch.manual_seed(0)
 
     print(f"\n{'SR':>4} {'cursor_sp':>10} {'channel_sp':>11} {'ratio':>6} "

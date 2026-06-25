@@ -154,19 +154,29 @@ UNHITTABLE_PX_PER_MS = 10.0
 
 
 def _unhittable_jump_rate(objs: list) -> float:
-    """Fraction of consecutive pairs whose required cursor velocity
-    (distance / Δt, px per ms) exceeds the human ceiling — a jump that cannot be
-    hit at the map's own rhythm."""
-    pairs = [(a, b) for a, b in zip(objs, objs[1:]) if (b.time - a.time) > 0]
-    if not pairs:
-        return 0.0
-    bad = 0
-    for a, b in pairs:
-        dt = b.time - a.time
-        dist = ((a.x - b.x) ** 2 + (a.y - b.y) ** 2) ** 0.5
+    """Fraction of consecutive pairs whose required cursor velocity (distance / Δt,
+    px per ms) exceeds the human ceiling — a jump unhittable at the map's own rhythm.
+
+    The cursor LEAVES a slider from its gameplay END (the tail for an odd slide count,
+    the head for an even one) at ``end_time`` — so a slider->object pair is measured
+    from there, not the slider head (which would over-count the slider duration in Δt
+    and under-flag a real post-slider teleport).
+    """
+    bad = total = 0
+    for a, b in zip(objs, objs[1:]):
+        if a.is_slider and (a.curve_points or []):
+            a_t = a.end_time or a.time
+            ax, ay = (a.x, a.y) if a.slides % 2 == 0 else a.curve_points[-1]
+        else:
+            a_t, ax, ay = a.time, a.x, a.y
+        dt = b.time - a_t
+        if dt <= 0:
+            continue
+        total += 1
+        dist = ((ax - b.x) ** 2 + (ay - b.y) ** 2) ** 0.5
         if dist / dt > UNHITTABLE_PX_PER_MS:
             bad += 1
-    return bad / len(pairs)
+    return bad / total if total else 0.0
 
 
 # per-defect weights (relative importance inside the penalty). Only the
@@ -335,21 +345,22 @@ def reward_from_metrics(metrics: dict, ref_stats: dict, target_sr: float,
 
 def reward_from_osu(osu_path: str | Path, ref_stats: dict, target_sr: float,
                     sr_weight: float = 0.35, sr_tol: float = 0.5,
-                    bm=None) -> RewardBreakdown:
+                    bm=None, achieved_sr: float | None = None) -> RewardBreakdown:
     """End-to-end reward for a generated .osu file (parses + rosu SR + reward).
 
     The rosu SR call (non-differentiable) lives here, isolated from the pure core
     so the core stays testable without rosu installed. The beatmap is parsed ONCE
     and reused for metrics, the rosu SR call, and the playability penalty; pass a
-    pre-parsed ``bm`` (e.g. a caller that already parsed it to gold-filter) to skip
-    the re-parse.
+    pre-parsed ``bm`` to skip the re-parse, and a pre-computed ``achieved_sr`` to skip
+    the (expensive) rosu star-rating call — callers that already have both (e.g.
+    measure_reward, which scores at the map's own SR) then avoid doing either twice.
     """
     from ..difficulty import star_rating
     from ..parsing.beatmap import parse_beatmap
     if bm is None:
         bm = parse_beatmap(osu_path)
     metrics = compute_metrics(bm)
-    achieved = star_rating(osu_path)
+    achieved = star_rating(osu_path) if achieved_sr is None else achieved_sr
     penalty, defect_rates = playability_penalty(bm)
     return reward_from_metrics(metrics, ref_stats, target_sr, achieved,
                                sr_weight=sr_weight, sr_tol=sr_tol,
