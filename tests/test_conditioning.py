@@ -8,14 +8,14 @@ from src.conditioning import (
 
 def test_context_vector_dim_and_range():
     c = context_vector(sr=5.0, ar=9.0, od=8.0, hp=5.0, cs=4.0, density=3.5)
-    assert len(c) == CONTEXT_DIM == 6
+    assert len(c) == CONTEXT_DIM == 7   # v9: + aim slot (was 6)
     assert all(0.0 <= v <= 1.5 for v in c)
 
 
 def test_context_vector_clamps_extremes():
-    c = context_vector(sr=99, ar=99, od=99, hp=99, cs=99, density=999)
+    c = context_vector(sr=99, ar=99, od=99, hp=99, cs=99, density=999, aim=99)
     assert all(v == 1.5 for v in c)               # upper clamp
-    c0 = context_vector(sr=0, ar=0, od=0, hp=0, cs=0, density=0)
+    c0 = context_vector(sr=0, ar=0, od=0, hp=0, cs=0, density=0, aim=0)
     assert all(v == 0.0 for v in c0)
 
 

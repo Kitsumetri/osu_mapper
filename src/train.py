@@ -431,6 +431,8 @@ def train(args):
                         "scaler": scaler.state_dict() if use_scaler else None,
                         "args": vars(args), "epoch": epoch,
                         "sig_channels": N_SIGNAL_CHANNELS,
+                        "ctx_dim": CONTEXT_DIM,    # so generate.load_model builds the
+                        # right context width as CONTEXT_DIM evolves (v9: 6 -> 7)
                         "git_commit": config["git_commit"]}, path)
 
         _ckpt(ckpt_dir / "last.pt")

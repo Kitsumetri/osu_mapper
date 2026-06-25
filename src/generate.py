@@ -14,7 +14,7 @@ import torch
 
 from .conditioning import CONTEXT_DIM, target_context, target_settings
 from .config import AUDIO, N_SIGNAL_CHANNELS
-from .data.audio import load_audio, log_mel
+from .data.audio import aim_intensity, load_audio, log_mel
 from .data.signal import decode_kiai, decode_signal, decode_spacing, decode_sv
 from .data.timing import estimate_timing_point
 from .model.diffusion import GaussianDiffusion
@@ -32,8 +32,13 @@ from .postprocess import (
 
 # a loaded denoiser + its sampler, ready to reuse across many generate() calls
 LoadedModel = namedtuple("LoadedModel", "model diff ctx_dim device")
-# prepared audio conditioning: mel batch, true len T, padded len, timing point
-PreparedAudio = namedtuple("PreparedAudio", "cond t_len t_full tp")
+# prepared audio conditioning: mel batch, true len T, padded len, timing point, and
+# the v9 per-song aim-intensity (computed from the same decoded audio as the mel).
+# ``aim`` defaults to None so manual constructions (e.g. train.py's val-reward probe,
+# which only has the cached mel, not raw audio) stay valid -> the model sees the 0.0
+# baseline for that slot, exactly like old data missing the manifest field.
+PreparedAudio = namedtuple("PreparedAudio", "cond t_len t_full tp aim")
+PreparedAudio.__new__.__defaults__ = (None,)  # aim optional (back-compat)
 
 
 def _active_sv(t_ms: float, sv_secs: list[tuple[int, float]]) -> float:
@@ -86,14 +91,26 @@ def load_model(ckpt_path, base=64, use_ema=True, device=None,
     attn = cargs.get("attn", False)        # old checkpoints had no attention
     attn_levels = cargs.get("attn_levels", 2)  # old ckpts: 2 deepest levels
     adaln = cargs.get("adaln", False)          # pre-v6 ckpts used additive FiLM
-    ctx_dim = CONTEXT_DIM if ("cfg_drop" in cargs or "ctx_dim" in cargs) else 0
+    # Build the UNet with the CHECKPOINT's OWN ctx_dim so older models still load when
+    # CONTEXT_DIM grows (v9 added the aim slot: 6 -> 7). A pre-v9 ckpt's ctx_mlp.0.weight
+    # is [t_dim, 6]; building at 7 would crash load_state_dict. Read it from the saved
+    # weights (authoritative), else cargs["ctx_dim"], else (conditioned ckpt) CONTEXT_DIM,
+    # else 0 (unconditioned). The extra aim slot is simply unused by old ckpts.
+    weights = ckpt["ema"] if (use_ema and ckpt.get("ema")) else ckpt["model"]
+    if "ctx_mlp.0.weight" in weights:
+        ctx_dim = weights["ctx_mlp.0.weight"].shape[1]
+    elif "ctx_dim" in cargs:
+        ctx_dim = cargs["ctx_dim"]
+    elif "cfg_drop" in cargs:
+        ctx_dim = CONTEXT_DIM
+    else:
+        ctx_dim = 0
     # build the model with the checkpoint's own channel count so older 17-ch (v5/v6/v7)
     # checkpoints still load under the v7 18-ch global (decode handles the missing SV).
     n_sig = ckpt.get("sig_channels", N_SIGNAL_CHANNELS)
     model = UNet1d(n_sig, AUDIO.n_mels, base=base, attn=attn,
                    ctx_dim=ctx_dim, attn_levels=attn_levels, adaln=adaln,
                    rope=cargs.get("rope", False), up_attn=cargs.get("up_attn", False)).to(device)
-    weights = ckpt["ema"] if (use_ema and ckpt.get("ema")) else ckpt["model"]
     model.load_state_dict(weights)
     model.eval()
     # torch.compile fuses kernels for the repeated DDIM forwards (compiles once on the
@@ -115,8 +132,10 @@ def prepare_audio(audio_path, device, timing_ref=None) -> PreparedAudio:
     Reuse across generate() calls for the same song (e.g. an SR sweep) to avoid
     re-decoding + re-running beat estimation each time.
     """
-    y = load_audio(audio_path)          # decode once, reuse for mel + timing
+    y = load_audio(audio_path)          # decode once, reuse for mel + timing + aim
     mel = log_mel(y)                    # (n_mels, T)
+    # v9 per-song aim-intensity from the SAME decoded array preprocess uses (parity).
+    aim = aim_intensity(y)
     t_len = mel.shape[1]
     pad = (-t_len) % 16                # multiple of 16 for clean U-Net striding
     mel_p = np.pad(mel, ((0, 0), (0, pad)))
@@ -133,28 +152,43 @@ def prepare_audio(audio_path, device, timing_ref=None) -> PreparedAudio:
     if tp is None:
         tp = estimate_timing_point(y)
         print(f"estimated timing: {60000.0 / tp.beat_length:.1f} BPM, offset {tp.time} ms")
-    return PreparedAudio(cond, t_len, mel_p.shape[1], tp)
+    return PreparedAudio(cond, t_len, mel_p.shape[1], tp, aim)
 
 
 def generate(audio_path, ckpt_path=None, out_path="generated.osu", steps=100, base=64,
              use_ema=True, snap=True, sr=None, guidance=2.0, match_sr=False, max_iter=3,
              tol=0.4, snap_divisors=(4, 8, 6), timing_ref=None, loaded=None, prepared=None,
              guidance_rescale=0.0, density=None, onset_threshold=0.3, spacing_scale=0.0,
-             compile_model=False, batch_cfg=True, amp=False):
+             compile_model=False, batch_cfg=True, amp=False, aim_override=None):
     if loaded is None:
         loaded = load_model(ckpt_path, base=base, use_ema=use_ema, compile_model=compile_model)
     model, diff, ctx_dim, device = loaded
     if prepared is None:
         prepared = prepare_audio(audio_path, device, timing_ref)
-    cond, T, t_full, tp = prepared
+    cond, T, t_full, tp, aim_audio = prepared
+    # v9 per-song aim-intensity fed into the context like --density: default is the
+    # value computed from THIS song's audio (prepare_audio); --aim-intensity overrides
+    # it to push (higher = jumpier) or dampen. None on both -> 0.0 baseline (old ckpts
+    # ignore the slot anyway; see load_model's ctx_dim from the checkpoint).
+    aim_eff = aim_override if aim_override is not None else aim_audio
 
     def _one_pass(sr_used):
         ctx = None
         if ctx_dim and sr_used is not None:
             # density override conditions the model denser/sparser than the SR default
-            # (e.g. to push streams on a stream-heavy song).
-            ctx = torch.tensor([target_context(sr_used, density=density)],
+            # (e.g. to push streams on a stream-heavy song); aim_eff supplies the
+            # per-song aim-intensity (audio-derived, overridable).
+            ctx = torch.tensor([target_context(sr_used, density=density,
+                                                aim_intensity=aim_eff)],
                                dtype=torch.float32, device=device)
+            # back-compat: target_context emits the full CONTEXT_DIM (v9 = 7, incl. the
+            # appended `aim` slot), but an OLDER checkpoint's ctx_mlp expects its own
+            # narrower width (ctx_dim, read from the ckpt by load_model — 6 pre-v9). The
+            # new fields are appended LAST, so truncating to ctx_dim drops exactly the
+            # slot(s) that model never knew (aim) and rebuilds its training-time vector.
+            # (load_model builds the UNet at ctx_dim, so without this the (1,7) ctx hits a
+            # Linear(6,*) -> "2x7 and 6x256" matmul error on v8/v8_1.)
+            ctx = ctx[:, :ctx_dim]
         sig = diff.ddim_sample(model, cond, (1, model.sig_channels, t_full),
                                steps=steps, ctx=ctx, guidance=guidance,
                                guidance_rescale=guidance_rescale, progress=True,
@@ -250,6 +284,10 @@ def main():
                     help="rescale guided x0 toward conditional std (0-1; for v/zero-SNR ckpts)")
     ap.add_argument("--density", type=float, default=None,
                     help="override conditioned objects/sec (default SR-based; raise for streams)")
+    ap.add_argument("--aim-intensity", type=float, default=None,
+                    help="v9: override the per-song aim-intensity in [0,1] (default: "
+                         "computed from the audio; raise to push jumps on a jumpy song, "
+                         "lower to dampen). Only affects v9+ ckpts trained with the channel")
     ap.add_argument("--onset-threshold", type=float, default=0.3,
                     help="decode onset peak threshold (lower = more notes / denser streams)")
     ap.add_argument("--timing-from", default=None,
@@ -278,7 +316,8 @@ def main():
              max_iter=args.match_iter, timing_ref=args.timing_from,
              guidance_rescale=args.guidance_rescale, density=args.density,
              onset_threshold=args.onset_threshold, spacing_scale=args.spacing_scale,
-             compile_model=args.compile, batch_cfg=not args.no_batch_cfg, amp=args.amp)
+             compile_model=args.compile, batch_cfg=not args.no_batch_cfg, amp=args.amp,
+             aim_override=args.aim_intensity)
 
 
 if __name__ == "__main__":
