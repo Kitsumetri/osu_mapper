@@ -232,7 +232,10 @@ def parse_beatmap(path: str | Path) -> Beatmap:
             if obj is not None:
                 bm.hit_objects.append(obj)
 
-    bm.timing_points.sort(key=lambda t: t.time)
+    # tie-break uninherited (red) before inherited (green) at equal times: osu! stacks
+    # a red (resets SV->1) and a green (sets SV) at the same offset, and the green's SV
+    # is the one in effect. _sv_at takes the LAST point <= time, so green must sort last.
+    bm.timing_points.sort(key=lambda t: (t.time, 0 if t.uninherited else 1))
     bm.hit_objects.sort(key=lambda o: o.time)
 
     # compute end times now that timing is available

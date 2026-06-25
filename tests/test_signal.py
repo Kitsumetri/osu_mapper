@@ -36,6 +36,32 @@ def test_roundtrip_object_counts(sample_osu):
     assert sum(o.is_circle for o in dec) == 1
 
 
+def test_reverse_slider_cursor_flow_out_uses_gameplay_end():
+    """A#3: the cursor flow-out key-frame is where the player ENDS the slider — the
+    tail for an odd slide count, but back at the HEAD for an even (single-reverse)
+    count. (Keying it to the tail unconditionally mis-encoded reverse sliders.)
+    """
+    import pathlib
+
+    from src.config import CH_CURX
+    from src.data.signal import _norm_x
+    from src.parsing.beatmap import TYPE_SLIDER, Beatmap, HitObject, TimingPoint
+
+    def _end_cursor_x(slides):
+        end = 200 + 300 * slides
+        bm = Beatmap(path=pathlib.Path("x.osu"),
+                     timing_points=[TimingPoint(0, 500.0, 4, True)])
+        bm.hit_objects = [HitObject(x=100, y=192, time=200, type=TYPE_SLIDER,
+                                    curve_type="L", curve_points=[(300, 192)],
+                                    slides=slides, length=200.0, end_time=end)]
+        n = int(AUDIO.time_to_frame(end)) + 5
+        # read past f_end -> np.interp right-fill returns the end key-frame exactly
+        return encode_beatmap(bm, n)[CH_CURX, n - 1]
+
+    assert abs(_end_cursor_x(1) - _norm_x(300)) < 0.05   # odd slides -> tail (x=300)
+    assert abs(_end_cursor_x(2) - _norm_x(100)) < 0.05   # even slides -> head (x=100)
+
+
 def test_onset_timing_recall_on_real_shapes():
     """Synthetic dense map: every onset should be recovered within ~1 frame."""
     import pathlib
