@@ -46,7 +46,7 @@ mirror) first, then follows it into this tree.
 | [versions/v7.md](versions/v7.md) | v-pred + zero-SNR + SV/curve/corner; the up-attn lesson; v7.5 (best pre-v8) |
 | [versions/v8.md](versions/v8.md) | spacing channel + spatial loss weight; base-160 unblocked (RELEASED); + the timing-model design |
 | [versions/v9.md](versions/v9.md) | **active**: alignment — postprocess fix, reward, best-of-N, per-song conditioning plan |
-| [versions/v9/](versions/v9/) | v9 detailed task reports (postprocess, data-stats, RL alignment, autopackage, general reward, RL policy-gradient, core-quality; **round 3a:** [holdout-val](versions/v9/task_holdout_val.md), [reward-flow](versions/v9/task_reward_flow.md), [audio-features](versions/v9/task_audio_features.md)) + [v8_1-ablation](versions/v9/v8_1-ablation.md) (rope+huber A/B) |
+| [versions/v9/](versions/v9/) | v9 detailed task reports (postprocess, data-stats, RL alignment, autopackage, general reward, RL policy-gradient, core-quality; **round 3a:** [holdout-val](versions/v9/task_holdout_val.md), [reward-flow](versions/v9/task_reward_flow.md), [audio-features](versions/v9/task_audio_features.md); **round 3b:** [per-song conditioning](versions/v9/task_persong_conditioning.md), [early-abort sampling](versions/v9/task_early_abort.md)) + [v8_1-ablation](versions/v9/v8_1-ablation.md) (rope+huber A/B) |
 
 ## DYNAMIC — status (`docs/status/` + repo root)
 
