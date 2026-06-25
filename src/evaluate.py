@@ -52,10 +52,12 @@ def evaluate(audio, ckpt, srs, ref_stats_path=None, out_dir="artifacts/eval",
         hdr += "  in-range"
     print(hdr)
     for sr, achieved, m, in_range in rows:
-        line = (f"{sr:>7.1f}{(achieved or 0):>8.2f}{m['density_per_s']:>7.2f}"
-                f"{m['stream_ratio']:>6.2f}{m['jump_ratio']:>6.2f}"
-                f"{m['on_quarter_grid_ratio']:>6.2f}{m['bezier_slider_ratio']:>6.2f}"
-                f"{m['kiai_ratio']:>6.2f}{m['hitsound_ratio']:>6.2f}")
+        # .get with 0.0 defaults: a <2-object generation returns only {"n_objects": n}
+        line = (f"{sr:>7.1f}{(achieved or 0):>8.2f}{m.get('density_per_s', 0):>7.2f}"
+                f"{m.get('stream_ratio', 0):>6.2f}{m.get('jump_ratio', 0):>6.2f}"
+                f"{m.get('on_quarter_grid_ratio', 0):>6.2f}"
+                f"{m.get('bezier_slider_ratio', 0):>6.2f}"
+                f"{m.get('kiai_ratio', 0):>6.2f}{m.get('hitsound_ratio', 0):>6.2f}")
         if in_range is not None:
             line += f"  {in_range[0]}/{in_range[1]}"
         print(line)

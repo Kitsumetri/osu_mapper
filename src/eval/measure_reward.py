@@ -99,6 +99,8 @@ def _is_gold(bm, sr: float | None) -> bool:
     """
     if sr is None or bm.mode != 0 or not (1.0 <= sr <= 10.0):
         return False
+    if len(bm.hit_objects) < 50:          # preprocess --gold also requires >=50 objects
+        return False
     if sum(1 for tp in bm.timing_points if tp.uninherited) > 1:   # single BPM only
         return False
     if not bm.kiai_spans():                                        # require kiai

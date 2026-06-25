@@ -87,20 +87,21 @@ FAMILIES: dict[str, tuple[float, dict[str, float]]] = {
         "stream_ratio": 1.5,
         "mean_turn_angle_deg": 1.0,
         "reversal_ratio": 0.75,
-        "stream_spacing_cv": 1.0,       # NEW (band-less until gold refresh)
-        "stack_ratio": 0.5,             # NEW: stacking rate (band-less until refresh)
+        "stream_spacing_cv": 1.0,       # v9 stream-spacing regularity (banded)
+        "stack_ratio": 0.5,             # v9 stacking rate (banded)
     }),
-    # SLIDER & combo structure — the family the old reward drowned out. Given
-    # full family weight so a tech/slider map is judged on its sliders, not
-    # masked by perfect spacing 1.0s. slider_anchor_spread_px is a NEW
-    # distributional trait (sane anchor spacing) — band-less until gold refresh.
+    # SLIDER & combo structure — the family the old reward drowned out. Given full
+    # family weight so a tech/slider map is judged on its sliders, not masked by
+    # perfect spacing 1.0s. (The v9 distributional traits below are banded by
+    # corpus_stats; reward.py ignores any metric whose bucket lacks a band, so a
+    # newly-added one stays inert until the next refresh.)
     "slider_shape": (1.0, {
         "slider_ratio": 1.0,
-        "curved_slider_ratio": 1.0,
+        "curved_slider_ratio": 1.0,         # band-less until the NEXT corpus_stats refresh
         "sv_changes_per_min": 0.75,
         "new_combo_ratio": 0.5,
-        "slider_anchor_spread_px": 0.75,    # NEW (band-less until gold refresh)
-        "slider_overlap_ratio": 0.5,        # NEW: overlap rate (band-less until refresh)
+        "slider_anchor_spread_px": 0.75,    # v9 anchor-spacing trait (banded)
+        "slider_overlap_ratio": 0.5,        # v9 overlap rate (banded)
     }),
     # cosmetic accents (hitsounds/kiai handled by a separate v9 head) — low
     # family weight so they nudge, never decide.
@@ -292,8 +293,9 @@ def quality_score(metrics: dict, ref_stats: dict, bucket: str
 def sr_closeness(achieved_sr: float | None, target_sr: float, tol: float = 0.5) -> float:
     """1.0 when the achieved (rosu) SR hits the target; decays with |error|.
 
-    ``tol`` is the SR error at which the term is ~0.37 (one e-folding). Returns
-    0.0 if SR couldn't be computed (a parse failure is a strong "not ranked").
+    ``tol`` is the SR error at which the term is ~0.5 (the Lorentzian
+    ``1/(1+(err/tol)^2)``; ~0.2 at 2*tol). Returns 0.0 if SR couldn't be computed
+    (a parse failure is a strong "not ranked").
     """
     if achieved_sr is None:
         return 0.0

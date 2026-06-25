@@ -97,7 +97,8 @@ def package_set(generated: list, original: Path, songs_dir: Path,
     bg_name = _copy_assets(Path(original), orig, out_dir)
     for i, gpath in enumerate(generated):
         gen = parse_beatmap(gpath)
-        version = diff_names[i] if diff_names else f"{set_prefix} {i + 1}"
+        version = (diff_names[i] if diff_names and i < len(diff_names)
+                   else f"{set_prefix} {i + 1}")
         _write_difficulty(out_dir, artist, title, gen, version, orig.audio_filename, bg_name)
         print(f"  + [{version}]  {len(gen.hit_objects)} objects  "
               f"CS{gen.circle_size} AR{gen.approach_rate}")

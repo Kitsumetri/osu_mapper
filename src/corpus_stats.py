@@ -30,8 +30,9 @@ KEYS = ["star_rating", "density_per_s", "circle_ratio", "slider_ratio",
         "mean_spacing_px", "std_spacing_px", "stream_ratio", "jump_ratio",
         "on_quarter_grid_ratio", "mean_turn_angle_deg", "reversal_ratio",
         # v9 flow/slider distributional traits (reward.py FAMILIES.flow /
-        # .slider_shape) — registered here so a future gold-stats refresh
-        # produces p10/p90 bands for them; reward.py ignores them until then.
+        # .slider_shape) — corpus_stats produces their p10/p90 bands; reward.py ignores
+        # any metric whose bucket still lacks a band (e.g. a newly-added one before the
+        # next refresh).
         "stream_spacing_cv", "slider_anchor_spread_px",
         "stack_ratio", "slider_overlap_ratio",
         "sv_changes_per_min", "kiai_ratio", "hitsound_ratio", "clap_ratio",

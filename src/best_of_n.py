@@ -85,10 +85,14 @@ def _candidate_row(idx: int, bd: RewardBreakdown) -> dict:
 # proxy and abort candidates that are heading to the bottom of the reward curve, so
 # the remaining steps aren't wasted on a sample that would have lost anyway. This is
 # an efficiency gate, NOT steering (ddim_sample is eta=0 deterministic, the reward
-# is non-differentiable) — we only ever ABORT, never resample. Correctness property:
-# the selected winner is IDENTICAL with and without early-abort, because we only kill
-# candidates that trail the best COMPLETED candidate by a margin AND sit below an
-# absolute floor (a would-be loser).
+# is non-differentiable) — we only ever ABORT, never resample. Heuristic property: the
+# abort targets candidates that trail the best COMPLETED candidate by a margin AND sit
+# below an absolute floor on the *cheap proxy quality*. That proxy is band-membership
+# ONLY (it omits sr_closeness, which the real reward weights 0.35), so a sub-floor
+# candidate with high SR-closeness could in principle out-score the winner — the winner
+# is therefore NEAR-identical in practice, NOT a hard guarantee. (A true guarantee would
+# gate on the reward upper bound (1-sr_w)*quality + sr_w vs the best completed *reward*;
+# left as a future option since the feature is default-off.)
 
 
 def cheap_quality(sig: np.ndarray, ref_stats: dict, bucket: str, bpm: float,
@@ -265,8 +269,9 @@ def best_of_n(audio_path: str, sr: float, ref_stats: dict, out_path: str = "best
     the LATE DDIM steps of each candidate with a cheap decode->quality proxy and abort
     a candidate that is heading to the bottom of the reward curve, so best-of-N's
     compute is spent on viable candidates. Aborted candidates are EXCLUDED from the
-    ranking (they would have lost), so the selected winner is identical with and
-    without early-abort. The abort rule is step-relative (trails the best COMPLETED
+    ranking (clearly-losing), so the winner is near-identical in practice — a heuristic,
+    NOT a hard guarantee (the cheap proxy omits sr_closeness). The abort rule is
+    step-relative (trails the best COMPLETED
     candidate at the same step by > ``ea_margin``) AND absolute (below ``ea_abs_floor``),
     armed only after ``ea_min_candidates`` complete; ``ea_monitor_frac`` sets how late
     monitoring begins. ``<out>.bon.json`` surfaces ``n_aborted`` / ``steps_saved``.
@@ -373,8 +378,9 @@ def best_of_n(audio_path: str, sr: float, ref_stats: dict, out_path: str = "best
     Path(str(out_path) + ".bon.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     if not keep_candidates:
         shutil.rmtree(work, ignore_errors=True)
-    # return the full per-index list (aborted entries as None) so callers can see the
-    # full slate; the public contract (winner_path, winner_bd, breakdowns) is kept.
+    # return ONLY the completed candidates' breakdowns (aborted ones are excluded, not
+    # None — consumers do `[b.reward for b in breakdowns]`). Contract:
+    # (winner_path, winner_bd, breakdowns).
     return out_path, win_bd, [bd for _, bd in completed]
 
 
