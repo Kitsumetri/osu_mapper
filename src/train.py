@@ -21,6 +21,7 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader, Subset
+from tqdm import tqdm
 
 from .conditioning import CONTEXT_DIM
 from .config import (
@@ -193,10 +194,14 @@ def train(args):
     )
 
     if val_ds is not None:
+        # num_workers=0: validation runs on the MAIN process. On Windows, DataLoader
+        # workers spawn fresh processes that each re-import torch (committing the CUDA /
+        # cudnn DLLs to virtual memory); spawning a second wave of them for val on top of
+        # the persistent train workers exhausted the page file (WinError 1455). Val is
+        # small + runs once per epoch, so serial loading is fine and avoids the storm.
         val_dl = DataLoader(
             val_ds, batch_size=args.batch, shuffle=False,
-            num_workers=args.workers, drop_last=False, pin_memory=True, 
-            prefetch_factor=2
+            num_workers=0, drop_last=False, pin_memory=True,
         )
     else:
         val_ds = None
@@ -271,7 +276,7 @@ def train(args):
         model.eval()
         g = torch.Generator(device=device).manual_seed(1234)
         tot, nb = 0.0, 0
-        for sig, mel, ctx in val_dl:
+        for sig, mel, ctx in tqdm(val_dl, desc="Validation", unit="sample"):
             sig = sig.to(device, non_blocking=True)
             mel = mel.to(device, non_blocking=True)
             ctx = ctx.to(device, non_blocking=True)
