@@ -3,8 +3,26 @@
 **Purpose:** the run-by-run training history (loss, eval tables, play feedback), appended every train.
 | **DYNAMIC** (append a section per run/version). Metrics via `src/metrics.py`.
 
-**Current release: v8** (`runs/20260619-235218-ranked-v8-b160/ckpt/best.pt`, 21-ch, base-160).
-Per-version *design* lives in [docs/versions/](../versions/README.md); this file is the run log.
+**Current best: v9** (`runs/20260627-005105-ranked-v9/ckpt/epoch_80.pt`, 21-ch + 7-D ctx, base-160) —
+plays well in-game (v8 was the prior release). Per-version *design*: [docs/versions/](../versions/README.md).
+
+## v9 — per-song aim conditioning + rope/huber (TRAINED + EVALUATED 2026-06-27/28)
+
+`runs/20260627-005105-ranked-v9/ckpt/` — **the current best model.** = v8 recipe + **rope + huber(β0.5)
++ the audit's encode fixes + per-song `aim` conditioning**, 80 ep on `ranked-v9` (gold data re-preprocessed
+after the encode fixes). `epoch_80.pt` = peak `val_reward`; `best.pt` = val-loss. (Train died once at e27 on
+a Windows page-file / WinError-1455; fixed by val DataLoader `num_workers=0` (`2b11d98`), resumed from e26's
+`last.pt` — no loss.)
+
+- **Training healthy:** train loss 0.034 / val 0.0345 on the **leakage-free held-out-song** split (so the val
+  number is real). **`val_reward` rose 0.66 → 0.77** over the run — the first map-quality trend *during*
+  training (reward-in-val probe; conditions on each song's `aim`).
+- **best-of-8 in-game (Blue Zenith):** winners reward **0.967 (SR 6) / 0.938 (SR 7)** — near-gold, SR on
+  target, best-of-8 lift ~+0.13. **USER played them: "jumps good, streams good."** Best model so far.
+- **KEY EVAL FINDING — `aim` is a density/stream lever, NOT the jump fix**
+  ([versions/v9/task_v9_evaluation.md](../versions/v9/task_v9_evaluation.md)): aim↑ → +density +streams,
+  *tighter* spacing, *fewer* jumps. The good jumps come from rope+huber + cleaner data + best-of-N selection,
+  not the aim mechanism → jumps are now an **RWR / best-of-N-distillation** problem, not a conditioning one.
 
 ## v8_1 — rope + huber + 80ep ablation (TRAINED 2026-06-22; pending play-feedback)
 

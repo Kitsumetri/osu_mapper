@@ -5,6 +5,39 @@ and re-derived the diffusion math) plus the v9 core-component quality audit — 
 deferred, and what was judged correct. | **STATIC** (a frozen record of audits; new audits append a
 section).
 
+## Full code audit (2026-06-28) — 3 parallel opus agents (~39 findings)
+
+Three agents split `src/` into ~equal thirds (data/representation · model/sampling · eval/metrics) and read
+every file; the main agent verified each finding skeptically before acting. Headline: the diffusion math, the
+flat-top reward, `sample_logprob`, the grid membership, and SR buckets all checked out; no stale references to
+the removed playability defects remained.
+
+**Fixed — encode (needed a `ranked-v9` reprocess), `bafc46d`:**
+- **A#3** reverse-slider cursor flow-OUT keyed to the slider tail unconditionally; an even-slide
+  (single-reverse) slider ends gameplay at the HEAD → use the gameplay end (parity-aware). +test.
+- **A#6** timing points sorted by time only → a green (sets SV) listed before a red (resets SV→1) at the same
+  offset let the red win in `_sv_at` (last-wins). Tie-break uninherited-first. Feeds `slider_duration` →
+  `end_time` → the encode. +test.
+
+**Fixed — correctness / perf (`e4f8fbb`):** **C#1** `curved_slider_ratio` was the reward's heaviest slider
+metric but missing from `corpus_stats.KEYS` → no gold band → silently dropped from EVERY reward (added). **C#3**
+`reward_from_osu` gained `achieved_sr=` reuse so the `--all` scan stops running rosu SR twice. **C#5** the
+velocity defect measured from the slider head, not its end (now `end_time` + parity). **C#6** `slider_overlap`
+got an exact bbox prefilter (O(sliders×objects) → ~O(sliders×neighbours)). **B#2** `guidance_rescale` rescaled
+x0 but reused the un-rescaled eps (re-derive). **B#5** the val-reward probe sampled at `aim=0` (now uses the
+manifest aim). **B#6** latent zero-SNR `sigma` NaN clamp. **A#1** empty-val-set guard, **A#2** mel-cache
+aliasing copy, **B#4** hardened the dead `p_sample`.
+
+**Fixed — guards + stale docs (`6d90b64`):** crash guards (`evaluate`, `package_map`, `_is_gold` min-objects);
+stale "band-less until refresh" comments (the v9 band metrics ARE banded post-refresh); `sr_closeness` docstring
+(0.37→0.5); the early-abort "winner identical" claim softened (the cheap quality-only proxy omits SR-closeness →
+near-identical, not a hard guarantee).
+
+**Rejected (skeptical):** snap `(4,8,6)` (play-validated; doc-only); the `aim_intensity` 2nd-STFT "fix" (would
+change a load-bearing feature's values); octave-fold widening (a real estimator ambiguity, not a bug); the
+match-sr difficulty-name (cosmetic). Agent suggestions to *delete* `p_sample`/`sqrt_recip_alphas` were overruled
+(referenced by the RL plan / a finiteness test) — hardened instead.
+
 ## External audit (2026-06-14)
 
 The auditor confirmed **the diffusion math is all correct**. Defects were at the encode/decode/writer

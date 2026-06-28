@@ -19,18 +19,25 @@ in the entry-point handoff (`HANDOFF.md` at repo root); per-version design is in
 - **v9 round 2** (all DONE, 203 tests): `infer --best-of-n N` autopackage (`1bcacd0`); general 5-family
   reward (`61535cd`, gold 0.953); RL/policy-gradient verdict + log-prob prototype (`5be40f7`,
   `src/rl/`); core audit — 2 bugs fixed (doubled-BPM, write_osu mutation) +15 tests (`07f8912`).
-- **v8_1 ablation** (rope+huber+80ep) trained by USER + A/B'd vs v8 — wins 10/12 cells, sharper
-  high-SR/jumps, one low-SR over-streaming regression; **pending in-game A/B** to decide promotion
-  ([versions/v9/v8_1-ablation.md](../versions/v9/v8_1-ablation.md)).
+- **v8_1 ablation** (rope+huber+80ep) — won 10/12 vs v8; **superseded by v9** (which folds in rope+huber).
+- **v9 round 3** (3a/3b): held-out-song val + reward-in-val (leakage fix); rhythm≫flow reweight + flow
+  metrics + velocity-only playability; reward **recalibrated & CLOSED** (gold 0.97, a SELECTOR); `on_quarter_grid`
+  broadened to {1/4,1/8,1/6}; per-song `aim` conditioning (`CONTEXT_DIM` 6→7); early-abort (opt-in, 0 savings on v8).
+- **Code audit** (2026-06-28, 3 parallel agents, ~39 findings): encode bugs fixed (reverse-slider flow, SV
+  tie-break) → `ranked-v9` reprocessed; correctness/perf/crash-guards; `curved_slider_ratio` banded; stale docs
+  cleaned ([knowledge/audit-findings.md](../knowledge/audit-findings.md)).
+- **v9 TRAINED + evaluated** (`ranked-v9`, `epoch_80.pt`): plays well in-game; **`aim` = density lever, NOT the
+  jump fix** ([versions/v9/task_v9_evaluation.md](../versions/v9/task_v9_evaluation.md)).
+- **torch.compile caching** (`src/_perf.py`): persistent Inductor cache (123s→16s reuse) + `--compile-dynamic`.
 
 ## Priority-ordered task list
 
 | # | task | evidence | priority | cost |
 |---|------|----------|----------|------|
-| **v8_1 promotion — USER A/B** | decide v8_1 (rope+huber+80ep) vs v8 by in-game play, not metrics. A/B: (1) SR 6.5–7 jump/tech song (v8_1's case-for: sharper aim, higher jumps); (2) **SR 4 on a fast stream song = the gate** — is v8_1's over-streaming unplayable, or fixable with `--match-sr`/`--density`?; (3) slider feel (v8_1 uses fewer); (4) Kawaii 5–6 default. | [versions/v9/v8_1-ablation.md](../versions/v9/v8_1-ablation.md) (wins 10/12 cells) | **P1 (USER, play)** | gen + play |
-| **Best-of-N — USER run** | run a real `python main.py infer --audio song.mp3 --reference ref.osu --sr 5 6 7 --best-of-n 8` on a jump song (reward now general/family-balanced); judge the winner in-game. If best-of-N alone satisfies, RL may be unnecessary. | harness+reward done (`2263443`,`1bcacd0`,`61535cd`) | **P1 (USER, no train)** | N× sampling GPU-min |
-| **v9 per-song conditioning** | condition target spacing / aim-intensity inferred from audio (onset-energy / spectral-flux), fed like `--density` — the *real* per-song jump fix. v8's spacing channel shares the cursor's audio+SR conditioning → both regress to the SR-average; a passive channel can't beat its own conditioning. **The diagnosed primary fix: do this BEFORE RL — RL alone pushes spacing globally (the `--spacing-scale` failure).** | Happppy: v8 channel ~122 vs real 173 px | **P1 (top)** | reprocess + train |
-| **RWR / Diffusion-DPO align** | post-train the *conditioned* model toward the reward (best-of-N distill / RWR, then DPO if it plateaus). Gated on play feedback; DRaFT/reward-guidance blocked (non-diff reward). | [versions/v9/task3_rl_alignment.md](../versions/v9/task3_rl_alignment.md) | P2 (after conditioning) | short/moderate train (USER) |
+| **RWR / best-of-N distillation — THE jump lever (top)** | post-train v9 toward best-of-N's high-reward self-generations to commit to the reward's high-spacing tail. **Now the jump fix** — conditioning is understood (`aim` is a density lever, can't supply jump intent: [task_v9_evaluation](../versions/v9/task_v9_evaluation.md)), so jumps are an under-dispersion/style problem RL must commit to. RWR first → DPO if it plateaus → DDPO last; DRaFT/reward-guidance blocked (non-diff reward). | [task3_rl_alignment](../versions/v9/task3_rl_alignment.md) + [task_rl_policy_gradient](../versions/v9/task_rl_policy_gradient.md) | **P1 (top, USER train)** | short/moderate train |
+| ~~v8_1 promotion~~ DONE | superseded — v9 folds in rope+huber + more. | — | done | — |
+| ~~Best-of-N USER run~~ DONE | run + played in-game (Blue Zenith best-of-8: winners 0.94–0.97, "jumps good, streams good"). | [task_v9_evaluation](../versions/v9/task_v9_evaluation.md) | done | — |
+| ~~v9 per-song conditioning~~ DONE | implemented + trained + evaluated — it's a **density lever, not the jump fix** (the hypothesis failed; `aim` ships as a `--aim-intensity` density/spread knob). | [task_v9_evaluation](../versions/v9/task_v9_evaluation.md) | done | — |
 | Hitsounds | rule-based placement from beat-phase + per-band audio onsets (claps backbeat, finish downbeat/cymbal). | hitsounds 4/10, unstable | P1 (parallel) | ~1 day, no big train |
 | Kiai head | small supervised mel→kiai 1D-conv head; use its deterministic output at decode. | kiai unstable song-to-song | P1 (parallel) | ~1 day + small head train |
 | Density cond. | condition on a per-song density inferred from audio onset-rate (not the SR default); also fixes intro-empty. | stream-shy; rhythm gaps; intro-empty | P2 | reprocess + train |
