@@ -365,6 +365,10 @@ def train(args):
     # NOTE: on Windows this needs `triton-windows` + MSVC Build Tools (cl.exe);
     # without them torch.compile raises at the first step. Default off.
     if (args.compile and device == "cuda"):
+        from ._perf import configure_compile
+        configure_compile()   # persistent inductor cache -> resumes/re-runs skip recompile
+        # static shapes (fixed batch x crop) -> keep reduce-overhead (CUDA graphs); dynamic
+        # would only slow training down. Compiles once and reuses for the whole run.
         fwd_model = torch.compile(model, mode="reduce-overhead")
     else:
         fwd_model = model

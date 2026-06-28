@@ -78,7 +78,7 @@ def _merge_green_lines(base_tp, kiai_spans, sv_secs):
 
 
 def load_model(ckpt_path, base=64, use_ema=True, device=None,
-               compile_model=False) -> LoadedModel:
+               compile_model=False, compile_dynamic=False) -> LoadedModel:
     """Load a checkpoint into an eval-ready U-Net + diffusion sampler.
 
     Reuse the result across generate() calls (e.g. an SR sweep) to avoid
@@ -113,13 +113,20 @@ def load_model(ckpt_path, base=64, use_ema=True, device=None,
                    rope=cargs.get("rope", False), up_attn=cargs.get("up_attn", False)).to(device)
     model.load_state_dict(weights)
     model.eval()
-    # torch.compile fuses kernels for the repeated DDIM forwards (compiles once on the
-    # first call, then reused across all steps / an SR sweep). Opt-in: the ~30-60s compile
-    # cost only pays off over many forwards (long songs, sweeps); it specialises on the
-    # song length, so a different-length song recompiles. (`model.sig_channels` still
-    # resolves through the OptimizedModule wrapper.)
+    # torch.compile fuses kernels for the repeated DDIM forwards (compiles once, then
+    # reused across all steps / an SR sweep / best-of-N). Opt-in: the ~30-60 s compile
+    # only pays off over many forwards (long songs, sweeps). configure_compile() adds a
+    # PERSISTENT on-disk cache so that cost is paid once EVER per song length and reloaded
+    # on later runs. (`model.sig_channels` still resolves through the OptimizedModule wrapper.)
     if compile_model and device == "cuda":
-        model = torch.compile(model)
+        from ._perf import configure_compile
+        configure_compile()   # TF32 + raised dynamo cache + persistent inductor cache
+        # dynamic=None (automatic): the first song compiles a fast STATIC graph; a later,
+        # different length recompiles ONCE as a length-dynamic graph that handles all
+        # lengths thereafter. compile_dynamic=True forces that length-dynamic graph up
+        # front (never recompiles for a new length; slightly slower per forward) -> better
+        # for a batch over many DIFFERENT-length songs in one process.
+        model = torch.compile(model, dynamic=(True if compile_dynamic else None))
     diff = GaussianDiffusion(timesteps=cargs.get("timesteps", 1000), device=device,
                              objective=cargs.get("objective", "eps"),
                              zero_snr=cargs.get("zero_snr", False))

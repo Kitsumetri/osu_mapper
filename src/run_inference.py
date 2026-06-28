@@ -137,7 +137,12 @@ def main() -> int:
     ap.add_argument("--no-package", action="store_true",
                     help="just write the .osu; don't copy into your Songs folder")
     ap.add_argument("--compile", action="store_true",
-                    help="torch.compile the model (faster over many SRs; needs a C compiler)")
+                    help="torch.compile the model (faster over many SRs; needs a C compiler). "
+                         "A persistent on-disk cache makes later runs skip the recompile.")
+    ap.add_argument("--compile-dynamic", action="store_true",
+                    help="with --compile: compile a length-dynamic graph so different song "
+                         "lengths don't each recompile (best for batches over many songs in "
+                         "one run; slightly slower per forward than the default static graph)")
     ap.add_argument("--amp", action=argparse.BooleanOptionalAction, default=None,
                     help="bf16 sampling (faster, lower memory). Default: auto-on for long songs")
     ap.add_argument("--batch-cfg", action=argparse.BooleanOptionalAction, default=None,
@@ -192,7 +197,8 @@ def main() -> int:
     from src.generate import generate, load_model, prepare_audio
 
     print(f"\nloading model: {ckpt}")
-    loaded = load_model(ckpt, compile_model=args.compile)
+    loaded = load_model(ckpt, compile_model=args.compile,
+                        compile_dynamic=args.compile_dynamic)
     ref_str = str(reference) if reference else None
     prepared = prepare_audio(str(audio), loaded.device, timing_ref=ref_str)
     duration_s = prepared.t_len * AUDIO.ms_per_frame / 1000.0
