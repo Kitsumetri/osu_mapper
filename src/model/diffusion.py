@@ -85,12 +85,17 @@ class GaussianDiffusion:
         return x0, eps
 
     @torch.no_grad()
-    def p_sample(self, model, cond, shape, steps: int | None = None):
+    def p_sample(self, model, cond, shape):
         """Full ancestral DDPM sampling (reference only; ``generate`` uses ``ddim_sample``).
 
-        Unconditional (no ctx/CFG) and assumes ``objective='eps'`` — wire those
-        through before using it in production.
+        Unconditional (no ctx/CFG) and **requires** ``objective='eps'`` — the posterior
+        mean below is eps-parameterised, so under v-pred it would treat v as eps and
+        produce garbage. Kept as the ancestral / ``eta>0`` reference the RL log-prob plan
+        may use; wire ctx/CFG through before any production use. (Dropped a never-used
+        ``steps`` arg that falsely implied step subsampling — this always runs all
+        ``self.timesteps``; use ``ddim_sample`` for accelerated sampling.)
         """
+        assert self.objective == "eps", "p_sample is eps-only; use ddim_sample for v-pred"
         b = shape[0]
         x = torch.randn(shape, device=self.device)
         for i in reversed(range(self.timesteps)):
@@ -109,7 +114,8 @@ class GaussianDiffusion:
     @torch.no_grad()
     def ddim_sample(self, model, cond, shape, steps: int = 100, eta: float = 0.0,
                     ctx=None, guidance: float = 1.0, guidance_rescale: float = 0.0,
-                    progress: bool = False, batch_cfg: bool = True, amp: bool = False):
+                    progress: bool = False, batch_cfg: bool = True, amp: bool = False,
+                    monitor=None):
         """DDIM sampling: correct accelerated sampling over a step subsequence.
 
         eta=0 is deterministic. ``ctx`` is the difficulty context; ``guidance`` > 1
@@ -119,6 +125,18 @@ class GaussianDiffusion:
         tqdm bar over the steps. ``batch_cfg`` runs the CFG conditional+unconditional as
         one batch-2 forward (~2× faster) — but that ~doubles peak activation memory, so
         turn it off for very long songs near the VRAM limit. Returns x0 (B,C,T).
+
+        ``monitor`` (optional): a callback ``monitor(k_index, frac_done, x0) -> bool``
+        invoked AFTER the predicted clean signal ``x0`` is computed (and clamped) at
+        each step. ``k_index`` is the remaining-step index (counts down to 0 = final
+        step), ``frac_done`` in [0, 1] is how far through the reverse process we are
+        (0 at the first/noisiest step, ~1 at the last), and ``x0`` is the current
+        predicted clean signal (B,C,T). If it returns truthy the loop BREAKS early and
+        returns the current ``x0`` (the abort path — used by best-of-N to drop doomed
+        candidates cheaply). The monitor cannot change ``x0`` and is purely an
+        early-exit gate, so with ``monitor=None`` the sampling is byte-for-byte
+        unchanged. The caller records the abort itself (e.g. via the closure); the
+        return type is always the tensor so existing callers are unaffected.
         """
         b = shape[0]
         x = torch.randn(shape, device=self.device)
@@ -175,13 +193,30 @@ class GaussianDiffusion:
                 std_c = x0_c.std(dim=(1, 2), keepdim=True)
                 std_g = x0.std(dim=(1, 2), keepdim=True).clamp(min=1e-8)
                 x0 = guidance_rescale * (x0 * std_c / std_g) + (1 - guidance_rescale) * x0
+                # re-derive eps from the rescaled x0 so the (x0, eps) pair stays
+                # consistent (x_t = a*x0 + s*eps); otherwise the DDIM directional term
+                # below mixes a rescaled x0 with the UN-rescaled eps -> off-trajectory.
+                eps = (x - a_t * x0) / s_t.clamp(min=1e-8)
             x0 = x0.clamp(-1.5, 1.5)
+            if monitor is not None:
+                # frac_done: 0 at the first (noisiest) step, 1 at the last. Single-step
+                # seq -> treat as fully done. The monitor inspects the (clamped)
+                # predicted clean x0 and may request an early abort; it cannot mutate x0.
+                denom = len(seq) - 1
+                frac_done = 1.0 if denom <= 0 else 1.0 - k / denom
+                if monitor(k, frac_done, x0):
+                    x = x0
+                    break
             if k == 0:
                 x = x0
                 break
             acp_prev = self.alphas_cumprod[seq[k - 1]]
             acp_t = self.alphas_cumprod[i]
-            sigma = eta * torch.sqrt((1 - acp_prev) / (1 - acp_t) * (1 - acp_t / acp_prev))
+            # clamp acp_prev: under zero-terminal-SNR alphas_cumprod can be 0, which
+            # makes acp_t/acp_prev divide by zero (NaN sigma). eta=0 (default) zeroes
+            # sigma anyway; this only matters for a future eta>0 / RL log-prob path.
+            sigma = eta * torch.sqrt((1 - acp_prev) / (1 - acp_t)
+                                     * (1 - acp_t / acp_prev.clamp(min=1e-8)))
             dir_xt = torch.sqrt((1 - acp_prev - sigma**2).clamp(min=0.0)) * eps
             x = torch.sqrt(acp_prev) * x0 + dir_xt
             if eta > 0:

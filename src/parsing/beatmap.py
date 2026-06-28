@@ -16,7 +16,7 @@ loosely so malformed community maps don't crash the crawler.
 from __future__ import annotations
 
 import contextlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 # --- hit object type bitflags -------------------------------------------------
@@ -232,7 +232,10 @@ def parse_beatmap(path: str | Path) -> Beatmap:
             if obj is not None:
                 bm.hit_objects.append(obj)
 
-    bm.timing_points.sort(key=lambda t: t.time)
+    # tie-break uninherited (red) before inherited (green) at equal times: osu! stacks
+    # a red (resets SV->1) and a green (sets SV) at the same offset, and the green's SV
+    # is the one in effect. _sv_at takes the LAST point <= time, so green must sort last.
+    bm.timing_points.sort(key=lambda t: (t.time, 0 if t.uninherited else 1))
     bm.hit_objects.sort(key=lambda o: o.time)
 
     # compute end times now that timing is available
@@ -288,9 +291,13 @@ def _clamp_slider_lengths(hit_objects: list[HitObject], tps: list[TimingPoint],
     osu! slider duration = length / (SliderMultiplier*100*SV) * beat_length, so
     we invert that: max_length = max_duration * velocity / beat_length, where
     max_duration is a fraction of the gap to the next object.
+
+    Returns *copies* — the caller's HitObjects are never mutated, so the same list
+    can be written to several files (multi-difficulty packaging) or re-used for
+    metrics after a write without seeing already-clamped lengths.
     """
     helper = Beatmap(path=Path("."), slider_multiplier=slider_multiplier, timing_points=tps)
-    objs = sorted(hit_objects, key=lambda o: o.time)
+    objs = [replace(o) for o in sorted(hit_objects, key=lambda o: o.time)]
     for i, o in enumerate(objs):
         if not o.is_slider or o.length <= 0:
             continue

@@ -7,7 +7,7 @@ Layout (see README.md "Data & run layout"):
 
 Metadata captured per item (future-proofs difficulty/style/kiai conditioning):
   creator, title, version, n_objects, cs/ar/od/hp, bpm, n_timing_points,
-  has_kiai, duration_s, frames, audio_id.
+  has_kiai, hitsound_frac, aim_intensity (per-audio, v9), duration_s, frames, audio_id.
 
 Usage:
   python -m src.data.preprocess --songs "C:/osu!/Songs" --out data/processed/std-v1 --limit 2000
@@ -27,7 +27,7 @@ from tqdm import tqdm
 from ..config import AUDIO
 from ..difficulty import star_rating
 from ..parsing.beatmap import parse_beatmap
-from .audio import audio_to_mel
+from .audio import aim_intensity, load_audio, log_mel
 from .osu_db import ranked_osu_paths
 from .signal import encode_beatmap
 
@@ -75,7 +75,12 @@ def _process_set(args):
             continue
         aid = _audio_id(audio_path)
         try:
-            mel = audio_to_mel(audio_path)          # the expensive step
+            y = load_audio(audio_path)              # decode once, reuse for mel + aim
+            mel = log_mel(y)                        # the expensive step
+            # v9 per-song aim-intensity: ONE scalar per audio, from the SAME decoded
+            # array the mel uses (train/infer parity — generate.prepare_audio computes
+            # it identically from its own load_audio). Shared by all difficulties.
+            aim = aim_intensity(y)
         except Exception:
             errors += 1
             continue
@@ -119,6 +124,9 @@ def _process_set(args):
                 "bpm": bm.bpm, "n_timing_points": len(bm.timing_points),
                 "n_uninherited": n_uninherited, "has_kiai": has_kiai,
                 "hitsound_frac": round(hitsound_frac, 3),
+                # v9 per-song aim-intensity (per-audio scalar, shared across this
+                # song's difficulties; read by conditioning.context_from_manifest).
+                "aim_intensity": round(aim, 4),
                 "duration_s": round(AUDIO.frame_to_time(T) / 1000, 1),
                 "frames": T,
             })

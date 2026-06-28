@@ -240,8 +240,12 @@ def encode_beatmap(bm: Beatmap, n_frames: int, cfg: AudioConfig = AUDIO) -> np.n
                 # corner cue = 1 if the slider has red (doubled) control points (angular)
                 if _has_red_points(cps):
                     corner_ch[a:b + 1] = 1.0
-            # cursor end key-frame (flow into the next object) = last anchor
-            ex, ey = anchor_pts[-1]
+            # cursor end key-frame (flow into the next object) = where the player
+            # actually ENDS the slider: the tail for an odd slide count, but back at
+            # the HEAD for an even count (a single-reverse 2-slide slider ends at its
+            # head). Keying to the tail unconditionally mis-encoded the flow-out of
+            # every even-slide reverse slider.
+            ex, ey = (obj.x, obj.y) if obj.slides % 2 == 0 else anchor_pts[-1]
             keys_t.append(f_end)
             keys_x.append(_norm_x(ex))
             keys_y.append(_norm_y(ey))

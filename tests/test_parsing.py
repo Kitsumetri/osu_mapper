@@ -16,6 +16,28 @@ def test_parse_counts(sample_osu):
     assert sum(o.is_spinner for o in kinds) == 1
 
 
+def test_sv_at_green_wins_over_red_at_same_offset(tmp_path):
+    """A#6: a green (inherited, sets SV) and a red (uninherited, resets SV->1) stacked
+    at the SAME offset — the green's SV is the one in effect. The parser sorts
+    uninherited-first, so _sv_at (last point <= time) returns the green even when the
+    file lists the green FIRST (the order that used to make the red win)."""
+    osu = tmp_path / "sv.osu"
+    osu.write_text(
+        "osu file format v14\n\n"
+        "[General]\nAudioFilename: a.mp3\nMode: 0\n\n"
+        "[Metadata]\nTitle:T\nArtist:A\nCreator:c\nVersion:N\n\n"
+        "[Difficulty]\nHPDrainRate:5\nCircleSize:4\nOverallDifficulty:6\n"
+        "ApproachRate:7\nSliderMultiplier:1.4\nSliderTickRate:1\n\n"
+        "[TimingPoints]\n"
+        "0,500,4,2,0,50,1,0\n"        # base red @0 (120 BPM)
+        "1000,-50,4,2,0,50,0,0\n"     # GREEN @1000 (SV 2.0) -- listed FIRST
+        "1000,400,4,2,0,50,1,0\n\n"   # RED @1000 -- listed SECOND
+        "[HitObjects]\n256,192,1000,1,0,0:0:0:0:\n",
+        encoding="utf-8")
+    bm = parse_beatmap(osu)
+    assert bm._sv_at(1000) == 2.0    # green's SV, not the red's reset-to-1.0
+
+
 def test_type_bitflags(sample_osu):
     bm = parse_beatmap(sample_osu)
     circle, slider, spinner = bm.hit_objects
