@@ -57,16 +57,19 @@ difficulty:
 uv run python main.py infer \
     --audio "C:/osu!/Songs/123 Artist - Song/audio.mp3" \
     --reference "C:/osu!/Songs/123 Artist - Song/Artist - Song (Mapper) [Insane].osu" \
-    --sr 5 6 7
+    --sr 5 6 7 --best-of-n 8
 ```
 
-- `--reference` is any existing `.osu` for that song — it gives **exact timing** (BPM/offset) and
-  lets the map be packaged with the right audio + background. Recommended; without it the map uses
-  estimated timing and is just written to disk.
-- `--sr` takes one or more star ratings; all of them land as difficulties in **one** beatmapset
-  folder. Open osu! and press F5 to see them.
-- Handy flags: `--match-sr` (iterate to hit the exact rating), `--density` (push streams),
-  `--no-package` (just write the `.osu`), `--amp` (faster, lower memory). `--help` lists them all.
+- `--best-of-n 8` is the **recommended** flow: sample 8 candidates per SR, score each with the reward
+  function, keep the best — a clear quality lift. (Needs `artifacts/reference_stats.json`, built by
+  `python -m src.corpus_stats`.)
+- `--reference` is any existing `.osu` for that song — it gives **exact timing** (BPM/offset) and lets
+  the map be packaged with the right audio + background. Recommended; without it the map uses estimated
+  timing and is just written to disk.
+- `--sr` takes one or more star ratings; all land as difficulties in **one** beatmapset folder (F5 in osu!).
+- Handy flags: `--aim-intensity 0..1` (per-song density/spacing dial — low = jumpier, high = streamier),
+  `--match-sr` (iterate to hit the exact rating), `--density` (push streams), `--compile` (much faster on
+  repeat runs — a persistent on-disk compile cache), `--amp`, `--no-package`. `--help` lists them all.
 
 A pre-trained checkpoint is auto-discovered from `runs/`; pass `--ckpt path/to/best.pt` to choose one.
 
@@ -78,15 +81,16 @@ uv run python main.py preprocess --songs "C:/osu!/Songs" --out data/processed/ra
 
 # 2. train (logs + checkpoints under runs/<id>/; --resume runs/<id>/ckpt/last.pt to continue)
 uv run python main.py train --data data/processed/ranked --tag mymodel \
-    --base 160 --crop 4096 --attn-levels 3 --batch 16 --epochs 60 \
-    --objective v --zero-snr --compile --spatial-loss-weight 3
+    --base 160 --crop 4096 --attn-levels 3 --batch 16 --epochs 80 --val-frac 0.10 \
+    --objective v --zero-snr --compile --spatial-loss-weight 3 --rope --loss huber --huber-beta 0.5
 
 # 3. generate with your checkpoint
 uv run python main.py infer --audio song.mp3 --reference ref.osu --sr 5 --ckpt runs/<id>/ckpt/best.pt
 ```
 
-Training uses bf16 + EMA + cosine LR, flip augmentation, a train/val split, and per-run logging.
-`best.pt` keeps the lowest validation loss (EMA weights are used at inference).
+Training uses bf16 + EMA + cosine LR, flip augmentation, and per-run logging. The val split holds out
+**whole songs** (no audio leakage); add `--val-reward-every N` to log a real map-quality `val_reward`
+(needs `--ref-stats`). `best.pt` keeps the lowest validation loss (EMA weights are used at inference).
 
 ## Project layout
 
