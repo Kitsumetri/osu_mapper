@@ -12,8 +12,11 @@ EXAMPLES
   # several difficulties at once
   uv run python main.py infer --audio song.mp3 --reference ref.osu --sr 4 5 6
 
-  # reward-ranked best-of-8 (sample N, keep the highest-reward winner per SR, still auto-packaged)
-  uv run python main.py infer --audio song.mp3 --reference ref.osu --sr 5 6 --best-of-n 8
+  # RECOMMENDED: reward-ranked best-of-8 (sample N, keep the highest-reward winner per SR)
+  uv run python main.py infer --audio song.mp3 --reference ref.osu --sr 5 6 7 --best-of-n 8
+
+  # jumpier output (low aim = bigger spacing); raise --aim-intensity for denser/streamier
+  uv run python main.py infer --audio song.mp3 --reference ref.osu --sr 6 --aim-intensity 0.1
 
   # pick a checkpoint, just write the .osu (don't copy into Songs)
   uv run python main.py infer --audio song.mp3 --sr 5 --ckpt runs/<id>/ckpt/best.pt --no-package
@@ -27,6 +30,9 @@ TIPS
   * --best-of-n N samples N candidates per SR, scores each with the reward function, and keeps
     the winner. Requires artifacts/reference_stats.json (build with corpus_stats). The winner
     flows through the same packaging path as a normal single generation.
+  * --aim-intensity 0..1 is the v9 per-song density/spacing dial (default: inferred from the
+    audio). LOW (~0.1) = sparser + bigger spacing (jumpier); HIGH (~0.9) = denser + streamier.
+    It trades note-density against spacing rather than forcing jumps outright.
 """
 from __future__ import annotations
 
@@ -121,6 +127,11 @@ def main() -> int:
     ap.add_argument("--steps", type=int, default=100, help="DDIM sampling steps (fewer = faster)")
     ap.add_argument("--density", type=float, default=None,
                     help="override objects/sec (raise to push streams on a busy song)")
+    ap.add_argument("--aim-intensity", type=float, default=None, metavar="0..1",
+                    help="v9 per-song density/spacing dial (default: inferred from the "
+                         "audio). LOW (~0.1) = sparser, bigger spacing / jumpier; HIGH "
+                         "(~0.9) = denser, more streams. (Trades density vs spacing; it is "
+                         "NOT a pure 'more jumps' knob.)")
     ap.add_argument("--match-sr", action="store_true",
                     help="iterate to actually hit the target star rating (slower)")
     ap.add_argument("--no-package", action="store_true",
@@ -208,6 +219,7 @@ def main() -> int:
         steps=args.steps,
         match_sr=args.match_sr,
         density=args.density,
+        aim_override=args.aim_intensity,   # v9 per-song aim dial (None -> audio-derived)
         spacing_scale=args.spacing_scale,
         amp=amp,
         batch_cfg=batch_cfg,
